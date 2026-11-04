@@ -473,6 +473,7 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | Setting | Default | Meaning |
 |---|---|---|
 | `MQTT_HOST` | — | Broker address. Empty = MQTT off. |
+| `KIOSK_MQTT` | `1` | `0` turns this panel's MQTT publishing off even when `MQTT_HOST` is set (use when another tool, such as brilliant-mqtt, already publishes the panel) |
 | `MQTT_PORT` | `1883` | Broker port |
 | `MQTT_USER` / `MQTT_PASSWORD` | — | Broker login (`kiosk.env` is root-only on the panel) |
 | `MQTT_BASE` | `brilliant_kiosk` | Topic prefix for state and commands |
@@ -521,7 +522,36 @@ scripts/uninstall.sh panel1
 ```
 
 This stops the HA interface, hands the screen back to Brilliant's services and starts the stock
-UI. Files stay in `/etc/ha-kiosk`, so you can switch back with `install.sh`.
+UI. Files stay in `/etc/ha-kiosk`, so you can switch back with `install.sh`. To remove everything
+(files, settings, photos, swap file), add `--purge`: `scripts/uninstall.sh panel1 --purge`.
+
+**Installing from a release bundle (for other tools)**
+
+Every [GitHub release](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases) has an installable
+bundle, `brilliant-ha-kiosk-<version>.tar.gz`, with a `.sha256` checksum. `scripts/install.sh` uses the
+same bundle, built from your checkout. Fleet managers and integrations can install it on a panel
+without this repo:
+
+```sh
+# on the panel, as root
+tar -xzf brilliant-ha-kiosk-v1.1.0.tar.gz
+sh brilliant-ha-kiosk-v1.1.0/install-local.sh --env /path/kiosk.env --token /path/token
+```
+
+| `install-local.sh` option | Effect |
+|---|---|
+| `--env FILE` | Install this `kiosk.env` (otherwise the panel's current one is kept) |
+| `--token FILE` | Install this Home Assistant token (otherwise kept) |
+| `--layout FILE` | Local fallback `layout.json` (otherwise kept, else the bundled example) |
+| `--no-mqtt` | Sets `KIOSK_MQTT=0`, for when another tool already publishes the panel to HA |
+| `--no-restart` | Install files and units without (re)starting anything |
+| `--uninstall [--purge]` | Restore the stock Brilliant UI (and with `--purge`, delete everything) |
+| `--version` | Print the bundle version |
+
+It is non-interactive and safe to re-run. It checks the bundle's checksums, keeps the panel's own
+settings, photos and layout, and records the installed version in `/etc/ha-kiosk/VERSION`. A copy
+stays at `/etc/ha-kiosk/install-local.sh`, so a panel can always be returned to the stock UI with
+`sh /etc/ha-kiosk/install-local.sh --uninstall`.
 
 **Security notes**
 

@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Restore the stock Brilliant UI. Leaves /etc/ha-kiosk in place. Usage: scripts/uninstall.sh [panel]
+# Restore the stock Brilliant UI.
+# Usage: scripts/uninstall.sh [panel] [--purge]   (--purge also deletes all kiosk files and settings)
 set -euo pipefail
 PANEL="${1:-${PANEL:-panel1}}"
+PURGE="${2:-}"
 . "$(dirname "$0")/_remote.sh"
-# Hand the screen back to Brilliant: neutralise the display drop-in (empty [Service]) and restart its services.
-remote 'systemctl disable --now ha-kiosk ha-kiosk-display;
-        D=/etc/systemd/system/message_bus.service.d/ha-kiosk-display.conf
-        [ -f "$D" ] && printf "[Service]\n" > "$D" && systemctl daemon-reload && systemctl restart message_bus;
-        systemctl enable --now switch_ui_app && systemctl is-active switch_ui_app'
+remote "if [ -x /etc/ha-kiosk/install-local.sh ]; then sh /etc/ha-kiosk/install-local.sh --uninstall $PURGE;
+        else echo 'Older install: run scripts/install.sh $PANEL once, then uninstall again'; exit 1; fi"

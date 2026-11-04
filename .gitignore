@@ -8,3 +8,4 @@ config/kiosk.env
 config/token
 native/layout.json
 *.log
+dist/

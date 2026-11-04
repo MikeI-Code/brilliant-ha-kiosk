@@ -1,0 +1,37 @@
+# Attach the installable bundle to every GitHub release.
+# Publishing a release (tag vX.Y.Z) builds dist/brilliant-ha-kiosk-vX.Y.Z.tar.gz and its .sha256
+# and uploads both as release assets, so other tools can download a pinned, checksummed version.
+name: Release bundle
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)build the bundle for
+        required: true
+permissions:
+  contents: write
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      - name: Build bundle
+        run: bash scripts/build-bundle.sh "$TAG"
+      - name: Check bundle
+        run: |
+          tar -xzf "dist/brilliant-ha-kiosk-$TAG.tar.gz" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/brilliant-ha-kiosk-$TAG"
+          sha256sum -c MANIFEST.sha256 > /dev/null
+          sh -n install-local.sh
+          test "$(cat VERSION)" = "$TAG"
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/brilliant-ha-kiosk-$TAG.tar.gz dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"

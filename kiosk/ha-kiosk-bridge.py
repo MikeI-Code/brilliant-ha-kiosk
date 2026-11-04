@@ -139,6 +139,9 @@ def start_mqtt():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     env = {**mod.read_env("/etc/ha-kiosk/kiosk.env"), **mod.read_env(mod.OVERRIDES)}
+    if env.get("KIOSK_MQTT", "1").strip().lower() in ("0", "off", "false", "no"):
+        print("bridge: MQTT off (KIOSK_MQTT=0; another tool publishes this panel)", flush=True)
+        return
     if not env.get("MQTT_HOST"):
         print("bridge: MQTT off (no MQTT_HOST)", flush=True)
         return
