@@ -254,10 +254,14 @@ scroll a page.
 
 A light tile marked **"this switch"** is the panel's own wired load, controlled locally (section 5).
 
-**Sonos tab**: pick a room at the top; see album art, title and progress; use shuffle,
+**Music tab** (works with any Home Assistant media player: Sonos, WiiM/LinkPlay, Music Assistant,
+Bluesound, HEOS, Chromecast, ...): pick a room at the top; see album art, title and progress; use shuffle,
 previous, play/pause, next and repeat; set volume and mute; use **"Play in these rooms too"** to
 group speakers. **Favorites** shows everything you've starred in the Sonos app (SiriusXM channels,
-playlists, radio) as tap-to-play tiles, grouped as Sonos groups them.
+playlists, radio) as tap-to-play tiles, grouped as Sonos groups them. Players without a favorites
+folder show the top of their own media library instead (WiiM presets, Music Assistant playlists and
+radio, ...). A **Source** row appears for players with inputs (Wi-Fi, Bluetooth, line-in, optical), and
+the grouping row only appears for players whose integration supports grouping.
 
 **Connection**: if the panel loses Home Assistant it shows a red *Connecting to Home Assistant…*
 banner and reconnects on its own every few seconds. The wired light still works locally.
@@ -273,7 +277,7 @@ a second. The last layout is cached on each panel, so it boots with your screens
 | In the HA dashboard | On the panel |
 |---|---|
 | A view (tab at the top of the dashboard) | A tab in the bottom bar: the view's title and icon |
-| A view whose **URL** is `sonos` | The Sonos tab. Every media player on it becomes a speaker in the room picker. |
+| A view whose **URL** is `music` (or `sonos`) | The Music tab. Every media player on it, from any integration, becomes a speaker in the room picker. |
 | **Heading** card | Starts a titled section |
 | **Tile** card | A tile. Its kind follows the entity: light, switch/fan/input_boolean, scene/script, climate, media player, sensor, binary sensor. |
 | Tile **width** (Layout → columns 12 / 6 / 4 / 3) | Full / half / third / quarter width |
@@ -516,7 +520,7 @@ UI. Files stay in `/etc/ha-kiosk`, so you can switch back with `install.sh`.
 | **Motion wake** never fires | Brilliant's motion detection may be off on your panel. Check with `tools/brilliant_bus.py get faceplate_peripheral`. Use `MOTION_WAKE=off` if it misfires. |
 | **Screensaver shows the wrong photos** | Add your own (`.private/photos/` or HA **Media → My media**); then only yours are shown. `journalctl -u ha-kiosk-display` says which source is in use, e.g. `54 screensaver photos (Brilliant app photos)`. |
 | New HA photos don't appear | Wait up to `PHOTO_SYNC_MINS`, or restart the bridge (`systemctl restart ha-kiosk-bridge`). `journalctl -u ha-kiosk-bridge` shows `photos: N from HA, +added -removed`. |
-| **Favorites empty** on the Sonos tab | Star stations and playlists in the Sonos app. They appear as Sonos Favorites. |
+| **Favorites empty** on the Music tab | Sonos: star stations and playlists in the Sonos app. Other players: check the player's media browser in HA (Media → pick the player); the tab shows what HA shows there. |
 | Panel doesn't appear in HA (MQTT) | Check `MQTT_HOST`/`MQTT_USER`/`MQTT_PASSWORD`. On the panel, `journalctl -u ha-kiosk-bridge` shows `mqtt: connected …` or the error. HA's MQTT integration must be set up. |
 | An HA switch (screensaver, night…) "doesn't stick" | It's saved in `/var/lib/ha-kiosk/overrides.env`. Delete that file to go back to `kiosk.env`. |
 | Want the stock UI back | `scripts/uninstall.sh panel1` |

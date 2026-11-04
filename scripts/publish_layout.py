@@ -48,8 +48,8 @@ def to_lovelace(layout):
     for page in layout.get("pages", []):
         view = {"title": page.get("title", "Page"), "icon": mdi(page.get("icon")), "type": "sections",
                 "path": re.sub(r"[^a-z0-9]+", "-", page.get("title", "page").lower()).strip("-") or "page"}
-        if page.get("type") == "sonos":
-            view["path"] = "sonos"
+        if page.get("type") in ("music", "sonos"):
+            view["path"] = "music"
             view["sections"] = [{"type": "grid", "cards": [{"type": "heading", "heading": "Speakers"}] + [
                 {"type": "tile", "entity": s["entity"], "name": s.get("name")} for s in page.get("speakers", [])]}]
         else:

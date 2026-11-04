@@ -2,7 +2,7 @@
 // screens can be edited in HA's own drag-and-drop dashboard editor.
 //
 // Mapping (see README "Editing the screens"):
-//   view                    -> tab (title, icon). A view whose URL/path is "sonos" -> the Sonos tab,
+//   view                    -> tab (title, icon). A view whose URL/path is "music" (or "sonos") -> the Music tab,
 //                              with every media_player on it as a speaker.
 //   heading card            -> starts a titled section
 //   tile / button / entity  -> a tile; kind comes from the entity's domain
@@ -96,8 +96,9 @@ function convert(config, nameOf) {
             else groups.push([c]);
         });
 
-        if (String(view.path || "").toLowerCase() === "sonos") {
-            page.type = "sonos"; page.speakers = [];
+        var vpath = String(view.path || "").toLowerCase();
+        if (vpath === "music" || vpath === "sonos") {
+            page.type = "music"; page.speakers = [];
             groups.forEach(function (g) { g.forEach(function (c) { itemsOf(c).forEach(function (it) {
                 if (it.type === "media") page.speakers.push({ entity: it.entity, name: it.name || nameOf(it.entity) });
             }); }); });

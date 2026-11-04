@@ -22,7 +22,7 @@ Item {
     property string loadEntity: ""
     property var gestures: ({})
     property bool multi: false           // a gesture with 2+ fingers is in progress
-    property var speakers: []            // ROOM_SPEAKERS: this room's Sonos speakers (3-finger volume)
+    property var speakers: []            // ROOM_SPEAKERS: this room's speakers (3-finger volume)
     property var _volStart: ({})
     signal changed()
 

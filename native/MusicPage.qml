@@ -1,4 +1,5 @@
-// Sonos: room picker, big now-playing, transport, volume, grouping, favorites.
+// Music: room picker, big now-playing, transport, volume, source, grouping, favorites/library.
+// Works with any HA media_player (Sonos, WiiM/LinkPlay, Music Assistant, Bluesound, HEOS, Cast, ...).
 import QtQuick 2.15
 import "."
 
@@ -32,31 +33,54 @@ Flickable {
         if (playing && a.media_position_updated_at) p += nowSecs - Date.parse(a.media_position_updated_at) / 1000;
         return Math.max(0, Math.min(1, p / a.media_duration));
     }
-    // favorites: [{ title: "Stations", items: [browse items] }, ...] — Sonos groups favorites by kind.
+    // HA media_player feature bits
+    readonly property int features: a.supported_features || 0
+    readonly property bool canGroup: (features & 524288) !== 0      // GROUPING
+    readonly property bool canBrowse: (features & 131072) !== 0     // BROWSE_MEDIA
+    readonly property var sources: (features & 2048) && a.source_list ? a.source_list : []   // SELECT_SOURCE
+
+    // Tiles: [{ title: "Stations", items: [browse items] }, ...], from whatever the player's HA
+    // integration offers. Players with a "favorites" folder (Sonos, HEOS, ...) show those; every other
+    // provider (WiiM/LinkPlay, Music Assistant, Bluesound, Spotify, Cast, ...) shows the top level of
+    // its own media browser: playable items, plus one level of each folder.
+    property int browseGen: 0
     function loadFavorites() {
         if (!entity || !Ha.connected) return;
-        Ha.send({ type: "media_player/browse_media", entity_id: entity, media_content_type: "favorites", media_content_id: "" }, function (r) {
-            if (!page) return;   // page was rebuilt (layout changed) before the reply arrived
-            if (!r.success) { page.favError = "Favorites unavailable"; console.log("sonos: favorites " + JSON.stringify(r.error)); return; }
-            var kids = r.result.children || [];
+        var gen = ++browseGen, ent = entity;
+        if (!canBrowse && st) { favorites = []; favError = ""; return; }
+        function stale() { return !page || gen !== page.browseGen; }
+        function expand(kids, looseTitle, emptyMsg) {
             var loose = kids.filter(function (k) { return k.can_play; });
-            var folders = kids.filter(function (k) { return !k.can_play && k.can_expand; });
+            var folders = kids.filter(function (k) { return !k.can_play && k.can_expand; }).slice(0, 8);
             var groups = new Array(folders.length);
             function done() {
-                if (!page) return;
+                if (stale()) return;
                 var out = groups.filter(function (g) { return g && g.items.length; });
-                if (loose.length) out.unshift({ title: "Favorites", items: loose });
+                if (loose.length) out.unshift({ title: looseTitle, items: loose.slice(0, 30) });
                 page.favorites = out;
-                page.favError = out.length ? "" : "No Sonos favorites yet — star stations and playlists in the Sonos app";
+                page.favError = out.length ? "" : emptyMsg;
             }
             if (folders.length === 0) { done(); return; }
             var left = folders.length;
             folders.forEach(function (f, i) {
-                Ha.send({ type: "media_player/browse_media", entity_id: page.entity, media_content_type: f.media_content_type, media_content_id: f.media_content_id }, function (r2) {
-                    groups[i] = { title: f.title, items: r2.success ? (r2.result.children || []).filter(function (k) { return k.can_play; }) : [] };
+                Ha.send({ type: "media_player/browse_media", entity_id: ent, media_content_type: f.media_content_type, media_content_id: f.media_content_id }, function (r2) {
+                    groups[i] = { title: f.title, items: r2.success ? (r2.result.children || []).filter(function (k) { return k.can_play; }).slice(0, 30) : [] };
                     if (--left === 0) done();
                 });
             });
+        }
+        function browseRoot() {
+            Ha.send({ type: "media_player/browse_media", entity_id: ent }, function (r) {
+                if (stale()) return;
+                if (!r.success) { page.favorites = []; page.favError = "This player has nothing to browse"; console.log("music: browse " + JSON.stringify(r.error)); return; }
+                expand(r.result.children || [], "Library", "Nothing to browse on this player yet");
+            });
+        }
+        Ha.send({ type: "media_player/browse_media", entity_id: ent, media_content_type: "favorites", media_content_id: "" }, function (r) {
+            if (stale()) return;
+            var kids = r.success ? (r.result.children || []) : [];
+            if (kids.length) expand(kids, "Favorites", "No favorites yet — add some in the player's own app");
+            else browseRoot();
         });
     }
     function play(item) {
@@ -195,9 +219,35 @@ Flickable {
             }
         }
 
-        // Grouping
-        Label { size: 13; color: Theme.textDim; font.weight: Font.DemiBold; text: "PLAY IN THESE ROOMS TOO" }
+        // Source / input (WiiM inputs, Spotify Connect, line-in, TV, ...), when the player has them
+        Label { size: 13; color: Theme.textDim; font.weight: Font.DemiBold; text: "SOURCE"; visible: page.sources.length > 1 }
+        Flickable {
+            visible: page.sources.length > 1
+            width: parent.width; height: 40 * Theme.u
+            contentWidth: srcRow.width; clip: true
+            flickableDirection: Flickable.HorizontalFlick; boundsBehavior: Flickable.StopAtBounds
+            Row {
+                id: srcRow; spacing: 8 * Theme.u
+                Repeater {
+                    model: page.sources
+                    Rectangle {
+                        readonly property bool isSel: modelData === page.a.source
+                        height: 36 * Theme.u; width: srcLabel.width + 28 * Theme.u; radius: height / 2
+                        color: isSel ? Theme.blue : Theme.card
+                        border.color: isSel ? Theme.blue : Theme.border
+                        Label { id: srcLabel; anchors.centerIn: parent; size: 13; font.weight: Font.DemiBold; text: modelData
+                                color: parent.isSel ? Theme.bg : Theme.text }
+                        MouseArea { anchors.fill: parent; onClicked: if (!Panel.multi) Ha.callService("media_player", "select_source", { source: modelData }, page.entity) }
+                    }
+                }
+            }
+        }
+
+        // Grouping (only for players whose integration supports it; HA groups players of the same kind)
+        Label { size: 13; color: Theme.textDim; font.weight: Font.DemiBold; text: "PLAY IN THESE ROOMS TOO"
+                visible: page.canGroup && page.speakers.length > 1 }
         Flow {
+            visible: page.canGroup && page.speakers.length > 1
             width: parent.width; spacing: 8 * Theme.u
             Repeater {
                 model: page.speakers
@@ -238,7 +288,7 @@ Flickable {
                         Image { anchors.fill: parent; asynchronous: true; fillMode: Image.PreserveAspectCrop
                                 source: page.pic(modelData.thumbnail); sourceSize.width: width; sourceSize.height: height
                                 visible: status === Image.Ready }
-                        Icon { anchors.centerIn: parent; size: 30; name: "star"; visible: !modelData.thumbnail }
+                        Icon { anchors.centerIn: parent; size: 30; name: modelData.can_play ? "star" : "folder"; visible: !modelData.thumbnail }
                     }
                     Label { anchors { top: thumb.bottom; topMargin: 6 * Theme.u; left: parent.left; right: parent.right; margins: 6 * Theme.u }
                             size: 11; text: modelData.title; horizontalAlignment: Text.AlignHCenter }

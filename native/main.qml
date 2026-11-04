@@ -80,13 +80,13 @@ Window {
         delegate: Loader {
             width: pages.width; height: pages.height
             asynchronous: index !== 0
-            sourceComponent: modelData.type === "sonos" ? sonosPage : gridPage
+            sourceComponent: (modelData.type === "music" || modelData.type === "sonos") ? musicPage : gridPage
             property var spec: modelData
         }
         Component { id: gridPage
             Page { spec: parent.spec; weatherEntity: win.layout.weather || ""; insideEntity: win.layout.insideTemp || "" } }
-        Component { id: sonosPage
-            SonosPage { speakers: parent.spec.speakers || [] } }
+        Component { id: musicPage
+            MusicPage { speakers: parent.spec.speakers || [] } }
     }
 
     // Connection banner
@@ -217,7 +217,7 @@ Window {
             reset.restart();
         }
         Timer { id: reset; interval: 250; onTriggered: Panel.multi = false }
-        // Light: every 150 ms. Speakers go through HA and Sonos, so a little slower.
+        // Light: every 150 ms. Speakers go through HA, so a little slower.
         Timer { id: send; interval: gest.sliding === "volume" ? 300 : 150; repeat: true; running: gest.sliding !== ""
                 onTriggered: gest.push() }
         Timer { id: toastTimer; interval: 1200; onTriggered: gest.toast = "" }

@@ -39,7 +39,7 @@
       ]
     },
     {
-      "title": "Sonos", "icon": "speaker-multiple", "type": "sonos",
+      "title": "Music", "icon": "speaker-multiple", "type": "music",
       "speakers": [
         { "entity": "media_player.living_room", "name": "Living Room" },
         { "entity": "media_player.kitchen", "name": "Kitchen" }
