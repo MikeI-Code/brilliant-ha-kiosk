@@ -226,6 +226,33 @@ automation:
 > Brilliant's own screen settings, which this kiosk deliberately sidelines (see §6), so they would
 > have no effect here.
 
+### 2.8 Universal Devices eisy / Polisy / ISY users
+
+If your lighting runs on a [Universal Devices](https://www.universal-devices.com/) hub (eisy,
+Polisy or ISY994 with IoX), the panel can control all of it. The panel talks to Home Assistant, and
+Home Assistant has a built-in integration for these hubs:
+
+1. In Home Assistant: **Settings → Devices & services → Add integration → Universal Devices ISY/IoX**.
+   It is usually discovered automatically. Enter the hub's address and your IoX admin username and
+   password.
+2. Your Insteon, Z-Wave and Zigbee devices, scenes, and any programs or variables you choose to
+   expose appear as normal Home Assistant entities (`light.*`, `switch.*`, `binary_sensor.*`, ...).
+   Devices that come from IoX plugins (PG3 node servers) appear too.
+3. Add them to the panel's dashboard in HA's editor (§4) like any other entity. IoX scenes work well
+   as tiles: they turn several devices on or off together, the way the hub's own keypads do.
+
+Tips:
+
+* Status updates are pushed from the hub to Home Assistant as they happen, so tiles on the panel
+  stay in sync when someone uses a wall keypad.
+* To run an IoX program from the panel, expose the program in the integration's options and put its
+  button on a dashboard, or call it from a gesture (§5) with an action such as
+  `button.press:button.<program>`.
+* The panel's own wired light is controlled locally by the panel (§5). To let IoX programs see and
+  control the Brilliant panel itself, connect the panels to Home Assistant over MQTT (§2.7) and, if
+  you want, mirror its entities into IoX through Home Assistant. A native IoX plugin for Brilliant
+  panels is being evaluated.
+
 ---
 
 ## 3. Using the panel
