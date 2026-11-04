@@ -1,0 +1,4 @@
+singleton Ha 1.0 Ha.qml
+singleton Theme 1.0 Theme.qml
+singleton Icons 1.0 Icons.qml
+singleton Panel 1.0 Panel.qml

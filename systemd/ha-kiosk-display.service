@@ -1,0 +1,12 @@
+[Unit]
+Description=HA kiosk backlight manager (night sleep, idle dim, wake on touch)
+After=ha-kiosk.service
+PartOf=ha-kiosk.service
+
+[Service]
+ExecStart=/bin/sh /etc/ha-kiosk/ha-kiosk-display.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=ha-kiosk.service

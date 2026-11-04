@@ -1,0 +1,61 @@
+{
+  "weather": "weather.forecast_home",
+  "insideTemp": "sensor.living_room_temperature",
+  "pages": [
+    {
+      "title": "Home", "icon": "home",
+      "sections": [
+        { "type": "hero" },
+        { "title": "Scenes", "items": [
+          { "type": "scene", "entity": "scene.morning", "name": "Morning", "icon": "weather-sunset-up", "size": "quarter" },
+          { "type": "scene", "entity": "scene.evening", "name": "Evening", "icon": "weather-sunset", "size": "quarter" },
+          { "type": "scene", "entity": "scene.goodnight", "name": "Night", "icon": "weather-night", "size": "quarter" },
+          { "type": "alloff", "name": "All off", "icon": "lightbulb-group-off-outline", "size": "quarter" }
+        ]},
+        { "title": "Kitchen", "items": [
+          { "type": "light", "entity": "light.kitchen_island", "name": "Island" },
+          { "type": "light", "entity": "light.kitchen_table", "name": "Table" }
+        ]},
+        { "title": "Climate", "items": [
+          { "type": "climate", "entity": "climate.downstairs", "name": "Downstairs" },
+          { "type": "climate", "entity": "climate.upstairs", "name": "Upstairs" }
+        ]},
+        { "title": "Now playing", "hideWhenEmpty": true, "items": [
+          { "type": "media", "entity": "media_player.living_room", "name": "Living Room", "size": "full", "onlyPlaying": true },
+          { "type": "media", "entity": "media_player.kitchen", "name": "Kitchen", "size": "full", "onlyPlaying": true }
+        ]}
+      ]
+    },
+    {
+      "title": "Lights", "icon": "lightbulb-group",
+      "sections": [
+        { "title": "Living Room", "items": [
+          { "type": "light", "entity": "light.living_room", "name": "Ceiling" },
+          { "type": "switch", "entity": "switch.living_room_lamp", "name": "Lamp", "icon": "floor-lamp" }
+        ]},
+        { "title": "Bedroom", "items": [
+          { "type": "light", "entity": "light.bedroom", "name": "Bedroom" }
+        ]}
+      ]
+    },
+    {
+      "title": "Sonos", "icon": "speaker-multiple", "type": "sonos",
+      "speakers": [
+        { "entity": "media_player.living_room", "name": "Living Room" },
+        { "entity": "media_player.kitchen", "name": "Kitchen" }
+      ]
+    },
+    {
+      "title": "House", "icon": "home-analytics",
+      "sections": [
+        { "title": "Motion", "items": [
+          { "type": "binary", "entity": "binary_sensor.front_door_motion", "name": "Front door", "icon": "run" }
+        ]},
+        { "title": "Temperatures", "items": [
+          { "type": "sensor", "entity": "sensor.living_room_temperature", "name": "Living", "icon": "thermometer", "size": "third" },
+          { "type": "sensor", "entity": "sensor.bedroom_temperature", "name": "Bedroom", "icon": "thermometer", "size": "third" }
+        ]}
+      ]
+    }
+  ]
+}

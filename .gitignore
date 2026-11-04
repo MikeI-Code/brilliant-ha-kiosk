@@ -1,0 +1,10 @@
+# Everything specific to your home lives in .private/ (see README): panel passwords, HA token,
+# kiosk.env, layout.json, dashboard YAML. Never commit it.
+.private/
+# Older locations, kept ignored in case of stray copies
+.env
+.env.*
+config/kiosk.env
+config/token
+native/layout.json
+*.log

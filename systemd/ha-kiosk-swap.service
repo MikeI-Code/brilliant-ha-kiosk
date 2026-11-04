@@ -1,0 +1,13 @@
+[Unit]
+Description=HA kiosk swap file (no zram in the Brilliant kernel)
+After=local-fs.target
+ConditionPathExists=/etc/ha-kiosk/ha-kiosk-swap.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/ha-kiosk/ha-kiosk-swap.sh
+ExecStop=-/usr/sbin/swapoff /var/lib/ha-kiosk-swap/swapfile
+
+[Install]
+WantedBy=multi-user.target

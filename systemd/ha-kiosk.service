@@ -1,0 +1,35 @@
+[Unit]
+Description=Home Assistant panel UI (replaces Brilliant switch-ui)
+Wants=message_bus.service network-online.target ha-kiosk-display.service
+After=network-online.target message_bus.service
+Conflicts=switch_ui_app.service
+
+[Service]
+User=root
+EnvironmentFile=/etc/ha-kiosk/kiosk.env
+Environment=QT_QPA_PLATFORM=eglfs
+Environment=QT_QPA_EGLFS_INTEGRATION=eglfs_viv
+Environment=QT_QPA_EGLFS_HIDECURSOR=1
+Environment=QTWEBENGINE_DISABLE_SANDBOX=1
+Environment=XDG_RUNTIME_DIR=/run/ha-kiosk
+Environment=QML_XHR_ALLOW_FILE_READ=1
+# Lets the native UI cache the layout it gets from HA in /var/lib/ha-kiosk
+Environment=QML_XHR_ALLOW_FILE_WRITE=1
+# GPU raster + 2 raster threads: the i.MX6 GC880 is blocklisted by default, which forces slow software raster
+Environment="QTWEBENGINE_CHROMIUM_FLAGS=--ignore-gpu-blocklist --enable-gpu-rasterization --num-raster-threads=2 --disable-smooth-scrolling"
+RuntimeDirectory=ha-kiosk
+RuntimeDirectoryMode=0700
+StateDirectory=ha-kiosk
+# Stop the boot splash so it doesn't fight for the framebuffer
+ExecStartPre=-/usr/bin/pkill -x fbi
+# KIOSK_MODE (kiosk.env): native = Qt Quick UI talking to HA's API (fast, default)
+#                         web    = HA's web dashboard in QtWebEngine (slow on this CPU)
+# qmlscene (not qml) sets AA_ShareOpenGLContexts, which QtWebEngine needs for GPU compositing.
+ExecStart=/bin/sh -c 'if [ "$${KIOSK_MODE:-native}" = web ]; then exec /usr/bin/qmlscene /etc/ha-kiosk/kiosk.qml; else exec /usr/bin/qmlscene /etc/ha-kiosk/native/main.qml; fi'
+# Show the splash again if the kiosk stops, like the stock UI does
+ExecStopPost=-/usr/bin/fbi -noverbose -vt 1 /etc/splash-720x1280p.png -persist -t 1 -1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

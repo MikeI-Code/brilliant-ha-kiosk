@@ -1,0 +1,77 @@
+# Panel Dark — wall-panel theme for the Brilliant HA kiosk.
+# Install: copy this file to <config>/themes/ and make sure configuration.yaml has
+#   frontend:
+#     themes: !include_dir_merge_named themes
+# then Developer Tools → YAML → Reload themes, and pick "Panel Dark" in the dashboard/profile.
+Panel Dark:
+  # Base surfaces — deep graphite, not pure black (the panel is LCD, pure black looks grey anyway)
+  primary-background-color: "#0e1013"
+  secondary-background-color: "#15181d"
+  lovelace-background: "#0e1013"
+  card-background-color: "#181b21"
+  ha-card-background: "#181b21"
+  ha-card-border-radius: "20px"
+  ha-card-border-width: "1px"
+  ha-card-border-color: "#232730"
+  ha-card-box-shadow: "none"
+  divider-color: "#232730"
+  # Text
+  primary-text-color: "#eef0f3"
+  secondary-text-color: "#8b919c"
+  disabled-text-color: "#555b66"
+  text-primary-color: "#0e1013"
+  # Accent — warm amber, reads as "light on"
+  primary-color: "#f5b54a"
+  accent-color: "#f5b54a"
+  dark-primary-color: "#d99a2b"
+  light-primary-color: "#ffd48a"
+  # State colors
+  state-icon-color: "#8b919c"
+  state-active-color: "#f5b54a"
+  state-light-active-color: "#f5b54a"
+  state-switch-active-color: "#f5b54a"
+  state-fan-active-color: "#5ec2e8"
+  state-climate-heat-color: "#ff8a4c"
+  state-climate-cool-color: "#5ec2e8"
+  state-climate-auto-color: "#7bd88f"
+  state-cover-active-color: "#a78bfa"
+  state-lock-locked-color: "#7bd88f"
+  state-lock-unlocked-color: "#ff6b6b"
+  state-lock-jammed-color: "#ff6b6b"
+  state-alarm_control_panel-armed_away-color: "#7bd88f"
+  state-alarm_control_panel-armed_home-color: "#7bd88f"
+  state-alarm_control_panel-armed_night-color: "#7bd88f"
+  state-alarm_control_panel-disarmed-color: "#8b919c"
+  state-alarm_control_panel-triggered-color: "#ff6b6b"
+  state-media_player-active-color: "#5ec2e8"
+  success-color: "#7bd88f"
+  warning-color: "#f5b54a"
+  error-color: "#ff6b6b"
+  info-color: "#5ec2e8"
+  # Chrome
+  app-header-background-color: "#0e1013"
+  app-header-text-color: "#eef0f3"
+  app-header-border-bottom: "1px solid #232730"
+  sidebar-background-color: "#0e1013"
+  sidebar-icon-color: "#8b919c"
+  sidebar-selected-icon-color: "#f5b54a"
+  sidebar-selected-text-color: "#f5b54a"
+  # Controls
+  switch-checked-color: "#f5b54a"
+  switch-checked-button-color: "#f5b54a"
+  switch-checked-track-color: "#f5b54a"
+  switch-unchecked-button-color: "#555b66"
+  switch-unchecked-track-color: "#2a2f38"
+  slider-color: "#f5b54a"
+  slider-track-color: "#2a2f38"
+  paper-slider-knob-color: "#f5b54a"
+  input-fill-color: "#15181d"
+  mdc-theme-primary: "#f5b54a"
+  ha-dialog-surface-background: "#181b21"
+  # Type — slightly larger for arm's-length reading on a wall
+  ha-font-size-m: "15px"
+  ha-font-size-l: "17px"
+  ha-font-size-xl: "22px"
+  ha-font-size-3xl: "34px"
+  modes:
+    dark: {}

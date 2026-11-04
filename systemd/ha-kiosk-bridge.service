@@ -1,0 +1,16 @@
+[Unit]
+Description=HA kiosk local bridge (wall load control over the Brilliant message bus)
+After=message_bus.service
+Wants=message_bus.service
+PartOf=ha-kiosk.service
+
+[Service]
+User=root
+EnvironmentFile=-/etc/ha-kiosk/kiosk.env
+WorkingDirectory=/data/switch-embedded
+ExecStart=/data/switch-embedded/env/bin/python /etc/ha-kiosk/ha-kiosk-bridge.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=ha-kiosk.service
