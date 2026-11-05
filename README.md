@@ -155,3 +155,5 @@ project that bridges Brilliant panels to Home Assistant over MQTT.
 *Brilliant is a trademark of its respective owner. This is an independent community project, not
 affiliated with or endorsed by Brilliant or the Home Assistant project. Use at your own risk: it
 changes how a mains-wired device behaves, so keep the stock UI one `uninstall.sh` away.*
+
+<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="MikeiMB" data-color="#FFDD00" data-emoji="☕"  data-font="Cookie" data-text="Buy me an espresso please" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
