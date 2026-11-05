@@ -254,6 +254,7 @@ Window {
         anchors.fill: parent; z: 90
         active: win.displayState === "photos"
         visible: active
+        weatherEntity: win.layout.weather || ""
     }
     Item {
         anchors.fill: parent; z: 100

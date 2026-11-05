@@ -376,7 +376,8 @@ The **`ha-kiosk-display`** service owns the screen:
 
 * **Awake**: full brightness (or the smart-dimming level) while you use it.
 * **Screensaver**: after `IDLE_DIM_SECS` (5 min) without a touch during the day, a photo slideshow
-  with a clock. Set `SCREENSAVER=0` to just dim instead. See **Choosing the photos** below.
+  with a clock and the current weather (from the Home weather card; `SCREENSAVER_WEATHER=0` hides it).
+  Set `SCREENSAVER=0` to just dim instead. See **Choosing the photos** below.
 * **Night**: from `SLEEP_START` to `SLEEP_END` (21:00–06:30) the screen is off. A touch wakes it
   for `NIGHT_WAKE_SECS` (3 min).
 * **Touch to wake**: the waking touch is swallowed, so it never presses anything. After the
@@ -436,6 +437,7 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `DAY_LEVEL` | `15` | Awake brightness (backlight 0–15) |
 | `DIM_LEVEL` | `4` | Idle brightness when `SCREENSAVER=0` |
 | `IDLE_DIM_SECS` | `300` | Seconds without a touch before the screensaver |
+| `SCREENSAVER_WEATHER` | `1` | Show current weather on the screensaver (`0` hides it) |
 | `NIGHT_WAKE_SECS` | `180` | How long a touch at night keeps the screen on |
 | `SCREENSAVER` | `1` | `1` = photo slideshow, `0` = just dim |
 | `PHOTO_LEVEL` | `12` | Screensaver brightness |
