@@ -22,9 +22,14 @@ PHOTO_LEVEL=${PHOTO_LEVEL:-12}
 #      /var/lib/ha-kiosk/ha-photos (synced from Home Assistant's media library by the bridge)
 #   2. otherwise the Brilliant app's photos, 3. otherwise Brilliant's stock art.
 # Setting PHOTO_DIRS explicitly overrides all of this.
+# STOCK_ART: fallback (default) = stock art only when there are no photos; mix = always add it;
+# off = never. Only Brilliant's real art libraries are used (not the demo/retail albums), read in
+# place from the firmware's preload folder; nothing is copied.
 OWN_PHOTO_DIRS="/etc/ha-kiosk/photos /var/lib/ha-kiosk/ha-photos"
 BRILLIANT_PHOTO_DIRS="/var/brilliant/object_store/disk_cache /var/brilliant/object_store/upload_queue"
 STOCK_DIR=/etc/brilliant/content_preload/art_library
+STOCK_LIBS="featured nature still_art animals"
+STOCK_ART=${STOCK_ART:-fallback}
 # CPU governor: full speed while someone is using the screen, frugal otherwise.
 CPU_AWAKE_GOV=${CPU_AWAKE_GOV:-performance}
 CPU_IDLE_GOV=${CPU_IDLE_GOV:-schedutil}
@@ -50,6 +55,11 @@ list_images() {   # list_images <dir>... : JPEG/PNG files, detected by content
         esac
     done
 }
+list_stock() {    # Brilliant's preloaded art libraries, referenced in place
+    for lib in $STOCK_LIBS; do
+        find "$STOCK_DIR/$lib" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) 2>/dev/null
+    done
+}
 build_photos() {
     out="$STATE_DIR/photos.txt"
     if [ -n "$PHOTO_DIRS" ]; then list_images $PHOTO_DIRS > "$out.tmp"; src="PHOTO_DIRS"
@@ -57,7 +67,11 @@ build_photos() {
         list_images $OWN_PHOTO_DIRS > "$out.tmp"; src="your photos"
         [ -s "$out.tmp" ] || { list_images $BRILLIANT_PHOTO_DIRS > "$out.tmp"; src="Brilliant app photos"; }
     fi
-    [ -s "$out.tmp" ] || { find "$STOCK_DIR" -type f \( -name '*.jpg' -o -name '*.png' \) > "$out.tmp" 2>/dev/null; src="Brilliant stock art"; }
+    case "$STOCK_ART" in
+        off) ;;
+        mix) list_stock >> "$out.tmp"; src="$src + Brilliant stock art" ;;
+        *) [ -s "$out.tmp" ] || { list_stock > "$out.tmp"; src="Brilliant stock art"; } ;;
+    esac
     mv "$out.tmp" "$out"
     echo "display: $(wc -l < "$out") screensaver photos ($src)"
 }

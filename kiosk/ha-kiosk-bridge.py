@@ -54,6 +54,10 @@ class LoadControl:
         v = self._with_bus(lambda b: b.peripheral(peripheral).variables) or {}
         return {k: x.value for k, x in v.items()}
 
+    def peripherals(self):
+        """Names of all peripherals on this panel (read-only)."""
+        return sorted(self._with_bus(lambda b: b.device().peripherals) or {})
+
     def info(self):
         def get(b):
             room = (b.peripheral("art_config_peripheral").variables or {}).get("display_name")

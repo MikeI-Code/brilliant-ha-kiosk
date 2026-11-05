@@ -186,8 +186,11 @@ MQTT_PASSWORD=<that user's password>
 | Entity | What it does |
 |---|---|
 | **Wired light** | The panel's own load: on/off and brightness, controlled locally over Brilliant's bus |
-| Load power, Dimmer temperature | Live wattage and dimmer temperature |
-| Faceplate / CPU temperature | Diagnostics |
+| Load power, Gangbox temperature | Power drawn by the wired load and the dimmer board's temperature, one pair per load (`Load 2 power`, … on multi-gang panels). Brilliant doesn't document the unit; it is almost certainly watts, and Brilliant only reports changes larger than about 40 W / 10 %, so treat it as approximate. For energy, add an HA *Integral* helper on it. |
+| Faceplate / CPU temperature, Brilliant firmware, Last boot | Diagnostics (polled every `DIAG_SECS`) |
+| HomeKit paired, HomeKit enabled | Diagnostics: whether Brilliant's built-in HomeKit accessory is enabled and paired (see below) |
+| Shelly BLE sensors | Diagnostic: number of Shelly BLU sensors Brilliant's own Bluetooth scan tracks; motion, contact, battery, RSSI and last-heard time per sensor are in its attributes. `0` if you have none. |
+| Load minimum / maximum dim level, dimming edge, dim calibration | Diagnostics, **disabled by default** (enable them on the device page): the load's dimming calibration (levels 0–1000, raw edge flag, calibration `idle` / `running` / `success`). Read-only: change them in the Brilliant app, never from HA. |
 | **Motion** | On when Brilliant's motion logic wakes its screen (clears after `MOTION_CLEAR_SECS`) |
 | Display | `awake`, `photos`, `dim` or `asleep` |
 | Backlight, Room light level | Current backlight (0–15) and the smart-dimming room light estimate (%) |
@@ -218,6 +221,15 @@ automation:
 ```
 
 (Entity IDs follow the device name; check yours under the device page.)
+
+**HomeKit.** Brilliant's firmware still runs its own HomeKit accessory with the kiosk installed. It
+exposes only the panel's wired load (no motion or buttons), so it adds nothing over the MQTT light
+above; use it only if you want Siri / Apple Home control. Pair it through Brilliant's app ("add to
+HomeKit"): the panel only accepts pairing for about 10 minutes after its HomeKit service starts.
+While that pairing window is open, Brilliant writes the setup code (an `X-HM://` URI) to the panel's
+system journal in plain text, so treat panel logs as sensitive and don't paste them anywhere. An
+accessory can belong to only one HomeKit controller, and re-pairing after a reset depends on a
+token from Brilliant's cloud. The kiosk never pairs or changes HomeKit; it only shows its state.
 
 > **brilliant-mqtt.** The community project
 > [brilliant-mqtt](https://github.com/joyfulhouse/brilliant-mqtt) also publishes Brilliant panels
@@ -252,6 +264,97 @@ Tips:
   control the Brilliant panel itself, connect the panels to Home Assistant over MQTT (§2.7) and, if
   you want, mirror its entities into IoX through Home Assistant. A native IoX plugin for Brilliant
   panels is being evaluated.
+
+### 2.9 Voice assistant and announcements (optional, off by default)
+
+The panel has microphones and a small speaker. With `KIOSK_VOICE=1` the `ha-kiosk-voice` service
+turns it into a **Home Assistant voice satellite** (Wyoming protocol, for Assist) and an
+**announcement speaker**. It uses Brilliant's Python only (no extra packages) and about 16 MB of
+memory. It is off unless you turn it on, and you should leave it off on bedroom panels.
+
+**Turn it on** for one panel by adding this to `.private/panel1.kiosk.env`, then run
+`scripts/install.sh panel1`:
+
+```sh
+KIOSK_VOICE=1
+```
+
+The installer enables `ha-kiosk-voice.service` only when `KIOSK_VOICE=1`, and disables it otherwise.
+
+**How it listens.** The satellite listens on TCP `VOICE_PORT` (default 10700), bound to the panel's
+LAN address only (the address it uses to reach `HA_URL`; override with `VOICE_BIND`). Only the
+Home Assistant host may connect (`VOICE_ALLOW`, default: the host in `HA_URL`). Brilliant's
+firewall drops unknown ports, so while the service runs it adds one runtime nftables rule that
+accepts `VOICE_PORT` from the allowed host(s). The rule is removed when the service stops and is
+never saved.
+
+**Add it to Home Assistant**: go to **Settings → Devices & services → Add integration → Wyoming
+Protocol**, and enter the panel's IP address and port `10700`. You get an **Assist satellite**
+device with mute, pipeline and noise-suppression controls. Pick a pipeline that has working
+speech-to-text and text-to-speech (*Settings → Voice assistants*). Home Assistant Cloud needs an
+active subscription; without one, use local add-ons such as Whisper or Speech-to-Phrase, plus Piper.
+
+**Wake word.** The panel is too weak for a good on-device wake-word engine, so there are two modes:
+
+* `VOICE_WAKE=off` (default) is push-to-talk. Press the panel's **Talk** button entity, or call it
+  from an automation (for example on a `3_tap` gesture event). The panel listens for up to
+  `VOICE_LISTEN_SECS` seconds, and HA decides when you've stopped speaking.
+* `VOICE_WAKE=ha` streams the microphone to HA all the time, and HA's pipeline detects the wake word.
+  This needs a wake-word engine in HA (for example the openWakeWord add-on, set as the pipeline's
+  wake word), and it sends room audio over the LAN continuously.
+
+**Speaker and echo.** Replies and announcements play through Brilliant's shared `dmix_filtered`
+output. That output follows Brilliant's volume and has a 600 Hz high-pass filter, so it sounds thin,
+and music isn't the goal. There is no echo cancellation: the panel stops sending the microphone
+while it speaks (half duplex). Nothing is ever recorded to disk; mic audio only goes to HA.
+
+**MQTT entities** (when MQTT is set up, §2.7), on the same panel device:
+
+| Entity | What it does |
+|---|---|
+| **Talk** | Button: start listening (push-to-talk) |
+| **Announce** | Text: type a sentence to speak it with `VOICE_TTS_ENGINE`, or an `http(s)://…` or `/api/…` URL of an MP3/WAV to play. From automations: `text.set_value`. |
+| Speaker volume | Brilliant's speaker volume (`hardware_peripheral.output_volume`, 0–100). It affects Brilliant's own sounds too. |
+| Voice state | `idle`, `listening`, `processing` or `speaking` |
+
+HA's own `assist_satellite.announce` action works too, and it uses the satellite's pipeline TTS.
+
+### 2.10 Intercom between panels (optional, off by default)
+
+Panels can talk to each other, push-to-talk and audio only. It needs MQTT (§2.7): that's how the
+panels find each other. Turn it on per panel in `.private/<panel>.kiosk.env`, then run `install.sh`:
+
+```sh
+KIOSK_INTERCOM=1     # this panel can hear the others (speaker only)
+INTERCOM_MIC=1       # ...and can talk too (mic). Leave it off on bedroom panels.
+```
+
+A panel with `KIOSK_INTERCOM=1` alone is **receive only**: its microphone is never opened.
+
+**Talking.** On a panel with `INTERCOM_MIC=1`, a round microphone button appears above the tabs
+(bottom right) as soon as another intercom panel is online. Hold it to talk, let go to stop. The
+small label under it is the target; tap it to step through the rooms and **All panels**. A talk
+stops by itself after `INTERCOM_MAX_SECS`. The button's ring turns blue while another panel is
+talking to this one.
+
+**How it works.** Audio is 16 kHz mono PCM in RTP packets over UDP port `INTERCOM_PORT` (20 ms
+packets, about 256 kbit/s while someone talks, nothing otherwise). Brilliant's firewall already
+accepts UDP 5000 and up, so no rule is added. A panel only plays audio from panels it found through
+MQTT (`<MQTT_BASE>/intercom/peers/…`, removed by the broker when a panel goes offline). The receiving
+panel plays it through `dmix_filtered`, at Brilliant's speaker volume. There is no echo cancellation
+and nothing is recorded.
+
+**MQTT entities**, on the panel's device:
+
+| Entity | Panels | What it does |
+|---|---|---|
+| Intercom state | all intercom panels | `idle`, `talking to <room>` or `listening to <room>` |
+| **Intercom target** | mic panels | Select: a room or **All panels** |
+| **Intercom talk** | mic panels | Switch: on = stream the mic to the target (stops after `INTERCOM_MAX_SECS`) |
+| Intercom test tone | mic panels | Button: send a 1 s tone to the target (no mic). Use it to check a receiving panel. |
+
+The service also answers on the panel itself at `http://127.0.0.1:<INTERCOM_PORT+1>/` (`status`,
+`talk?on=1`, `talk?on=0`, `target?name=<room>`, `tone`); the panel UI uses this.
 
 ---
 
@@ -404,7 +507,9 @@ The **`ha-kiosk-display`** service owns the screen:
 
 With no photos of your own, the panels show the photos added through the Brilliant app (which also
 include some of Brilliant's demo albums), then Brilliant's stock art. Photos are resized when shown,
-so phone-camera originals are fine.
+so phone-camera originals are fine. `STOCK_ART=mix` always adds Brilliant's stock art (its four
+preloaded libraries: featured, nature, still art, animals) to your photos, and `STOCK_ART=off` never
+shows it. The stock images are used in place from the panel's firmware and are never copied.
 
 Brilliant's own services still run their screen-off logic. A systemd drop-in
 (`systemd/message_bus-ha-kiosk.conf`) gives them harmless stand-in files, so only this service
@@ -445,6 +550,7 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `HA_PHOTO_FOLDER` | — (all of My media) | Folder in HA's **My media** to sync screensaver photos from |
 | `PHOTO_SYNC_MINS` | `30` | How often to sync photos from HA (`0` = off) |
 | `PHOTO_DIRS` | — | Advanced: show exactly these panel folders, ignoring the rules above |
+| `STOCK_ART` | `fallback` | Brilliant's preloaded art: `fallback` = only when there are no photos, `mix` = always add it, `off` = never |
 | `MOTION_WAKE` | `day` | Wake on motion: `day`, `always`, `off` |
 
 ### Smart dimming
@@ -482,6 +588,32 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `MQTT_DISCOVERY_PREFIX` | `homeassistant` | HA discovery prefix |
 | `MOTION_CLEAR_SECS` | `60` | How long Motion stays on |
 | `NIGHT_MODE` | `1` | Night schedule on/off (also an HA switch) |
+| `DIAG_SECS` | `60` | How often power of other loads, temperatures, firmware, HomeKit and BLE diagnostics are polled |
+
+### Voice (optional)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KIOSK_VOICE` | `0` | `1` = run the voice satellite and announcement speaker (§2.9). Per panel; uses the mic and speaker. |
+| `VOICE_PORT` | `10700` | Wyoming TCP port (LAN address only) |
+| `VOICE_NAME` | `Brilliant panel` | Satellite name shown in HA |
+| `VOICE_WAKE` | `off` | `off` = push-to-talk; `ha` = stream the mic continuously for HA's wake-word engine |
+| `VOICE_ALLOW` | host in `HA_URL` | Comma-separated addresses allowed to connect |
+| `VOICE_BIND` | auto | LAN address to listen on |
+| `VOICE_LISTEN_SECS` | `15` | Longest listen after Talk or a wake word |
+| `VOICE_TTS_ENGINE` | `tts.google_translate_en_com` | HA TTS entity for text announcements |
+| `VOICE_MIC` / `VOICE_SPEAKER` | `default` / `dmix_filtered` | ALSA devices (shared with Brilliant) |
+
+### Intercom (optional)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KIOSK_INTERCOM` | `0` | `1` = run the intercom (§2.10) and play what other panels send. Needs MQTT. |
+| `INTERCOM_MIC` | `0` | `1` = this panel can also talk (opens the mic while talking). Off = receive only. |
+| `INTERCOM_PORT` | `10710` | UDP port for audio; the local control port is this + 1 |
+| `INTERCOM_MAX_SECS` | `30` | Longest single talk |
+| `INTERCOM_MIC_DEVICE` / `INTERCOM_SPEAKER` | `default` / `dmix_filtered` | ALSA devices (shared with Brilliant) |
+| `INTERCOM_BIND` | auto | Address to use (default: the one that reaches `MQTT_HOST`) |
 
 ### System
 
@@ -582,6 +714,10 @@ stays at `/etc/ha-kiosk/install-local.sh`, so a panel can always be returned to 
 | **Favorites empty** on the Music tab | Sonos: star stations and playlists in the Sonos app. Other players: check the player's media browser in HA (Media → pick the player); the tab shows what HA shows there. |
 | Panel doesn't appear in HA (MQTT) | Check `MQTT_HOST`/`MQTT_USER`/`MQTT_PASSWORD`. On the panel, `journalctl -u ha-kiosk-bridge` shows `mqtt: connected …` or the error. HA's MQTT integration must be set up. |
 | An HA switch (screensaver, night…) "doesn't stick" | It's saved in `/var/lib/ha-kiosk/overrides.env`. Delete that file to go back to `kiosk.env`. |
+| **Voice**: HA can't add the Wyoming device | `systemctl status ha-kiosk-voice` on the panel, and `KIOSK_VOICE=1`? The log shows `Wyoming satellite on <ip>:10700, accepting <HA ip>`. If HA connects from another address (e.g. a Docker host), set `VOICE_ALLOW`. |
+| **Voice**: Talk ends at once with `stt-stream-failed` | The pipeline's speech-to-text doesn't work (e.g. no Home Assistant Cloud subscription). Pick another STT engine in *Settings → Voice assistants*. |
+| **Intercom**: no microphone button | It needs `KIOSK_INTERCOM=1` **and** `INTERCOM_MIC=1` on this panel, and at least one other intercom panel online. `journalctl -u ha-kiosk-intercom` lists `peers: …`. |
+| **Intercom**: the other panel stays silent | Press **Intercom test tone**. The receiving panel's log should show `listening to <room>`; if not, check that both panels reach each other on UDP `INTERCOM_PORT`. Check its speaker volume. |
 | Want the stock UI back | `scripts/uninstall.sh panel1` |
 
 ---

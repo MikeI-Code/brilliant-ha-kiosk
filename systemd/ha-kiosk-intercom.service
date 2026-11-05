@@ -1,0 +1,17 @@
+[Unit]
+Description=HA kiosk push-to-talk intercom between panels (opt-in: KIOSK_INTERCOM=1)
+After=message_bus.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+EnvironmentFile=-/etc/ha-kiosk/kiosk.env
+WorkingDirectory=/data/switch-embedded
+ExecStart=/data/switch-embedded/env/bin/python -u /etc/ha-kiosk/ha-kiosk-intercom.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=10
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

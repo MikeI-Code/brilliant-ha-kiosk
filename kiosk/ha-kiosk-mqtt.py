@@ -3,8 +3,11 @@
 Enabled when MQTT_HOST is set in kiosk.env. One HA device per panel ("<room> Brilliant panel"):
 
   light   Wired load                on/off + brightness, controlled over the Brilliant bus
-  sensor  Load power / temperature  from the dimmer
-  sensor  Faceplate / CPU temp      diagnostics
+  sensor  Load power / temperature  per gangbox_peripheral_N (the dimmer)
+  sensor  Dim levels, dimming edge, calibration   per load (diagnostic, disabled by default)
+  sensor  Faceplate / CPU temp, firmware, uptime  diagnostics
+  binary  HomeKit paired / enabled  diagnostics
+  sensor  Shelly BLE sensors        count + decoded readings as attributes (Brilliant's own scan)
   binary  Motion                    on when Brilliant's motion logic turns its screen on
   sensor  Display state             awake / photos / dim / asleep, plus backlight and room light level
   switch  Screensaver, Night mode, Motion wake, Smart dimming   (runtime overrides)
@@ -14,6 +17,9 @@ Enabled when MQTT_HOST is set in kiosk.env. One HA device per panel ("<room> Bri
 
 Runtime overrides are written to /var/lib/ha-kiosk/overrides.env (read after kiosk.env) and the
 display service is restarted to apply them.
+
+Everything read from Brilliant's bus here is read-only: no gangbox, dimming, HomeKit or BLE
+variable is ever written.
 """
 import json
 import os
@@ -31,6 +37,34 @@ OVERRIDES = "/var/lib/ha-kiosk/overrides.env"
 BL = "/sys/class/backlight/backlight_lcd"
 
 GESTURES = ["2_tap", "3_tap"] + [f"{n}_swipe_{d}" for n in (2, 3) for d in ("left", "right", "up", "down")]
+
+
+CALIBRATION = {"0": "idle", "1": "running", "2": "success"}   # MinDimlevelCalibrationStatus
+
+
+def gb_suffix(n):
+    """Entity key suffix and name label for gangbox_peripheral_<n> (0 keeps the original ids)."""
+    return ("", "") if n == 0 else (f"_{n}", f" {n + 1}")
+
+
+def decode_shelly(value):
+    """ble_peripheral.shelly_sensor_readings (base64 Thrift) -> {mac: {...}}, or None if undecodable."""
+    if not value:
+        return {}
+    try:
+        import lib.serialization as S              # Brilliant's libs (path set up by brilliant_bus)
+        from thrift_types.shelly import ttypes as SH
+        r = S.deserialize(SH.ShellySensorReadings, value)
+        out = {}
+        for mac, s in (r.readings_by_mac or {}).items():
+            out[mac] = {"motion": s.movement_detected, "contact_open": s.contact_open,
+                        "battery": s.battery, "encrypted": s.is_encrypted, "rssi": s.rssi,
+                        "last_heard": (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(s.last_heard_ms / 1000))
+                                       if s.last_heard_ms else None)}
+        return out
+    except Exception as e:
+        print(f"mqtt: shelly decode: {e}", flush=True)
+        return None
 
 
 def read(path, default=""):
@@ -61,6 +95,9 @@ class KioskMqtt:
         self.last = {}
         self.motion_until = 0.0
         self.brilliant_on = None
+        self.peripherals = set()
+        self.gangboxes = [0]
+        self.next_diag = 0.0
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{self.node}_kiosk")
         if env.get("MQTT_USER"):
             c.username_pw_set(env["MQTT_USER"], env.get("MQTT_PASSWORD", ""))
@@ -86,16 +123,51 @@ class KioskMqtt:
         self._cfg("light", "load", {"name": "Wired light", "schema": "json", "brightness": True,
                                     "brightness_scale": 100, "state_topic": f"{b}/load/state",
                                     "command_topic": f"{b}/load/set"})
-        for key, name, unit, dc, cat in (
-                ("load_power", "Load power", "W", "power", None),
-                ("load_temperature", "Dimmer temperature", "°C", "temperature", "diagnostic"),
-                ("faceplate_temperature", "Faceplate temperature", "°C", "temperature", "diagnostic"),
-                ("cpu_temperature", "CPU temperature", "°C", "temperature", "diagnostic")):
+        try:
+            self.peripherals = set(self.control.peripherals())
+        except Exception as e:
+            print(f"mqtt: peripheral list: {e}", flush=True)
+        self.gangboxes = sorted((int(p.rsplit("_", 1)[1]) for p in self.peripherals
+                                 if re.fullmatch(r"gangbox_peripheral_\d+", p)), key=int) or [0]
+        sensors = []
+        for n in self.gangboxes:
+            sfx, lbl = gb_suffix(n)
+            # Unit of `power` is not documented by Brilliant (compiled code); watts is inferred from
+            # its strings and readings. Brilliant only pushes changes above ~40 W / 10 %.
+            sensors += [(f"load_power{sfx}", f"Load{lbl} power", "W", "power", None),
+                        (f"load_temperature{sfx}", f"Gangbox{lbl} temperature", "°C", "temperature",
+                         "diagnostic")]
+        sensors += [("faceplate_temperature", "Faceplate temperature", "°C", "temperature", "diagnostic"),
+                    ("cpu_temperature", "CPU temperature", "°C", "temperature", "diagnostic")]
+        for key, name, unit, dc, cat in sensors:
             extra = {"name": name, "state_topic": f"{b}/{key}", "unit_of_measurement": unit,
                      "device_class": dc, "state_class": "measurement"}
             if cat:
                 extra["entity_category"] = cat
             self._cfg("sensor", key, extra)
+        # Read-only diagnostics (polled every DIAG_SECS)
+        self._cfg("sensor", "firmware_version", {"name": "Brilliant firmware", "icon": "mdi:chip",
+                                                 "state_topic": f"{b}/firmware_version",
+                                                 "entity_category": "diagnostic"})
+        self._cfg("sensor", "boot_time", {"name": "Last boot", "device_class": "timestamp",
+                                          "state_topic": f"{b}/boot_time", "entity_category": "diagnostic"})
+        for n in self.gangboxes:   # dimming calibration, read-only, hidden until enabled in HA
+            sfx, lbl = gb_suffix(n)
+            for key, name, icon in ((f"min_dim_level{sfx}", f"Load{lbl} minimum dim level", "mdi:brightness-4"),
+                                    (f"max_dim_level{sfx}", f"Load{lbl} maximum dim level", "mdi:brightness-7"),
+                                    (f"dimming_edge{sfx}", f"Load{lbl} dimming edge", "mdi:sine-wave"),
+                                    (f"dim_calibration{sfx}", f"Load{lbl} dim calibration", "mdi:tune")):
+                self._cfg("sensor", key, {"name": name, "icon": icon, "state_topic": f"{b}/{key}",
+                                          "entity_category": "diagnostic", "enabled_by_default": False})
+        if "homekit_peripheral" in self.peripherals:
+            for key, name in (("homekit_paired", "HomeKit paired"), ("homekit_enabled", "HomeKit enabled")):
+                self._cfg("binary_sensor", key, {"name": name, "icon": "mdi:apple",
+                                                 "state_topic": f"{b}/{key}", "entity_category": "diagnostic"})
+        if "ble_peripheral" in self.peripherals:
+            self._cfg("sensor", "shelly_ble", {"name": "Shelly BLE sensors", "icon": "mdi:bluetooth",
+                                               "state_topic": f"{b}/shelly_ble", "state_class": "measurement",
+                                               "json_attributes_topic": f"{b}/shelly_ble/attributes",
+                                               "entity_category": "diagnostic"})
         self._cfg("binary_sensor", "motion", {"name": "Motion", "device_class": "motion",
                                               "state_topic": f"{b}/motion"})
         self._cfg("sensor", "display_state", {"name": "Display", "state_topic": f"{b}/display_state",
@@ -119,6 +191,7 @@ class KioskMqtt:
         self._cfg("event", "gesture", {"name": "Gesture", "state_topic": f"{b}/gesture",
                                        "event_types": GESTURES, "icon": "mdi:gesture"})
         self.last = {}   # force a full state publish
+        self.next_diag = 0.0
 
     # ---------- connection ----------
     def start(self):
@@ -185,6 +258,43 @@ class KioskMqtt:
                 print(f"mqtt: poll: {e}", flush=True)
             time.sleep(1)
 
+    def _pub_gangbox(self, n, v):
+        sfx = gb_suffix(n)[0]
+        self._pub(f"load_power{sfx}", v.get("power", ""))
+        self._pub(f"load_temperature{sfx}", v.get("temperature", ""))
+        self._pub(f"min_dim_level{sfx}", v.get("minimum_dim_level", ""))
+        self._pub(f"max_dim_level{sfx}", v.get("maximum_dim_level", ""))
+        # Raw flag: which of 0/1 is leading vs trailing edge is not documented.
+        self._pub(f"dimming_edge{sfx}", v.get("dimming_edge", ""))
+        cal = v.get("min_dim_level_calibration_status", "")
+        self._pub(f"dim_calibration{sfx}", CALIBRATION.get(cal, cal))
+
+    def _poll_diagnostics(self):
+        for n in self.gangboxes:
+            try:
+                self._pub_gangbox(n, self.control.variables(f"gangbox_peripheral_{n}"))
+            except Exception as e:
+                print(f"mqtt: gangbox_peripheral_{n}: {e}", flush=True)
+        hw = self.control.variables("hardware_peripheral")
+        self._pub("cpu_temperature", hw.get("cpu_temperature", ""))
+        self._pub("firmware_version", hw.get("current_release_tag", ""))
+        fp = self.control.variables("faceplate_peripheral")
+        self._pub("faceplate_temperature", fp.get("hottest_internal_temperature", ""))
+        try:   # boot time, rounded to the minute so it doesn't jitter
+            boot = int((time.time() - float(read("/proc/uptime", "0").split()[0])) // 60 * 60)
+            self._pub("boot_time", time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(boot)))
+        except (ValueError, IndexError):
+            pass
+        if "homekit_peripheral" in self.peripherals:
+            hk = self.control.variables("homekit_peripheral")
+            self._pub("homekit_paired", "ON" if hk.get("paired") == "1" else "OFF")
+            self._pub("homekit_enabled", "ON" if hk.get("adk_enabled") == "1" else "OFF")
+        if "ble_peripheral" in self.peripherals:
+            readings = decode_shelly(self.control.variables("ble_peripheral").get("shelly_sensor_readings", ""))
+            if readings is not None:
+                self._pub("shelly_ble/attributes", json.dumps({"sensors": readings}, sort_keys=True))
+                self._pub("shelly_ble", str(len(readings)))
+
     def _poll(self):
         if not self.c.is_connected():
             return
@@ -192,12 +302,15 @@ class KioskMqtt:
         on = v["on"] == "1"
         bri = round(100 * int(v["intensity"]) / int(v.get("max_intensity_value") or 1000))
         self._pub("load/state", json.dumps({"state": "ON" if on else "OFF", "brightness": bri}))
-        self._pub("load_power", v.get("power", ""))
-        self._pub("load_temperature", v.get("temperature", ""))
-        hw = self.control.variables("hardware_peripheral")
-        self._pub("cpu_temperature", hw.get("cpu_temperature", ""))
-        fp = self.control.variables("faceplate_peripheral")
-        self._pub("faceplate_temperature", fp.get("hottest_internal_temperature", ""))
+        # The bridge's own load is read every second anyway, so its power shows up in HA at once;
+        # the other gangboxes and the diagnostics are polled every DIAG_SECS (Brilliant's bus only
+        # pushes power changes above ~40 W / 10 %, temperature is effectively poll-only).
+        m = re.fullmatch(r"gangbox_peripheral_(\d+)", os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0"))
+        if m:
+            self._pub_gangbox(int(m.group(1)), v)
+        if time.time() >= self.next_diag:
+            self.next_diag = time.time() + int(self.env.get("DIAG_SECS", "60"))
+            self._poll_diagnostics()
 
         # Motion: Brilliant's motion logic turning *its* (shadow) screen on = someone walked up.
         b_on = read(f"{SHADOW}/blank") != "1" and read(f"{SHADOW}/brightness", "0") not in ("", "0")

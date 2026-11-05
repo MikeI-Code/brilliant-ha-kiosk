@@ -20,7 +20,7 @@ set -eu
 BUNDLE="$(cd "$(dirname "$0")" && pwd)"
 DEST=/etc/ha-kiosk
 STATE=/var/lib/ha-kiosk
-UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service"
+UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service ha-kiosk-voice.service ha-kiosk-intercom.service"
 DROPIN=/etc/systemd/system/message_bus.service.d/ha-kiosk-display.conf
 TMPFILES=/etc/tmpfiles.d/ha-kiosk.conf
 
@@ -47,7 +47,7 @@ done
 
 uninstall() {
     log "stopping the kiosk"
-    systemctl disable --now ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service 2>/dev/null || true
+    systemctl disable --now ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-voice.service ha-kiosk-intercom.service 2>/dev/null || true
     if [ -f "$DROPIN" ]; then
         rm -f "$DROPIN"; systemctl daemon-reload
         log "restarting Brilliant services (message_bus) to give the screen back"
@@ -117,6 +117,22 @@ start() {
     systemctl disable --now switch_ui_app 2>/dev/null || true
     systemctl enable ha-kiosk-swap.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk.service
     systemctl restart ha-kiosk-swap.service ha-kiosk-bridge.service ha-kiosk.service ha-kiosk-display.service
+    # Voice satellite / announcements: opt-in (mic + speaker), only with KIOSK_VOICE=1 in kiosk.env.
+    # last assignment wins (kiosk.env = shared file + per-panel file), like systemd's EnvironmentFile
+    envflag() { [ "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 ')" = 1 ]; }
+    if envflag KIOSK_VOICE; then
+        systemctl enable ha-kiosk-voice.service; systemctl restart ha-kiosk-voice.service
+        log "voice satellite enabled (KIOSK_VOICE=1)"
+    else
+        systemctl disable --now ha-kiosk-voice.service 2>/dev/null || true
+    fi
+    # Intercom between panels: opt-in, KIOSK_INTERCOM=1 (receive); the mic also needs INTERCOM_MIC=1.
+    if envflag KIOSK_INTERCOM; then
+        systemctl enable ha-kiosk-intercom.service; systemctl restart ha-kiosk-intercom.service
+        log "intercom enabled (KIOSK_INTERCOM=1$(envflag INTERCOM_MIC && echo ', mic on' || echo ', receive only'))"
+    else
+        systemctl disable --now ha-kiosk-intercom.service 2>/dev/null || true
+    fi
     sleep 3
     systemctl is-active --quiet ha-kiosk.service || die "ha-kiosk.service did not start (journalctl -u ha-kiosk)"
     log "kiosk running"

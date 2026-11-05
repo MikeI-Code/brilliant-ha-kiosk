@@ -249,6 +249,13 @@ Window {
         }
     }
 
+    // Hold-to-talk intercom (only with KIOSK_INTERCOM=1 + INTERCOM_MIC=1, see Intercom.qml).
+    Intercom {
+        anchors { right: parent.right; bottom: tabs.top; margins: 10 * Theme.u }
+        z: 60
+        opacity: win.displayState === "awake" ? 1 : 0
+    }
+
     // Daytime idle: photo slideshow (display state "photos", see ha-kiosk-display.sh).
     Screensaver {
         anchors.fill: parent; z: 90

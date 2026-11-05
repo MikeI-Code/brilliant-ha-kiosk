@@ -1,0 +1,18 @@
+[Unit]
+Description=HA kiosk voice satellite (Wyoming) and announcements (opt-in: KIOSK_VOICE=1)
+After=message_bus.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+EnvironmentFile=-/etc/ha-kiosk/kiosk.env
+WorkingDirectory=/data/switch-embedded
+ExecStart=/data/switch-embedded/env/bin/python -u /etc/ha-kiosk/ha-kiosk-voice.py
+# Removes the runtime nftables rule that lets Home Assistant reach VOICE_PORT
+ExecStopPost=/data/switch-embedded/env/bin/python /etc/ha-kiosk/ha-kiosk-voice.py --close-firewall
+Restart=on-failure
+RestartSec=10
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
