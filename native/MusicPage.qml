@@ -9,6 +9,10 @@ Flickable {
     property int sel: 0
     property var st: null
     property var favorites: []
+    property bool favLoading: false
+    property string playingId: ""           // favourite just tapped: highlighted until the title changes
+    property string titleAtTap: ""
+    Timer { id: playingClear; interval: 8000; onTriggered: page.playingId = "" }
     property string favError: ""
     property real nowSecs: Date.now() / 1000
 
@@ -47,7 +51,8 @@ Flickable {
     function loadFavorites() {
         if (!entity || !Ha.connected) return;
         var gen = ++browseGen, ent = entity;
-        if (!canBrowse && st) { favorites = []; favError = ""; return; }
+        if (!canBrowse && st) { favorites = []; favError = ""; favLoading = false; return; }
+        favLoading = true;
         function stale() { return !page || gen !== page.browseGen; }
         function expand(kids, looseTitle, emptyMsg) {
             var loose = kids.filter(function (k) { return k.can_play; });
@@ -57,7 +62,7 @@ Flickable {
                 if (stale()) return;
                 var out = groups.filter(function (g) { return g && g.items.length; });
                 if (loose.length) out.unshift({ title: looseTitle, items: loose.slice(0, 30) });
-                page.favorites = out;
+                page.favorites = out; page.favLoading = false;
                 page.favError = out.length ? "" : emptyMsg;
             }
             if (folders.length === 0) { done(); return; }
@@ -72,7 +77,7 @@ Flickable {
         function browseRoot() {
             Ha.send({ type: "media_player/browse_media", entity_id: ent }, function (r) {
                 if (stale()) return;
-                if (!r.success) { page.favorites = []; page.favError = "This player has nothing to browse"; console.log("music: browse " + JSON.stringify(r.error)); return; }
+                if (!r.success) { page.favorites = []; page.favLoading = false; page.favError = "This player has nothing to browse"; console.log("music: browse " + JSON.stringify(r.error)); return; }
                 expand(r.result.children || [], "Library", "Nothing to browse on this player yet");
             });
         }
@@ -84,6 +89,7 @@ Flickable {
         });
     }
     function play(item) {
+        playingId = item.media_content_id || ""; titleAtTap = a.media_title || ""; playingClear.restart();
         Ha.callService("media_player", "play_media", { media_content_id: item.media_content_id, media_content_type: item.media_content_type }, entity);
     }
     function toggleMember(e) {
@@ -95,10 +101,14 @@ Flickable {
     onEntityChanged: { refresh(); favorites = []; loadFavorites(); }
     Connections {
         target: Ha
-        function onEntityUpdated(id) { if (id === page.entity) page.refresh(); }
+        function onEntityUpdated(id) {
+            if (id !== page.entity) return;
+            page.refresh();
+            if (page.playingId && (page.a.media_title || "") !== page.titleAtTap) page.playingId = "";
+        }
         function onStatesLoaded() { page.refresh(); page.loadFavorites(); }
     }
-    Timer { interval: 1000; running: page.playing && page.visible; repeat: true; onTriggered: page.nowSecs = Date.now() / 1000 }
+    Timer { interval: 1000; running: page.playing && page.visible && Ha.connected; repeat: true; onTriggered: page.nowSecs = Date.now() / 1000 }
 
     Column {
         id: body
@@ -178,12 +188,12 @@ Flickable {
                     spacing: 6 * Theme.u
                     Repeater {
                         model: [
-                            { i: page.a.shuffle ? "shuffle" : "shuffle-disabled", act: "shuffle", big: false, on: !!page.a.shuffle },
-                            { i: "skip-previous", act: "media_previous_track", big: false },
-                            { i: page.playing ? "pause-circle" : "play-circle", act: "media_play_pause", big: true },
-                            { i: "skip-next", act: "media_next_track", big: false },
-                            { i: page.a.repeat === "one" ? "repeat-once" : (page.a.repeat === "all" ? "repeat" : "repeat-off"), act: "repeat", big: false, on: page.a.repeat && page.a.repeat !== "off" }
-                        ]
+                            { i: page.a.shuffle ? "shuffle" : "shuffle-disabled", act: "shuffle", big: false, on: !!page.a.shuffle, f: 32768 },
+                            { i: "skip-previous", act: "media_previous_track", big: false, f: 16 },
+                            { i: page.playing ? "pause-circle" : "play-circle", act: "media_play_pause", big: true, f: 1 | 16384 },
+                            { i: "skip-next", act: "media_next_track", big: false, f: 32 },
+                            { i: page.a.repeat === "one" ? "repeat-once" : (page.a.repeat === "all" ? "repeat" : "repeat-off"), act: "repeat", big: false, on: page.a.repeat && page.a.repeat !== "off", f: 262144 }
+                        ].filter(function (b) { return (page.features & b.f) !== 0; })   // only what this player supports
                         Item {
                             width: (modelData.big ? 72 : 52) * Theme.u; height: 72 * Theme.u
                             Icon { anchors.centerIn: parent; size: modelData.big ? 64 : 28; name: modelData.i
@@ -204,8 +214,10 @@ Flickable {
                 }
                 Row {
                     width: parent.width; spacing: 10 * Theme.u
+                    visible: (page.features & 4) !== 0                    // VOLUME_SET
                     Item {
-                        width: 30 * Theme.u; height: 30 * Theme.u
+                        width: 30 * Theme.u; height: 40 * Theme.u
+                        visible: (page.features & 8) !== 0                // VOLUME_MUTE
                         Icon { anchors.centerIn: parent; size: 24; name: page.a.is_volume_muted ? "volume-off" : "volume-high"
                                color: page.a.is_volume_muted ? Theme.red : Theme.text }
                         MouseArea { anchors.fill: parent; onClicked: if (!Panel.multi) Ha.callService("media_player", "volume_mute", { is_volume_muted: !page.a.is_volume_muted }, page.entity) }
@@ -269,7 +281,8 @@ Flickable {
         }
 
         // Favorites (grouped: Stations, Playlists, ...)
-        Label { size: 13; color: Theme.textDim; text: page.favError; visible: page.favError !== "" && page.favorites.length === 0; width: parent.width; wrapMode: Text.WordWrap }
+        Label { size: 13; color: Theme.textDim; text: page.favError; visible: page.favError !== "" && page.favorites.length === 0 && !page.favLoading; width: parent.width; wrapMode: Text.WordWrap }
+        Label { size: 13; color: Theme.textDim; text: "Loading favorites…"; visible: page.favLoading && page.favorites.length === 0 }
         Repeater {
             model: page.favorites
             Column {
@@ -281,7 +294,9 @@ Flickable {
                 model: modelData.items
                 Rectangle {
                     width: (parent.width - 16 * Theme.u) / 3; height: width + 34 * Theme.u; radius: 12 * Theme.u
-                    color: fm.pressed ? Theme.cardPressed : Theme.card; border.color: Theme.border; clip: true
+                    readonly property bool picked: page.playingId !== "" && modelData.media_content_id === page.playingId
+                    color: fm.pressed ? Theme.cardPressed : (picked ? Theme.onTint : Theme.card)
+                    border.color: picked ? Theme.amber : Theme.border; border.width: picked ? 2 * Theme.u : 1; clip: true
                     Rectangle {
                         id: thumb; x: 6 * Theme.u; y: 6 * Theme.u; width: parent.width - 12 * Theme.u; height: width
                         radius: 8 * Theme.u; color: Theme.track; clip: true

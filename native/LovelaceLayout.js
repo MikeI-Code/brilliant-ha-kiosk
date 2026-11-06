@@ -17,7 +17,8 @@
 function stripMdi(i) { return i ? String(i).replace(/^mdi:/, "") : ""; }
 
 var DEFAULT_SIZE = { light: "half", "switch": "half", scene: "quarter", climate: "half",
-                     media: "full", sensor: "third", binary: "half", alloff: "quarter" };
+                     media: "full", sensor: "third", binary: "half", alloff: "quarter",
+                     cover: "half", lock: "quarter", fan: "half", number: "half", select: "half" };
 
 function sizeOf(card, kind) {
     var c = card.grid_options && card.grid_options.columns;
@@ -29,8 +30,13 @@ function sizeOf(card, kind) {
 function kindFor(entity) {
     var d = String(entity || "").split(".")[0];
     if (d === "light") return "light";
-    if (["switch", "input_boolean", "fan", "automation", "siren", "humidifier"].indexOf(d) >= 0) return "switch";
-    if (d === "scene" || d === "script") return "scene";
+    if (d === "cover" || d === "valve") return "cover";
+    if (d === "lock") return "lock";
+    if (d === "fan" || d === "humidifier") return "fan";
+    if (d === "number" || d === "input_number") return "number";
+    if (d === "select" || d === "input_select") return "select";
+    if (["switch", "input_boolean", "automation", "siren"].indexOf(d) >= 0) return "switch";
+    if (["scene", "script", "button", "input_button"].indexOf(d) >= 0) return "scene";
     if (d === "climate") return "climate";
     if (d === "media_player") return "media";
     if (d === "binary_sensor") return "binary";

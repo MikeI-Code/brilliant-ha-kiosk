@@ -14,15 +14,22 @@ Rectangle {
     property alias tapArea: tapArea
     signal tapped()
 
+    // Pending feedback: set by a tile when it sends a command; cleared when HA reports the new
+    // state, when the call fails, or after 4 s. The border pulses meanwhile.
+    property bool pending: false
+    property int _callId: -1
+    function sent(id) { _callId = id; pending = id >= 0; if (pending) pendingTimer.restart(); }
+    Timer { id: pendingTimer; interval: 4000; onTriggered: tile.pending = false }
+
     readonly property var attrs: st ? st.attributes : ({})
     readonly property string stateText: st ? st.state : "unavailable"
     property bool unavailable: !st || st.state === "unavailable" || st.state === "unknown"
 
     radius: Theme.radius
     color: pressed ? Theme.cardPressed : Theme.card
-    border.color: Theme.border
-    border.width: Math.max(1, Theme.u * 0.5)
-    opacity: unavailable && entity !== "" ? 0.55 : 1
+    border.color: pending ? Theme.amber : Theme.border
+    border.width: pending ? Math.max(2, Theme.u * 1.5) : Math.max(1, Theme.u * 0.5)
+    opacity: unavailable && entity !== "" ? 0.8 : 1   // the status line says "Unavailable"
 
     function refresh() {
         st = entity ? Ha.get(entity) : null;
@@ -31,7 +38,8 @@ Rectangle {
     Component.onCompleted: refresh()
     Connections {
         target: Ha
-        function onEntityUpdated(id) { if (id === tile.entity) tile.refresh(); }
+        function onEntityUpdated(id) { if (id === tile.entity) { tile.pending = false; tile.refresh(); } }
+        function onCallFailed(id, msg) { if (id === tile._callId) tile.pending = false; }
         function onStatesLoaded() { tile.refresh(); }
     }
 

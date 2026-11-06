@@ -8,6 +8,7 @@ Tile {
     readonly property bool onlyPlaying: cfg.onlyPlaying === true
     readonly property string art: attrs.entity_picture ? Ha.baseUrl + attrs.entity_picture : ""
     shown: !onlyPlaying || playing
+    readonly property int feat: attrs.supported_features || 0   // MediaPlayerEntityFeature bits
     height: 128 * Theme.u
 
     Rectangle {
@@ -35,15 +36,16 @@ Tile {
         id: controls
         anchors { right: parent.right; rightMargin: Theme.pad / 2; verticalCenter: artBox.verticalCenter }
         Repeater {
-            model: [ { i: "skip-previous", s: "media_previous_track" },
-                     { i: t.playing ? "pause" : "play", s: "media_play_pause" },
-                     { i: "skip-next", s: "media_next_track" } ]
+            // Only the buttons this player supports (PREVIOUS 16, PAUSE 1 / PLAY 16384, NEXT 32).
+            model: [ { i: "skip-previous", s: "media_previous_track", f: 16 },
+                     { i: t.playing ? "pause" : "play", s: "media_play_pause", f: 1 | 16384 },
+                     { i: "skip-next", s: "media_next_track", f: 32 } ].filter(function (b) { return (t.feat & b.f) !== 0; })
             Item {
                 width: 40 * Theme.u; height: 44 * Theme.u
                 Icon { anchors.centerIn: parent; size: modelData.s === "media_play_pause" ? 32 : 24; name: modelData.i
                        color: mb.pressed ? Theme.blue : Theme.text }
                 MouseArea { id: mb; anchors.fill: parent; enabled: !t.unavailable
-                            onClicked: Ha.callService("media_player", modelData.s, null, t.entity) }
+                            onClicked: if (!Panel.multi) t.sent(Ha.callService("media_player", modelData.s, null, t.entity)) }
             }
         }
     }
@@ -51,8 +53,8 @@ Tile {
         anchors { left: parent.left; right: parent.right; bottom: parent.bottom; margins: Theme.pad }
         fill: Theme.blue
         value: t.attrs.volume_level || 0
-        visible: !t.unavailable
-        onCommitted: function (v) { Ha.callService("media_player", "volume_set", { volume_level: Math.round(v * 100) / 100 }, t.entity); }
+        visible: !t.unavailable && (t.feat & 4) !== 0           // VOLUME_SET
+        onCommitted: function (v) { t.sent(Ha.callService("media_player", "volume_set", { volume_level: Math.round(v * 100) / 100 }, t.entity)); }
     }
     tapArea.enabled: false
 }

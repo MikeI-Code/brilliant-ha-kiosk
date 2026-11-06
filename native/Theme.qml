@@ -11,10 +11,11 @@ QtObject {
     readonly property color border: "#232730"
     readonly property color track: "#2a2f38"
     readonly property color text: "#eef0f3"
-    readonly property color textDim: "#8b919c"
+    readonly property color textDim: "#a3a9b4"     // secondary text: readable from across the room
     readonly property color textFaint: "#555b66"
     readonly property color amber: "#f5b54a"
     readonly property color amberSoft: "#3a2f1b"
+    readonly property color onTint: "#231e16"      // whole-card tint when something is on
     readonly property color blue: "#5ec2e8"
     readonly property color blueSoft: "#1b3038"
     readonly property color orange: "#ff8a4c"

@@ -15,11 +15,13 @@ Tile {
         if (allOff) {
             if (!armed) { armed = true; disarm.restart(); return; }
             armed = false;
-            Ha.callService("light", "turn_off", null, "all");
+            sent(Ha.callService("light", "turn_off", null, "all"));
         } else if (cfg.action) {          // button card with a perform-action (from an HA dashboard)
-            Ha.callService(cfg.action.domain, cfg.action.service, cfg.action.data, cfg.action.target);
+            sent(Ha.callService(cfg.action.domain, cfg.action.service, cfg.action.data, cfg.action.target));
         } else {
-            Ha.callService(entity.split(".")[0] === "script" ? "script" : "scene", "turn_on", null, entity);
+            var d = entity.split(".")[0];
+            if (d === "button" || d === "input_button") sent(Ha.callService(d, "press", null, entity));
+            else sent(Ha.callService(d === "script" ? "script" : "scene", "turn_on", null, entity));
         }
         flash = true; unflash.restart();
     }

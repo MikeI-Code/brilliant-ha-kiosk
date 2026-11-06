@@ -6,11 +6,11 @@ Tile {
     id: t
     readonly property bool binary: cfg.type === "binary"
     readonly property bool active: binary && stateText === "on"
-    height: 66 * Theme.u
+    height: 72 * Theme.u
     tapArea.enabled: false
 
     function valueText() {
-        if (unavailable) return "--";
+        if (unavailable) return "Unavailable";
         if (binary) {
             var dc = attrs.device_class || "";
             if (dc === "door" || dc === "window" || dc === "opening" || dc === "garage_door") return active ? "Open" : "Closed";
@@ -29,7 +29,7 @@ Tile {
     }
     Column {
         anchors { left: ic.right; leftMargin: 10 * Theme.u; right: parent.right; rightMargin: Theme.pad / 2; verticalCenter: parent.verticalCenter }
-        Label { width: parent.width; text: t.name; size: 12; color: Theme.textDim }
-        Label { width: parent.width; text: t.valueText(); size: 16; font.weight: Font.DemiBold; color: t.active ? Theme.amber : Theme.text }
+        Label { width: parent.width; text: t.name; size: 13; color: Theme.textDim; elide: Text.ElideRight }
+        Label { width: parent.width; text: t.valueText(); size: t.unavailable ? 14 : 19; elide: Text.ElideRight; font.weight: Font.DemiBold; color: t.active ? Theme.amber : Theme.text }
     }
 }

@@ -25,6 +25,7 @@ Item {
     property var speakers: []            // ROOM_SPEAKERS: this room's speakers (3-finger volume)
     property var _volStart: ({})
     signal changed()
+    signal goHome()                      // idle: pages scroll back to the top
 
     // Room speaker volume (0..1): the loudest of the room's speakers.
     function speakerVolume() {

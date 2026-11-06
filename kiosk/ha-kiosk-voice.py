@@ -67,6 +67,19 @@ def ha_base():
     return m.group(1) if m else ""
 
 
+def same_origin(url, base):
+    """True only if scheme, host and port all match (a prefix check would accept http://ha.evil)."""
+    if not base:
+        return False
+    a, b = urllib.parse.urlsplit(url), urllib.parse.urlsplit(base)
+    dp = {"http": 80, "https": 443}
+    try:
+        return (a.scheme == b.scheme and a.hostname == b.hostname
+                and (a.port or dp.get(a.scheme)) == (b.port or dp.get(b.scheme)))
+    except ValueError:                      # malformed port
+        return False
+
+
 def ha_token():
     try:
         with open("/etc/ha-kiosk/token", encoding="utf-8") as f:
@@ -161,7 +174,7 @@ class Speaker:
     def _play_url(self, url):
         """Download (this ffmpeg build has no network protocols) and decode with ffmpeg."""
         req = urllib.request.Request(url)
-        if url.startswith(ha_base()) and ha_token():
+        if same_origin(url, ha_base()) and ha_token():   # never send the token to another host
             req.add_header("Authorization", f"Bearer {ha_token()}")
         with urllib.request.urlopen(req, timeout=30) as r:
             data = r.read(MAX_MEDIA + 1)

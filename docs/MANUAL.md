@@ -409,7 +409,7 @@ a second. The last layout is cached on each panel, so it boots with your screens
 | A view (tab at the top of the dashboard) | A tab in the bottom bar: the view's title and icon |
 | A view whose **URL** is `music` (or `sonos`) | The Music tab. Every media player on it, from any integration, becomes a speaker in the room picker. |
 | **Heading** card | Starts a titled section |
-| **Tile** card | A tile. Its kind follows the entity: light, switch/fan/input_boolean, scene/script, climate, media player, sensor, binary sensor. |
+| **Tile** card | A tile. Its kind follows the entity: light; switch/input_boolean/automation; fan/humidifier (speed or humidity bar); cover/valve (open, stop, close, position; garage doors and gates need two taps); lock (unlocking needs two taps); number/input_number (bar or -/+); select/input_select (option chips); scene/script/button (tap to run); climate; media player (only the buttons the player supports); sensor; binary sensor. |
 | Tile **width** (Layout → columns 12 / 6 / 4 / 3) | Full / half / third / quarter width |
 | **Weather forecast** card | The clock and weather header with the forecast. A temperature tile next to it becomes "Inside". |
 | **Media control** card | An always-visible player. A media *tile* only shows while something plays. |
@@ -646,8 +646,9 @@ On the panel itself: `journalctl -u ha-kiosk -u ha-kiosk-display -u ha-kiosk-bri
 **Updating**: `git pull`, then `scripts/install.sh <panel>` for each panel.
 
 **Brilliant OS updates**: over-the-air updates stay enabled. They replace the read-only system
-image, while everything this project installs lives in `/etc` and `/var`, which updates keep. If an
-update ever re-enables the stock UI, run `scripts/install.sh` again.
+image. Everything this project installs lives in `/etc` and `/var`, which updates are expected to
+keep (not yet confirmed on every firmware). If an update ever re-enables the stock UI, run
+`scripts/install.sh` again.
 
 **Uninstall**
 
@@ -686,6 +687,9 @@ It is non-interactive and safe to re-run. It checks the bundle's checksums, keep
 settings, photos and layout, and records the installed version in `/etc/ha-kiosk/VERSION`. A copy
 stays at `/etc/ha-kiosk/install-local.sh`, so a panel can always be returned to the stock UI with
 `sh /etc/ha-kiosk/install-local.sh --uninstall`.
+
+Tools that install the kiosk for you (such as a Home Assistant integration) should follow the
+draft contract in [INTEGRATION.md](INTEGRATION.md).
 
 **Security notes**
 

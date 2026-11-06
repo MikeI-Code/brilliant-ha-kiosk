@@ -4,8 +4,9 @@ import "."
 Tile {
     id: t
     readonly property bool on: stateText === "on"
-    height: 66 * Theme.u
-    onTapped: if (!unavailable) Ha.callService("homeassistant", "toggle", null, entity)
+    height: 70 * Theme.u
+    color: pressed ? Theme.cardPressed : (on && !unavailable ? Theme.onTint : Theme.card)
+    onTapped: if (!unavailable) sent(Ha.callService("homeassistant", "toggle", null, entity))
 
     Rectangle {
         id: badge
@@ -16,7 +17,7 @@ Tile {
     }
     Column {
         anchors { left: badge.right; leftMargin: 10 * Theme.u; right: parent.right; rightMargin: Theme.pad; verticalCenter: parent.verticalCenter }
-        Label { width: parent.width; text: t.name; size: 15; font.weight: Font.DemiBold }
-        Label { width: parent.width; size: 12; color: Theme.textDim; text: t.unavailable ? "Unavailable" : (t.on ? "On" : "Off") }
+        Label { width: parent.width; text: t.name; size: 15; font.weight: Font.DemiBold; elide: Text.ElideRight }
+        Label { width: parent.width; size: 14; color: t.on ? Theme.amber : Theme.textDim; text: t.unavailable ? "Unavailable" : (t.on ? "On" : "Off") }
     }
 }

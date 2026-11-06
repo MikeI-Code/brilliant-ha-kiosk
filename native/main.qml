@@ -74,7 +74,8 @@ Window {
         flickDeceleration: 6000
         cacheBuffer: width * 12
         clip: true
-        interactive: win.displayState === "awake" && !Panel.multi
+        opacity: Ha.connected ? 1 : 0.6        // stale data while offline (the panel's own light still works)
+        interactive: win.displayState !== "asleep" && win.displayState !== "photos" && !Panel.multi
         model: win.layout.pages || []
         onCurrentIndexChanged: if (currentIndex >= 0 && currentIndex !== win.current) win.current = currentIndex
         delegate: Loader {
@@ -89,13 +90,65 @@ Window {
             MusicPage { speakers: parent.spec.speakers || [] } }
     }
 
-    // Connection banner
+    // Connection banner: what is wrong and for how long. Sits above the tab bar, clear of the clock.
+    property double now: Date.now()
+    Timer { interval: 1000; running: !Ha.connected; repeat: true; onTriggered: win.now = Date.now() }
     Rectangle {
-        anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 8 * Theme.u }
-        visible: !Ha.connected
-        height: 30 * Theme.u; width: bannerText.width + 24 * Theme.u; radius: height / 2
-        color: "#3a1f1f"
-        Label { id: bannerText; anchors.centerIn: parent; size: 12; color: Theme.red; text: "Connecting to Home Assistant…" }
+        anchors { bottom: tabs.top; horizontalCenter: parent.horizontalCenter; bottomMargin: 10 * Theme.u }
+        z: 70
+        visible: !Ha.connected && win.displayState !== "asleep" && win.displayState !== "photos"
+        height: 34 * Theme.u; width: bannerText.width + 28 * Theme.u; radius: height / 2
+        color: "#3a1f1f"; border.color: Theme.red
+        Label {
+            id: bannerText; anchors.centerIn: parent; size: 13; color: Theme.red
+            text: {
+                var secs = Ha.downSince ? Math.max(0, Math.round((win.now - Ha.downSince) / 1000)) : 0;
+                var ago = secs < 60 ? secs + " s" : Math.round(secs / 60) + " min";
+                switch (Ha.status) {
+                case "auth_failed": return "Home Assistant rejected the token";
+                case "not_configured": return "Home Assistant not set up (HA_URL / token)";
+                case "reconnecting": return "Reconnecting to Home Assistant · offline " + ago;
+                default: return "Connecting to Home Assistant…";
+                }
+            }
+        }
+    }
+
+    // Failure message for a rejected or unsent command (one at a time, 3 s).
+    Rectangle {
+        id: failToast
+        property string msg: ""
+        anchors { bottom: tabs.top; horizontalCenter: parent.horizontalCenter; bottomMargin: 54 * Theme.u }
+        z: 70
+        visible: msg !== ""
+        width: Math.min(win.width - 32 * Theme.u, failText.implicitWidth + 32 * Theme.u)
+        height: failText.height + 20 * Theme.u; radius: 14 * Theme.u
+        color: "#e6181b21"; border.color: Theme.red
+        Label { id: failText; anchors.centerIn: parent; width: parent.width - 32 * Theme.u
+                horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; size: 13
+                text: "Couldn't do that: " + failToast.msg }
+        Timer { id: failTimer; interval: 3000; onTriggered: failToast.msg = "" }
+        Connections {
+            target: Ha
+            function onCallFailed(id, message) { failToast.msg = message; failTimer.restart(); }
+        }
+    }
+
+    // Nothing to show yet: say why instead of a blank screen.
+    Column {
+        anchors.centerIn: pages
+        width: parent.width - 48 * Theme.u
+        spacing: 10 * Theme.u
+        visible: (win.layout.pages || []).length === 0
+        Icon { anchors.horizontalCenter: parent.horizontalCenter; size: 48; name: "view-dashboard-outline"; color: Theme.textDim }
+        Label { width: parent.width; horizontalAlignment: Text.AlignHCenter; size: 18; font.weight: Font.DemiBold
+                text: win.layoutDashboard ? "Dashboard \"" + win.layoutDashboard + "\" has nothing to show yet"
+                                          : "No dashboard set up" }
+        Label { width: parent.width; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap; size: 13; color: Theme.textDim
+                text: win.layoutDashboard
+                      ? (Ha.connected ? "Add cards to it in Home Assistant; this panel updates when you save."
+                                      : "Waiting for Home Assistant at " + (Ha.baseUrl || "(no HA_URL)") + ".")
+                      : "Set LAYOUT_DASHBOARD in kiosk.env to a Home Assistant dashboard, or add a layout.json." }
     }
 
     // Bottom tab bar
@@ -125,7 +178,8 @@ Window {
         }
     }
 
-    // Swallow touches while the screen is dark or dimmed (the waking tap shouldn't press anything).
+    // Swallow touches only while the screen is dark or showing photos (the waking tap shouldn't
+    // press anything there). When merely dimmed the UI is visible, so a tap works straight away.
     Timer {
         interval: 300; running: true; repeat: true
         onTriggered: {
@@ -167,7 +221,7 @@ Window {
             var n = 0, x = 0, y = 0;
             for (var i = 0; i < handlers.length; i++)
                 if (handlers[i].active) { n++; x += handlers[i].point.position.x; y += handlers[i].point.position.y; }
-            if (n > 0) cur = Qt.point(x / n, y / n);
+            if (n > 0) { cur = Qt.point(x / n, y / n); idleHome.restart(); }
             if (fingers === 0 && n > 0) { maxFingers = 0; ended = false; t0 = Date.now(); }
             if (n > maxFingers) { maxFingers = n; start = cur; end = cur; tCount = Date.now(); }   // new baseline per finger count
             if (n < maxFingers && !ended) { ended = true; end = curBefore; }   // first finger lifted: gesture is over
@@ -254,6 +308,7 @@ Window {
         anchors { right: parent.right; bottom: tabs.top; margins: 10 * Theme.u }
         z: 60
         opacity: win.displayState === "awake" ? 1 : 0
+        enabled: win.displayState === "awake"     // hidden button must not catch touches
     }
 
     // Daytime idle: photo slideshow (display state "photos", see ha-kiosk-display.sh).
@@ -265,11 +320,15 @@ Window {
     }
     Item {
         anchors.fill: parent; z: 100
-        visible: win.displayState !== "awake"
+        visible: win.displayState === "asleep" || win.displayState === "photos"
         MultiPointTouchArea { anchors.fill: parent; mouseEnabled: true }
         MouseArea { anchors.fill: parent }
     }
     // After waking from night/dim, go back to Home.
     onCurrentChanged: if (pages.currentIndex !== current) pages.currentIndex = current
-    onDisplayStateChanged: if (displayState === "asleep" || displayState === "photos") current = 0
+    onDisplayStateChanged: if (displayState === "asleep" || displayState === "photos") { current = 0; Panel.goHome(); }
+
+    // Idle: after 2 minutes without a touch, go back to Home and scroll pages to the top.
+    Timer { id: idleHome; interval: 120000; running: true
+            onTriggered: { win.current = 0; Panel.goHome(); } }
 }

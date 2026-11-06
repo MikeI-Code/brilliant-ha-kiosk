@@ -34,4 +34,5 @@ jobs:
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" dist/brilliant-ha-kiosk-$TAG.tar.gz dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+        # No --clobber: a published bundle must never change (integrators pin its sha256).
+        run: gh release upload "$TAG" dist/brilliant-ha-kiosk-$TAG.tar.gz dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256 --repo "$GITHUB_REPOSITORY"

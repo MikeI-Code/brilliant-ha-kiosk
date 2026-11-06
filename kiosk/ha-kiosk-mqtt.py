@@ -47,6 +47,14 @@ def gb_suffix(n):
     return ("", "") if n == 0 else (f"_{n}", f" {n + 1}")
 
 
+def deciwatts_to_w(value):
+    """gangbox `power` is deciwatts (0.1 W); publish watts. Pass blanks/garbage through."""
+    try:
+        return str(round(int(value) / 10.0, 1))
+    except (TypeError, ValueError):
+        return value
+
+
 def decode_shelly(value):
     """ble_peripheral.shelly_sensor_readings (base64 Thrift) -> {mac: {...}}, or None if undecodable."""
     if not value:
@@ -132,8 +140,9 @@ class KioskMqtt:
         sensors = []
         for n in self.gangboxes:
             sfx, lbl = gb_suffix(n)
-            # Unit of `power` is not documented by Brilliant (compiled code); watts is inferred from
-            # its strings and readings. Brilliant only pushes changes above ~40 W / 10 %.
+            # `power` is reported in deciwatts (0.1 W): a 24 W (6x4 W LED) load read 134 at ~60%
+            # dim and 172 higher, i.e. 13.4 W / 17.2 W. We divide by 10 and publish watts.
+            # Brilliant only pushes changes above a threshold, so this updates coarsely.
             sensors += [(f"load_power{sfx}", f"Load{lbl} power", "W", "power", None),
                         (f"load_temperature{sfx}", f"Gangbox{lbl} temperature", "°C", "temperature",
                          "diagnostic")]
@@ -260,7 +269,7 @@ class KioskMqtt:
 
     def _pub_gangbox(self, n, v):
         sfx = gb_suffix(n)[0]
-        self._pub(f"load_power{sfx}", v.get("power", ""))
+        self._pub(f"load_power{sfx}", deciwatts_to_w(v.get("power", "")))
         self._pub(f"load_temperature{sfx}", v.get("temperature", ""))
         self._pub(f"min_dim_level{sfx}", v.get("minimum_dim_level", ""))
         self._pub(f"max_dim_level{sfx}", v.get("maximum_dim_level", ""))

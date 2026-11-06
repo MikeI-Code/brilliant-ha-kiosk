@@ -9,3 +9,6 @@ config/token
 native/layout.json
 *.log
 dist/
+
+# Proprietary Brilliant firmware export (decompile/extract) — never commit
+artifacts/
