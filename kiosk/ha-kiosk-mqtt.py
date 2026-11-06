@@ -255,6 +255,51 @@ class KioskMqtt:
             self.last[key] = value
             self.c.publish(f"{self.base}/{key}", value, retain=True)
 
+    # Brilliant's Ring integration (read-only), published by the panel that hosts it.
+    def ring_alarm(self, state):
+        if not getattr(self, "_ring_alarm_disc", False):
+            self._ring_alarm_disc = True
+            self._cfg("sensor", "ring_alarm", {
+                "name": "Ring alarm", "state_topic": f"{self.base}/ring_alarm", "icon": "mdi:shield-home",
+                "device_class": "enum",
+                "options": ["unknown", "disarmed", "armed_home", "armed_away", "armed_night", "disabled",
+                            "disarming", "disarmed_not_ready", "fire_alarm", "carbon_monoxide_alarm",
+                            "medical_alarm", "intrusion_alarm", "armed_away_bypass", "armed_home_bypass",
+                            "police_alarm", "disarmed_bypass"]})
+        self._pub("ring_alarm", state)
+
+    def brilliant_lock(self, lk):
+        key = "lock_" + "".join(c if c.isalnum() else "_" for c in lk["name"].lower())
+        if key not in getattr(self, "_lock_disc", set()):
+            self._lock_disc = getattr(self, "_lock_disc", set()) | {key}
+            self._cfg("sensor", key, {"name": f"{lk['name'].title()} lock", "icon": "mdi:lock",
+                                      "state_topic": f"{self.base}/{key}", "device_class": "enum",
+                                      "options": ["locked", "unlocked", "jammed"]})
+        self._pub(key, lk["state"])
+
+    def security_controls(self, st):
+        """'ok' or 'limited', with each ability and the reason in the attributes (per panel)."""
+        if not getattr(self, "_sec_disc", False):
+            self._sec_disc = True
+            self._cfg("sensor", "security_controls", {
+                "name": "Security controls", "icon": "mdi:shield-check", "entity_category": "diagnostic",
+                "state_topic": f"{self.base}/security_controls", "device_class": "enum", "options": ["ok", "limited"],
+                "json_attributes_topic": f"{self.base}/security_controls/attributes"})
+        self._pub("security_controls", st["status"])
+        attrs = {"arm": st["caps"]["arm"], "disarm": st["caps"]["disarm"], "lock": st["caps"]["lock"],
+                 "reasons": st["reasons"], "firmware": st["firmware"],
+                 "disarm_verified_on_this_firmware": not st["disarm_unverified"],
+                 "last_disarm": st["last_disarm"], "paused_until": st["lockout_until"]}
+        self._pub("security_controls/attributes", json.dumps(attrs, sort_keys=True))
+
+    def ring_doorbell(self, name):
+        if not getattr(self, "_ring_bell_disc", False):
+            self._ring_bell_disc = True
+            self._cfg("event", "ring_doorbell", {"name": "Ring doorbell", "device_class": "doorbell",
+                                                 "state_topic": f"{self.base}/ring_doorbell",
+                                                 "event_types": ["press"]})
+        self.c.publish(f"{self.base}/ring_doorbell", json.dumps({"event_type": "press", "doorbell": name}))
+
     def gesture(self, name):
         if name in GESTURES:
             self.c.publish(f"{self.base}/gesture", json.dumps({"event_type": name}))

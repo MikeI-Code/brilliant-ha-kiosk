@@ -18,7 +18,7 @@ function stripMdi(i) { return i ? String(i).replace(/^mdi:/, "") : ""; }
 
 var DEFAULT_SIZE = { light: "half", "switch": "half", scene: "quarter", climate: "half",
                      media: "full", sensor: "third", binary: "half", alloff: "quarter",
-                     cover: "half", lock: "quarter", fan: "half", number: "half", select: "half" };
+                     cover: "half", lock: "quarter", fan: "half", number: "half", select: "half", camera: "full" };
 
 function sizeOf(card, kind) {
     var c = card.grid_options && card.grid_options.columns;
@@ -38,6 +38,7 @@ function kindFor(entity) {
     if (["switch", "input_boolean", "automation", "siren"].indexOf(d) >= 0) return "switch";
     if (["scene", "script", "button", "input_button"].indexOf(d) >= 0) return "scene";
     if (d === "climate") return "climate";
+    if (d === "camera") return "camera";
     if (d === "media_player") return "media";
     if (d === "binary_sensor") return "binary";
     if (d === "weather") return "weather";
@@ -70,6 +71,11 @@ function itemsOf(card) {
         return out;
     }
     if (card.type === "weather-forecast") return [{ type: "hero", entity: card.entity || "" }];
+    if ((card.type === "picture-entity" || card.type === "picture-glance") && (card.camera_image || card.entity)) {
+        var cam = String(card.camera_image || card.entity);      // picture cards showing a camera
+        if (cam.indexOf("camera.") === 0)
+            return [{ type: "camera", entity: cam, name: card.name || card.title || "", icon: stripMdi(card.icon), size: sizeOf(card, "camera") }];
+    }
     if (card.type === "heading") return [{ type: "heading", title: card.heading || "" }];
 
     var act = actionOf(card);

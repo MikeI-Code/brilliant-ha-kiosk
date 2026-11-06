@@ -1,0 +1,18 @@
+Brilliant -> Home Assistant Panel
+Copyright 2026 Mike Ippolito
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Earlier versions: releases before v1.3.0 (v1.0.0 through v1.2.1) were published under the MIT
+License. Copies of those releases keep the MIT terms they were distributed with. From v1.3.0 on,
+the project is licensed under the Apache License, Version 2.0.
+
+Third-party components included in this repository keep their own licenses:
+
+* native/fonts/materialdesignicons-webfont.ttf and native/icons.json are derived from
+  Material Design Icons by Pictogrammers (https://pictogrammers.com): font under the
+  SIL Open Font License 1.1, icons under the Apache License 2.0.
+
+Trademarks: Brilliant, Ring, Schlage, Home Assistant and other names are trademarks of their
+respective owners. This is an independent community project, not affiliated with or endorsed by
+any of them. The Apache License does not grant permission to use these names (section 6).

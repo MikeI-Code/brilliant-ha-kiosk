@@ -19,7 +19,7 @@ cp "$ROOT"/tools/brilliant_bus.py "$ROOT"/tools/inject_touch.py "$B/ha-kiosk/"
 cp "$ROOT"/systemd/* "$B/systemd/"
 cp "$ROOT"/kiosk/install-local.sh "$B/install-local.sh"
 cp "$ROOT"/config/kiosk.env.example "$B/kiosk.env.example"
-cp "$ROOT"/LICENSE "$B/"
+cp "$ROOT"/LICENSE "$ROOT"/NOTICE "$B/"
 echo "$VERSION" > "$B/VERSION"
 chmod 755 "$B/install-local.sh" "$B"/ha-kiosk/*.sh "$B"/ha-kiosk/*.py
 (cd "$B" && find . -type f ! -name MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > MANIFEST.sha256)

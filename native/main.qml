@@ -17,6 +17,56 @@ Window {
     property int current: 0
     property string displayState: "awake"
 
+    // Opt-in Capture screen (KIOSK_CAPTURE=1, ha-kiosk-capture on 127.0.0.1:10721). Appended as a
+    // synthetic last tab; win.layout.pages itself is left untouched for other code.
+    property bool captureEnabled: false
+    readonly property string captureApi: "http://127.0.0.1:10721"
+    // Security tab: appears by itself when Brilliant reports Ring/Schlage devices (SECURITY_TAB=0 hides it).
+    // Latched once shown so the tab bar doesn't rebuild if a poll misses.
+    property bool securityEnabled: false
+    readonly property bool securityAllowed: !/^\s*SECURITY_TAB\s*=\s*"?(0|off|false|no)/mi.test(Ha.readFile("/etc/ha-kiosk/kiosk.env"))
+    Connections { target: Panel; function onHasSecurityChanged() { if (Panel.hasSecurity && win.securityAllowed) win.securityEnabled = true; } }
+    readonly property int securityIndex: securityEnabled ? (layout.pages || []).length : -1
+    readonly property var allPages: (layout.pages || [])
+        .concat(securityEnabled ? [{ type: "security", title: "Security", icon: "shield-home" }] : [])
+        .concat(captureEnabled ? [{ type: "capture", title: "Capture", icon: "microphone" }] : [])
+    readonly property int captureIndex: captureEnabled ? (layout.pages || []).length + (securityEnabled ? 1 : 0) : -1
+    Connections { target: Panel; function onShowSecurity() { if (win.securityIndex >= 0) win.current = win.securityIndex; } }
+    property double captureProbeStart: 0
+    function captureStatus(cb) {
+        var x = new XMLHttpRequest();
+        x.onreadystatechange = function () {
+            if (x.readyState !== XMLHttpRequest.DONE) return;
+            var s = null;
+            if (x.status === 200) { try { s = JSON.parse(x.responseText); } catch (e) {} }
+            cb(s);
+        };
+        x.open("GET", captureApi + "/status");
+        x.send();
+    }
+    // Startup discovery: retry every 10 s until the service answers or 2 minutes pass.
+    Timer {
+        id: captureProbe; interval: 10000; repeat: true; triggeredOnStart: true
+        onTriggered: {
+            if (Date.now() - win.captureProbeStart > 120000) { stop(); return; }
+            win.captureStatus(function (s) {
+                if (!s) return;
+                captureProbe.stop();
+                if (s.enabled) { win.captureEnabled = true; console.log("native: capture enabled" + (s.video ? " (video)" : "")); }
+            });
+        }
+    }
+    // HA-started recording while awake: bring the Capture tab forward (the page itself polls only
+    // while on screen, so this light 3 s check runs only while awake and on another tab).
+    Timer {
+        interval: 3000; repeat: true
+        running: win.captureEnabled && win.displayState === "awake" && win.current !== win.captureIndex
+        onTriggered: win.captureStatus(function (s) {
+            if (!s || s.state !== "recording" || s.source !== "ha") return;
+            win.current = win.captureIndex; idleHome.restart();
+        })
+    }
+
     // Layout source: the HA dashboard named by LAYOUT_DASHBOARD in kiosk.env (edited in HA's UI),
     // cached in /var/lib/ha-kiosk for offline boots; otherwise ./layout.json.
     property string layoutDashboard: ""
@@ -28,7 +78,7 @@ Window {
         try { var l = JSON.parse(txt); } catch (e) { console.log("native: bad layout from " + from + ": " + e); return false; }
         if (!l.pages || l.pages.length === 0) return false;
         layoutJson = txt; layout = l;
-        if (current >= l.pages.length) current = 0;
+        if (current >= l.pages.length + (captureEnabled ? 1 : 0)) current = 0;
         console.log("native: layout from " + from + ", " + l.pages.length + " pages");
         return true;
     }
@@ -58,6 +108,7 @@ Window {
             setLayout(Ha.readUrl(Qt.resolvedUrl("layout.json")), "layout.json");
         console.log("native: u=" + Theme.u + (layoutDashboard ? ", layout dashboard: " + layoutDashboard : ""));
         Ha.start();
+        captureProbeStart = Date.now(); captureProbe.start();
     }
 
     // Pages side by side: swipe left/right (or tap a tab) to switch. All pages stay loaded
@@ -76,18 +127,25 @@ Window {
         clip: true
         opacity: Ha.connected ? 1 : 0.6        // stale data while offline (the panel's own light still works)
         interactive: win.displayState !== "asleep" && win.displayState !== "photos" && !Panel.multi
-        model: win.layout.pages || []
+        model: win.allPages
         onCurrentIndexChanged: if (currentIndex >= 0 && currentIndex !== win.current) win.current = currentIndex
         delegate: Loader {
             width: pages.width; height: pages.height
+            // Draw only pages that are (partly) on screen; off-screen pages stay loaded but cost nothing.
+            visible: x + width > pages.contentX && x < pages.contentX + pages.width
             asynchronous: index !== 0
-            sourceComponent: (modelData.type === "music" || modelData.type === "sonos") ? musicPage : gridPage
+            sourceComponent: modelData.type === "security" ? securityPage : modelData.type === "capture" ? capturePage
+                : (modelData.type === "music" || modelData.type === "sonos") ? musicPage : gridPage
             property var spec: modelData
         }
         Component { id: gridPage
             Page { spec: parent.spec; weatherEntity: win.layout.weather || ""; insideEntity: win.layout.insideTemp || "" } }
         Component { id: musicPage
             MusicPage { speakers: parent.spec.speakers || [] } }
+        Component { id: securityPage
+            SecurityPage {} }
+        Component { id: capturePage
+            CapturePage { } }
     }
 
     // Connection banner: what is wrong and for how long. Sits above the tab bar, clear of the clock.
@@ -161,9 +219,9 @@ Window {
         Row {
             anchors.fill: parent
             Repeater {
-                model: win.layout.pages || []
+                model: win.allPages
                 Item {
-                    width: tabs.width / Math.max(1, (win.layout.pages || []).length); height: tabs.height
+                    width: tabs.width / Math.max(1, win.allPages.length); height: tabs.height
                     readonly property bool sel: index === win.current
                     Column {
                         anchors.centerIn: parent; spacing: 2 * Theme.u
@@ -181,11 +239,17 @@ Window {
     // Swallow touches only while the screen is dark or showing photos (the waking tap shouldn't
     // press anything there). When merely dimmed the UI is visible, so a tap works straight away.
     Timer {
-        interval: 300; running: true; repeat: true
+        interval: 300; running: !pages.moving; repeat: true   // no file reads mid-swipe
+        property int tick: 0
+        property string lastPage: ""
         onTriggered: {
-            var s = Ha.readFile("/run/ha-kiosk-display/state").trim(); if (s !== "") win.displayState = s;
-            // Remote tab switch for testing/automation: echo N > /run/ha-kiosk-display/page
-            var p = Ha.readFile("/run/ha-kiosk-display/page").trim(); if (p !== "" && !isNaN(p)) win.current = parseInt(p);
+            var s = Ha.readFile("/run/ha-kiosk-display/state").trim();
+            if (s !== "" && s !== win.displayState) win.displayState = s;
+            // Remote tab switch for testing/automation: echo N > /run/ha-kiosk-display/page (checked ~every 2 s,
+            // and only acted on when it changes, so it can't keep pulling a swipe back).
+            if (++tick % 7) return;
+            var p = Ha.readFile("/run/ha-kiosk-display/page").trim();
+            if (p !== lastPage) { lastPage = p; if (p !== "" && !isNaN(p)) win.current = parseInt(p); }
         }
     }
     // Multi-touch gestures (see Panel.qml for the settings). Five passive PointHandlers each follow
@@ -310,6 +374,11 @@ Window {
         opacity: win.displayState === "awake" ? 1 : 0
         enabled: win.displayState === "awake"     // hidden button must not catch touches
     }
+
+    // Doorbell / camera pop-up: above everything, including the screensaver and the touch shield.
+    Doorbell { anchors.fill: parent; z: 120 }
+    // Ring Alarm arm / disarm pad (opened from the alarm line on the Home header).
+    AlarmPad { anchors.fill: parent; z: 115 }
 
     // Daytime idle: photo slideshow (display state "photos", see ha-kiosk-display.sh).
     Screensaver {

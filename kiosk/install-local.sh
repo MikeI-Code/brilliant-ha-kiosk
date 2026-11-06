@@ -20,7 +20,7 @@ set -eu
 BUNDLE="$(cd "$(dirname "$0")" && pwd)"
 DEST=/etc/ha-kiosk
 STATE=/var/lib/ha-kiosk
-UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service ha-kiosk-voice.service ha-kiosk-intercom.service"
+UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service"
 DROPIN=/etc/systemd/system/message_bus.service.d/ha-kiosk-display.conf
 TMPFILES=/etc/tmpfiles.d/ha-kiosk.conf
 
@@ -47,7 +47,7 @@ done
 
 uninstall() {
     log "stopping the kiosk"
-    systemctl disable --now ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-voice.service ha-kiosk-intercom.service 2>/dev/null || true
+    systemctl disable --now ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service 2>/dev/null || true
     if [ -f "$DROPIN" ]; then
         rm -f "$DROPIN"; systemctl daemon-reload
         log "restarting Brilliant services (message_bus) to give the screen back"
@@ -132,6 +132,13 @@ start() {
         log "intercom enabled (KIOSK_INTERCOM=1$(envflag INTERCOM_MIC && echo ', mic on' || echo ', receive only'))"
     else
         systemctl disable --now ha-kiosk-intercom.service 2>/dev/null || true
+    fi
+    # Voice/video capture API: opt-in, KIOSK_CAPTURE=1 (camera only with CAPTURE_VIDEO=1 as well).
+    if envflag KIOSK_CAPTURE; then
+        systemctl enable ha-kiosk-capture.service; systemctl restart ha-kiosk-capture.service
+        log "capture enabled (KIOSK_CAPTURE=1$(envflag CAPTURE_VIDEO && echo ', video on' || echo ', audio only'))"
+    else
+        systemctl disable --now ha-kiosk-capture.service 2>/dev/null || true
     fi
     sleep 3
     systemctl is-active --quiet ha-kiosk.service || die "ha-kiosk.service did not start (journalctl -u ha-kiosk)"

@@ -1,0 +1,18 @@
+[Unit]
+Description=HA kiosk voice/video capture API (opt-in: KIOSK_CAPTURE=1)
+After=message_bus.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+EnvironmentFile=-/etc/ha-kiosk/kiosk.env
+WorkingDirectory=/data/switch-embedded
+ExecStart=/data/switch-embedded/env/bin/python -u /etc/ha-kiosk/ha-kiosk-capture.py
+# Removes the runtime nftables rule that lets the allowed hosts download clips from CAPTURE_PORT
+ExecStopPost=/data/switch-embedded/env/bin/python /etc/ha-kiosk/ha-kiosk-capture.py --close-firewall
+ExecStopPost=/bin/rm -rf /run/ha-kiosk-capture
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -2,6 +2,11 @@
 
 Everything you need to install, configure, use and maintain the Brilliant → Home Assistant panel.
 
+> **Why Brilliant hardware?** Brilliant's own software keeps integrations working that Home Assistant
+> doesn't have, such as the Ring Alarm (and maintains others, such as Schlage locks), backed by an engineering team and cloud
+> services. This project only replaces the screen and keeps all of Brilliant's background services, so
+> keep your Brilliant account and integrations linked in the Brilliant app. See the README for more.
+
 **Contents**
 
 1. [Requirements](#1-requirements)
@@ -356,7 +361,193 @@ and nothing is recorded.
 The service also answers on the panel itself at `http://127.0.0.1:<INTERCOM_PORT+1>/` (`status`,
 `talk?on=1`, `talk?on=0`, `target?name=<room>`, `tone`); the panel UI uses this.
 
+### 2.11 Voice and video capture API (optional, off by default)
+
+This is an opt-in way to record a voice clip, a camera snapshot or a short video on the panel and
+hand it to Home Assistant. Nothing listens all the time: the microphone (or camera) is opened only
+for one explicit recording and closed straight after. The panel only **publishes** each clip; what
+happens next (speech-to-text, a notification, an AI reply, saving it) is up to automations you
+write yourself. This project ships no Home Assistant logic for it.
+
+**Turn it on** per panel in `.private/<panel>.kiosk.env`, then run `install.sh`:
+
+```sh
+KIOSK_CAPTURE=1      # Capture screen + API, voice clips
+CAPTURE_VIDEO=1      # ...plus camera snapshots and video clips (optional)
+```
+
+The installer enables `ha-kiosk-capture.service` only when `KIOSK_CAPTURE=1`, and disables it otherwise.
+
+**Settings**
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KIOSK_CAPTURE` | `0` | `1` = Capture screen and API (voice clips) |
+| `CAPTURE_VIDEO` | `0` | `1` = also camera snapshots and video clips (needs `KIOSK_CAPTURE=1`) |
+| `CAPTURE_PORT` | `10720` | LAN port that serves clips; the panel UI uses this + 1 on 127.0.0.1 |
+| `CAPTURE_ALLOW` | host in `HA_URL` | Comma-separated addresses allowed to download clips |
+| `CAPTURE_MAX_SECS` | `30` | Longest voice clip. Video clips are 10 s at most. |
+| `CAPTURE_TTL` | `300` | Seconds a clip can be downloaded; then it is deleted |
+| `CAPTURE_MIC` | `default` | ALSA capture device (shared with Brilliant and the voice service) |
+| `CAPTURE_UPLOAD` | `0` | `1` also uploads each clip into HA's media library (Media > My media) and adds `media_id` to the event, so automations can use the clip directly (for example as an AI task attachment). Needs an admin token. |
+| `CAPTURE_UPLOAD_DIR` | *(empty)* | Folder under `/media` for uploads; it must already exist. Empty = top level. |
+
+**The screen.** A **Capture** tab appears. Tap the big round button to start a voice recording and
+again to stop (it stops by itself at `CAPTURE_MAX_SECS`). A level meter and timer show while it
+records. With `CAPTURE_VIDEO=1` there are also **Snapshot** and **Video clip** buttons. A red
+*Recording* pill shows whenever the mic or camera is in use, including recordings Home Assistant
+started (labelled *Requested by Home Assistant*; the panel switches to the Capture tab so the person
+in the room sees it). The last clip and any reply text from HA are shown below.
+
+**Clips.** Voice is 16 kHz mono 16-bit WAV. Snapshots are 1280x720 JPEG. Video is 640x360 at 5 fps,
+H.264 in MP4, no sound. Clips live in RAM (`/run/ha-kiosk-capture`, 16 MB in total, oldest dropped
+first) and are deleted after `CAPTURE_TTL` seconds or when the service stops.
+
+**Clip URLs.** `http://<panel-ip>:<CAPTURE_PORT>/clips/<token>.<wav|jpg|mp4>`. The token is random
+(32 characters) and only appears in the MQTT event. The server listens on the panel's LAN address,
+answers `GET` only, and only for the hosts in `CAPTURE_ALLOW` (others get 403, unknown or expired
+clips 404). While the service runs, one runtime nftables rule accepts `CAPTURE_PORT` from those
+hosts; it is removed when the service stops and is never saved. Download a clip soon after the
+event: it expires.
+
+**MQTT** (needs §2.7). `<base>` is `<MQTT_BASE>/<node>`, for example `brilliant_kiosk/brilliant_0123456789ab`.
+Two entities appear on the panel's device:
+
+| Entity | Topic | What it is |
+|---|---|---|
+| **Capture** (event) | `<base>/capture/event` | Fires `audio_clip`, `snapshot`, `video_clip` or `capture_error` |
+| Capture state (sensor) | `<base>/capture/state` | `idle`, `recording`, `processing` or `error` |
+
+Event payload (QoS 1, not retained):
+
+```json
+{"event_type": "audio_clip", "clip_id": "6f1c...", "url": "http://<panel-ip>:10720/clips/<token>.wav",
+ "mime": "audio/wav", "duration": 4.2, "bytes": 134444, "expires": 1767225600,
+ "panel": "brilliant_0123456789ab", "room": "Kitchen", "source": "panel", "request_id": null, "error": null}
+```
+
+`mime` is `audio/wav`, `image/jpeg` or `video/mp4`; `duration` is seconds (0 for a snapshot);
+`expires` is a Unix time; `source` is `panel` (someone tapped) or `ha` (a command). A
+`capture_error` has `url`, `mime` and `expires` set to `null` and the reason in `error` (for example
+`busy`, `rate limited` or `video capture is off (CAPTURE_VIDEO=0)`).
+
+**Commands**, JSON on `<base>/capture/command`:
+
+```json
+{"action": "record", "kind": "audio", "secs": 10, "request_id": "my-id-1"}
+{"action": "stop"}
+{"action": "cancel"}
+```
+
+`kind` is `audio`, `snapshot` or `video` (the last two only with `CAPTURE_VIDEO=1`). `secs` is capped
+at `CAPTURE_MAX_SECS` (10 for video). Recordings started this way are limited to one every 10 s and
+always show on the screen. `request_id` comes back in the event so you can match it. `stop` ends a
+recording and publishes it; `cancel` discards it.
+
+**Reply text**, JSON on `<base>/capture/reply`: `{"text": "Added milk to the list", "clear_after": 30}`
+shows the text on the Capture screen for `clear_after` seconds. The panel doesn't speak it; use the
+**Announce** entity (§2.9) if you want that.
+
+**Example for automation authors** (not shipped; adapt it). It sends each voice clip from the
+kitchen panel to a notification:
+
+```yaml
+# Example only. Find your panel's entity under Settings > Devices > <room> Brilliant panel.
+alias: Kitchen panel voice clip (example)
+triggers:
+  - trigger: state
+    entity_id: event.kitchen_brilliant_panel_capture
+conditions:
+  - "{{ trigger.to_state.attributes.event_type == 'audio_clip' }}"
+actions:
+  - action: notify.notify
+    data:
+      message: "New {{ trigger.to_state.attributes.duration }} s clip: {{ trigger.to_state.attributes.url }}"
+```
+
+The service also answers on the panel itself at `http://127.0.0.1:<CAPTURE_PORT+1>/` (`status`,
+`start?kind=audio|video`, `stop`, `snapshot`, `cancel`); the panel UI uses this.
+
 ---
+
+### 2.12 Security: Ring Alarm, locks, doorbells and cameras
+
+If you link **Ring** or **Schlage** in the **Brilliant app**, the panel uses Brilliant's own
+integrations for them. Nothing needs setting up here: link or unlink devices in the Brilliant app and
+every panel follows within seconds. (Home Assistant's own Ring integration has no Ring Alarm support,
+at the time of writing; this is one of the reasons the project builds on Brilliant hardware.)
+
+**On the panel**
+
+* A **Security** tab appears by itself when Brilliant reports any of these devices
+  (`SECURITY_TAB=0` hides it on a panel). It has three sections:
+  * **Alarm:** status, **Arm home** / **Arm away**, and **Disarm** with your alarm code.
+  * **Locks:** one card per lock. Tap to lock; unlocking needs a second tap within 3 s.
+  * **Doorbells & cameras:** each Ring device as a camera tile (Home Assistant's still pictures,
+    matched by name, e.g. "Front Door" -> `camera.front_door_live_view`), with the time of the
+    last press. Tap for full screen.
+* The Home header shows a one-line summary (alarm and locks); tap it to open the Security tab.
+* **Doorbell pop-up:** a press wakes the panel (also at night) and shows that door's camera for 45 s
+  (`DOORBELL`, `DOORBELL_SECS`).
+
+**In Home Assistant** (read-only): a Ring alarm sensor (`disarmed`, `armed_home`, `armed_away`, ...)
+and a lock sensor for each lock, from the panel that hosts each integration in Brilliant; a **Ring
+doorbell** event; and on every panel a diagnostic **Security controls** sensor (below). Home
+Assistant cannot arm, disarm, lock or unlock through this project: that is done on the panels only.
+
+#### How the alarm and lock control works
+
+The Security tab talks to Brilliant's integrations over the panel's local message bus, the same
+interface Brilliant's own screen used. It never contacts Ring or Schlage directly and never reads or
+uses your Ring or Schlage login.
+
+* **Status, arming and locking** use variables that Brilliant's software exposes and marks as
+  settable, with the bus's normal check-and-set request.
+* **Disarming needs your alarm code.** Brilliant only accepts a disarm with the code encrypted for
+  the alarm's one-time key (X25519 key agreement, HKDF-SHA256, AES-GCM). That format is not
+  documented. It was matched by testing standard settings against Brilliant's own decryption routine
+  on a throwaway key, without decompiling code or extracting any keys. The alarm still checks the
+  code itself; a wrong code is rejected just as on Brilliant's own screen.
+* **Your code** is typed on the panel and sent once, encrypted. It is never stored, logged or sent to
+  Home Assistant.
+* **These are internal, undocumented interfaces**, so a Brilliant firmware update may change them
+  (disarming is the most likely to break). The panel protects you from that, as described next.
+* This project is not affiliated with Brilliant, Ring or Schlage.
+
+#### When something changes: safety behaviour
+
+* **Compatibility check.** At start, every 10 minutes and after every firmware change, each panel
+  checks each ability (arm, disarm, lock) without sending anything to the devices: the variables
+  exist and are settable, and the alarm's key is still in the expected format. If a check fails,
+  **only that ability is switched off**; everything else keeps working.
+* **Visible, never silent.** A switched-off control is greyed out on the panel with the reason, e.g.
+  *"Disarm from the panel is unavailable: the alarm's key format changed. Use the Ring app or
+  keypad."*
+* **Disarm is confirmed.** After a disarm is sent, the panel waits up to 20 s for the alarm to report
+  disarmed. If it doesn't, the panel says *"The last disarm wasn't accepted (wrong code, or a Brilliant
+  update changed something)."* After a firmware update the panel notes that disarm hasn't been
+  confirmed on that firmware yet, until one works.
+* **Attempts are limited.** After 3 disarms in a row that weren't accepted, panel disarm pauses for
+  5 minutes.
+* **Home Assistant is told.** Each panel publishes a diagnostic sensor **Security controls**: `ok`
+  or `limited`, with attributes `arm`, `disarm`, `lock` (true/false), `reasons`, `firmware`,
+  `disarm_verified_on_this_firmware`, `last_disarm` and `paused_until`. For example, to get a phone
+  notification when a control is switched off:
+
+```yaml
+# Example only. Find the entity under Settings > Devices > <room> Brilliant panel.
+alias: Panel security controls limited
+triggers:
+  - trigger: state
+    entity_id: sensor.kitchen_brilliant_panel_security_controls
+    to: limited
+actions:
+  - action: notify.notify
+    data:
+      message: >
+        {{ trigger.to_state.attributes.reasons }} (Brilliant firmware
+        {{ trigger.to_state.attributes.firmware }})
+```
 
 ## 3. Using the panel
 
@@ -533,6 +724,10 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `KIOSK_MODE` | `native` | `native` (this UI) or `web` (HA's own dashboard in a browser; works, but slow on this CPU) |
 | `HA_ZOOM` | `2.0` | Web mode only: page zoom |
 | `TZ` / `TZ_LOCAL` | US Eastern | POSIX time zone for the clock and schedule (the panel runs in UTC) |
+| `CLIMATE_CONTROLLER` | — | A climate entity that drives your thermostats, such as a Flair "structure" or a Keen home. Thermostat tiles then show a **Mode** chip and −/+ that go to this controller, and a **Fan** chip that goes to the thermostat itself. Room tiles keep their own setpoint and show the house mode. Empty = every tile controls its own entity. |
+| `CLIMATE_THERMOSTATS` | — (auto) | Which climate entities count as thermostats for `CLIMATE_CONTROLLER`. Default: those with fan modes. Comma-separated. |
+| `SECURITY_TAB` | `1` | `0` hides the Security tab (Ring Alarm, Schlage locks, Ring doorbells and cameras from Brilliant's integrations) on this panel |
+| `DOORBELL` / `DOORBELL_SECS` / `DOORBELL_MOTION` | `1` / `45` / `0` | Doorbell pop-up on/off, how long it stays, and whether camera motion also pops up |
 
 ### Display
 
@@ -614,6 +809,17 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `INTERCOM_MAX_SECS` | `30` | Longest single talk |
 | `INTERCOM_MIC_DEVICE` / `INTERCOM_SPEAKER` | `default` / `dmix_filtered` | ALSA devices (shared with Brilliant) |
 | `INTERCOM_BIND` | auto | Address to use (default: the one that reaches `MQTT_HOST`) |
+
+### Capture (optional)
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KIOSK_CAPTURE` | `0` | `1` = Capture screen and clip API (§2.11) |
+| `CAPTURE_VIDEO` | `0` | `1` = also camera snapshots and video clips |
+| `CAPTURE_PORT` | `10720` | LAN port serving clips; local control port is this + 1 |
+| `CAPTURE_ALLOW` | host in `HA_URL` | Addresses allowed to download clips |
+| `CAPTURE_MAX_SECS` / `CAPTURE_TTL` | `30` / `300` | Longest voice clip; seconds a clip stays downloadable |
+| `CAPTURE_MIC` | `default` | ALSA capture device |
 
 ### System
 
@@ -749,4 +955,4 @@ How the bus works (transport, handshake, methods, check-and-set writes) is docum
 
 ---
 
-*Brilliant → Home Assistant Panel. MIT License © 2026 Mike Ippolito.*
+*Brilliant → Home Assistant Panel. Apache License 2.0 © 2026 Mike Ippolito (releases before v1.3.0: MIT; see NOTICE).*

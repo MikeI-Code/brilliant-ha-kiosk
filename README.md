@@ -22,6 +22,35 @@ Brilliant's OS updates. One script undoes it all.
 
 ---
 
+## Why build on Brilliant hardware
+
+There are cheaper ways to put a touchscreen on a wall: an ESP32 display, an old tablet. This
+project deliberately builds on Brilliant panels, and I think the hardware and the team behind it
+are worth supporting. *I'm not an employee of Brilliant or otherwise tied to the company; this is
+a user's view.*
+
+**What a Brilliant panel brings that a generic ESP32 panel can't:**
+
+* **Integrations Home Assistant doesn't have.** Brilliant's own software links to Ring (doorbells,
+  cameras and the **Ring Alarm**) and Schlage locks through each company's account linking, and
+  keeps those links working. Home Assistant's Ring integration has no Ring Alarm support (at the
+  time of writing); on a Brilliant panel this project shows the alarm and arms or disarms it, by
+  using Brilliant's integration, which you link in the Brilliant app. Schlage locks work the same
+  way, through Brilliant's own link.
+* **An engineering team and back-end services.** Account linking, token refresh, cloud services
+  and firmware updates are maintained by people whose job it is, not by you on a weekend.
+* **Hardware made for the wall box.** A line-voltage dimmer that reports power and temperature, a
+  microphone array, a speaker, a camera and motion sensing, in the space of a light switch.
+* **Support for real devices.** When a vendor changes an API or a login flow, it's Brilliant's
+  team that adapts. This project keeps using their services instead of re-implementing them.
+
+A generic ESP32 panel is a great way to tinker, but you become the integration team, the back end
+and the support desk. If this project is useful to you, support Brilliant: buy their panels and
+plugs, keep your Brilliant account and integrations linked, and leave their services running.
+That's why this project only replaces the screen and never removes Brilliant's background services.
+
+---
+
 ## Features
 
 | | |
@@ -35,6 +64,8 @@ Brilliant's OS updates. One script undoes it all.
 | 🌙 **Night mode, screensaver, motion wake** | Screen off overnight, a photo slideshow with a clock when idle (your photos from a folder or uploaded in Home Assistant), and it wakes when you walk up. |
 | 📡 **Shows up in Home Assistant** | Optional MQTT discovery: each panel becomes an HA device with its wired light, power, motion, display state, screensaver/night switches, and gestures as automation triggers. |
 | 🔆 **Smart dimming** | Brightness follows the room: from an HA light sensor if you have one, otherwise from the sun and the room's lights. |
+| 🔔 **Doorbell pop-up** | Ring doorbells (through Brilliant's own Ring link) wake the panel and show that door's camera full-screen. Camera cards from HA dashboards work as tiles too. |
+| 🛡️ **Ring Alarm and Schlage locks** | Alarm status on the Home screen, arm / disarm with your code, and lock / unlock (two taps to unlock), through Brilliant's integrations. Home Assistant gets read-only status. If a Brilliant update changes something, only the affected control switches off, with the reason on the panel and in HA. ([How this works](docs/MANUAL.md#how-the-alarm-and-lock-control-works)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
 
 <p align="center">
@@ -150,7 +181,7 @@ project that bridges Brilliant panels to Home Assistant over MQTT.
 
 ## License
 
-[MIT](LICENSE) © 2026 Mike Ippolito. Third-party components keep their own licenses (see `LICENSE`).
+[Apache License 2.0](LICENSE) © 2026 Mike Ippolito. Releases before v1.3.0 were published under the MIT License (see [`NOTICE`](NOTICE)). Third-party components keep their own licenses (see `NOTICE`).
 
 *Brilliant is a trademark of its respective owner. This is an independent community project, not
 affiliated with or endorsed by Brilliant or the Home Assistant project. Use at your own risk: it

@@ -50,9 +50,69 @@ Item {
         spacing: 12 * Theme.u
 
         Item {
-            width: parent.width; height: clock.height + date.height
+            width: parent.width
+            height: clock.height + date.height + (alarmRow.visible ? alarmRow.height + 4 * Theme.u : 0)
+                    + (lockRow.visible ? lockRow.height + 4 * Theme.u : 0)
             Label { id: clock; size: 64; font.weight: Font.Light; text: Qt.formatTime(hero.now, "h:mm AP").replace(/\s*[AP]M$/i, "") }
             Label { id: date; anchors.top: clock.bottom; size: 16; color: Theme.textDim; text: Qt.formatDate(hero.now, "dddd, MMMM d") }
+            // Ring Alarm mode from Brilliant's own Ring integration (read-only).
+            Row {
+                id: alarmRow
+                readonly property var a: Panel.ringAlarm
+                readonly property string st: a ? a.state : ""
+                readonly property color tint: st.indexOf("alarm") >= 0 ? Theme.red
+                                              : (st.indexOf("armed") === 0 ? Theme.amber : Theme.green)
+                anchors { top: date.bottom; topMargin: 4 * Theme.u }
+                visible: !!a && st !== "unknown"
+                spacing: 6 * Theme.u
+                width: visible ? implicitWidth : 0
+                Icon { size: 18; name: alarmRow.st.indexOf("alarm") >= 0 ? "shield-alert" : (alarmRow.st.indexOf("armed") === 0 ? "shield-lock" : "shield-home-outline")
+                       color: alarmRow.tint; anchors.verticalCenter: parent.verticalCenter }
+                Label { size: 15; color: alarmRow.tint; anchors.verticalCenter: parent.verticalCenter
+                        text: "Alarm · " + ({ disarmed: "Disarmed", armed_home: "Armed home", armed_away: "Armed away",
+                                              armed_night: "Armed night", disarming: "Disarming…",
+                                              disarmed_not_ready: "Not ready", intrusion_alarm: "INTRUSION",
+                                              fire_alarm: "FIRE", carbon_monoxide_alarm: "CO ALARM",
+                                              medical_alarm: "MEDICAL", police_alarm: "POLICE",
+                                              armed_away_bypass: "Armed away (bypass)", armed_home_bypass: "Armed home (bypass)",
+                                              disarmed_bypass: "Disarmed (bypass)", disabled: "Off" })[alarmRow.st] || alarmRow.st }
+            }
+            MouseArea { anchors { fill: alarmRow; margins: -10 * Theme.u } enabled: alarmRow.visible; onClicked: Panel.showSecurity() }
+            // Door locks from Brilliant's Schlage integration.
+            Row {
+                id: lockRow
+                anchors { top: alarmRow.visible ? alarmRow.bottom : date.bottom; topMargin: 4 * Theme.u; left: parent.left }
+                visible: Panel.locks.length > 0
+                spacing: 14 * Theme.u
+                Repeater {
+                    model: Panel.locks
+                    // Tap: lock at once; unlocking needs a second tap within 3 s.
+                    Item {
+                        id: lk
+                        width: lkRow.width; height: lkRow.height
+                        property bool confirm: false
+                        property bool pending: false
+                        readonly property bool locked: modelData.state === "locked"
+                        readonly property color tint: lk.confirm ? Theme.red : (modelData.state === "locked" ? Theme.green : (modelData.state === "jammed" ? Theme.red : Theme.amber))
+                        onLockedChanged: pending = false
+                        Timer { id: lkConfirm; interval: 3000; onTriggered: lk.confirm = false }
+                        Timer { id: lkPending; interval: 15000; onTriggered: lk.pending = false }
+                        Row {
+                            id: lkRow
+                            spacing: 4 * Theme.u
+                            opacity: lk.pending ? 0.5 : 1
+                            Icon { size: 18; anchors.verticalCenter: parent.verticalCenter; color: lk.tint
+                                   name: modelData.state === "locked" ? "lock" : (modelData.state === "jammed" ? "lock-alert" : "lock-open-variant") }
+                            Label { size: 15; anchors.verticalCenter: parent.verticalCenter; color: lk.tint
+                                    text: lk.confirm ? "Tap again to unlock"
+                                          : modelData.name.charAt(0).toUpperCase() + modelData.name.slice(1) + " · "
+                                            + (lk.pending ? (lk.locked ? "Unlocking…" : "Locking…")
+                                               : (modelData.state === "locked" ? "Locked" : modelData.state === "jammed" ? "Jammed" : "Unlocked")) }
+                        }
+                        MouseArea { anchors { fill: parent; margins: -10 * Theme.u } onClicked: Panel.showSecurity() }
+                    }
+                }
+            }
             Column {
                 anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                 spacing: 2 * Theme.u

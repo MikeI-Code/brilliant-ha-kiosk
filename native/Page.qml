@@ -33,7 +33,8 @@ Flickable {
                                     alloff: "SceneTile.qml", climate: "ClimateTile.qml", media: "MediaTile.qml",
                                     sensor: "SensorTile.qml", binary: "SensorTile.qml",
                                     cover: "CoverTile.qml", lock: "LockTile.qml", fan: "FanTile.qml",
-                                    number: "NumberTile.qml", select: "SelectTile.qml" })
+                                    number: "NumberTile.qml", select: "SelectTile.qml",
+                                    camera: "CameraTile.qml" })
     readonly property var cols: ({ full: 1, half: 2, third: 3, quarter: 4 })
 
     Column {

@@ -23,9 +23,43 @@ Item {
     property var gestures: ({})
     property bool multi: false           // a gesture with 2+ fingers is in progress
     property var speakers: []            // ROOM_SPEAKERS: this room's speakers (3-finger volume)
+    // House thermostat controller (CLIMATE_CONTROLLER), e.g. a Flair "structure" that drives the
+    // thermostats: thermostat tiles send mode and setpoint to it, and only the fan to the thermostat.
+    property string climateController: ""
+    property var climateThermostats: []  // CLIMATE_THERMOSTATS (default: climate entities with fan modes)
+    function isThermostat(e, attrs) {
+        if (climateThermostats.length) return climateThermostats.indexOf(e) >= 0;
+        return !!(attrs && attrs.fan_modes && attrs.fan_modes.length);
+    }
     property var _volStart: ({})
     signal changed()
     signal goHome()                      // idle: pages scroll back to the top
+    signal showCamera(string entity, string title)   // camera tile tapped: full-screen view
+    property var locks: []               // [{name, state}] from Brilliant's Schlage integration
+    property var ringAlarm: null
+    signal showAlarm()                   // Disarm tapped: code pad (AlarmPad.qml)
+    signal showSecurity()                // header summary tapped: open the Security tab
+    property var ringDevices: []
+    property var security: null          // {status, caps, reasons, disarm_unverified, lockout_until, last_disarm}         // [{name, kind: doorbell|camera, last_press}] from Brilliant's Ring link
+    readonly property bool hasSecurity: !!ringAlarm || locks.length > 0 || ringDevices.length > 0
+    // HA camera for a Brilliant/Ring device name ("Front Door" -> camera.front_door_live_view)
+    function cameraForName(n) {
+        var base = String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
+        var tries = ["camera." + base + "_live_view", "camera." + base, "camera." + base + "_snapshot"];
+        for (var i = 0; i < tries.length; i++) if (Ha.get(tries[i])) return tries[i];
+        return "";
+    }
+    // POST a command to the bridge; cb(result) with {ok, error}
+    function bridgePost(path, body, cb) {
+        var x = new XMLHttpRequest();
+        x.onreadystatechange = function () {
+            if (x.readyState !== XMLHttpRequest.DONE) return;
+            var r = { ok: false, error: "no reply from the panel service" };
+            try { if (x.status === 200) r = JSON.parse(x.responseText); } catch (e) {}
+            if (cb) cb(r);
+        };
+        x.open("POST", "http://127.0.0.1:8765" + path); x.send(JSON.stringify(body));
+    }         // {name, mode, state} from Brilliant's Ring integration (Doorbell.qml)
 
     // Room speaker volume (0..1): the loudest of the room's speakers.
     function speakerVolume() {
@@ -103,6 +137,10 @@ Item {
         loadEntity = le ? le[1] : "";
         var sp = /^\s*ROOM_SPEAKERS\s*=\s*"?([^"\n#]*)/m.exec(env);
         speakers = sp ? sp[1].split(",").map(function (x) { return x.trim(); }).filter(function (x) { return x; }) : [];
+        var cc = /^\s*CLIMATE_CONTROLLER\s*=\s*"?(climate\.[A-Za-z0-9_]+)/m.exec(env);
+        climateController = cc ? cc[1] : "";
+        var ct = /^\s*CLIMATE_THERMOSTATS\s*=\s*"?([^"\n#]*)/m.exec(env);
+        climateThermostats = ct ? ct[1].split(",").map(function (x) { return x.trim(); }).filter(function (x) { return x; }) : [];
         refresh();
     }
     // Keep in step with changes made elsewhere (HA, the Brilliant app).

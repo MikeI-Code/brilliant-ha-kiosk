@@ -20,14 +20,13 @@ Rectangle {
     height: 40 * Theme.u
     radius: 10 * Theme.u
     color: Theme.track
-    clip: true
 
     Rectangle {
         anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
         width: Math.max(parent.radius * 2, parent.width * bar.shown)
         radius: parent.radius
-        color: bar.fill
-        opacity: bar.shown > 0 ? 0.9 : 0
+        color: Qt.rgba(bar.fill.r, bar.fill.g, bar.fill.b, 0.9)
+        visible: bar.shown > 0
     }
     Label {
         anchors { right: parent.right; rightMargin: 10 * Theme.u; verticalCenter: parent.verticalCenter }
