@@ -571,6 +571,9 @@ def main():
     if ENV.get("KIOSK_VOICE", "0") != "1":
         log("KIOSK_VOICE is not 1; nothing to do")
         return 0
+    if ENV.get("ALLOW_MIC", "").strip().lower() in ("0", "off", "false", "no"):
+        log("microphone locked by ALLOW_MIC=0")
+        return 0
     ha_host = urllib.parse.urlsplit(ENV.get("HA_URL", "")).hostname or ""
     allow = {a.strip() for a in ENV.get("VOICE_ALLOW", "").split(",") if a.strip()}
     if not allow and ha_host:

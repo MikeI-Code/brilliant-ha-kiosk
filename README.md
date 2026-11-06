@@ -7,7 +7,7 @@ it keeps working as a light switch.**
   <img src="docs/images/home.png" width="19%" alt="Home tab: clock, weather, forecast, scenes and lights">
   <img src="docs/images/lights.png" width="19%" alt="Lights tab">
   <img src="docs/images/climate.png" width="19%" alt="Climate tab with thermostats">
-  <img src="docs/images/sonos.png" width="19%" alt="Sonos tab with transport, volume and grouping">
+  <img src="docs/images/sonos.png" width="19%" alt="Music tab with transport, volume and grouping">
   <img src="docs/images/house.png" width="19%" alt="House tab with presence, appliances and temperatures">
 </p>
 
@@ -56,16 +56,17 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | | |
 |---|---|
 | ⚡ **Native and fast** | Qt Quick on the GPU, talking to HA's websocket API. Instant taps, smooth scrolling and swiping, about 350 MB of RAM to spare. |
-| 🏠 **Five tabs out of the box** | Home (clock, weather, 5-day forecast, scenes, key lights, thermostats, now playing), Lights, Climate, Sonos, House. Swipe or tap to switch. |
+| 🏠 **Ready-made tabs** | Home (clock, weather, 5-day forecast, scenes, key lights, thermostats, now playing), Lights, Climate, Music, House, plus **Security** when Brilliant reports Ring or Schlage devices. Swipe or tap to switch. |
 | ✏️ **Edit screens in Home Assistant** | Lay out the panel in HA's own drag-and-drop dashboard editor. Every panel rebuilds within a second of pressing **Save**. |
 | 💡 **Local control of the wired light** | The panel dims its own load directly over Brilliant's message bus, in about 0.1 s, even if Home Assistant is down. |
-| ✌️ **Multi-touch gestures** | Two fingers up/down dim the room light, a two-finger tap toggles it, three fingers up/down set the room's Sonos volume, plus your own custom gestures. |
-| 🎵 **A real Sonos app** | Room picker, album art, transport, volume, grouping, and your Sonos Favorites (SiriusXM, Spotify, Apple Music, radio) as tap-to-play tiles. |
+| ✌️ **Multi-touch gestures** | Two fingers up/down dim the room light, a two-finger tap toggles it, three fingers up/down set the room's speaker volume, plus your own custom gestures. |
+| 🎵 **One music screen for any player** | Works with whatever music integration Home Assistant has: Sonos, WiiM/LinkPlay, Music Assistant, Bluesound, Google Cast, Spotify and more. Room picker, album art, transport, volume, sources, grouping with a volume per speaker, and the player's favorites or library as tap-to-play tiles. Buttons the player doesn't support are hidden. |
 | 🌙 **Night mode, screensaver, motion wake** | Screen off overnight, a photo slideshow with a clock when idle (your photos from a folder or uploaded in Home Assistant), and it wakes when you walk up. |
 | 📡 **Shows up in Home Assistant** | Optional MQTT discovery: each panel becomes an HA device with its wired light, power, motion, display state, screensaver/night switches, and gestures as automation triggers. |
 | 🔆 **Smart dimming** | Brightness follows the room: from an HA light sensor if you have one, otherwise from the sun and the room's lights. |
 | 🔔 **Doorbell pop-up** | Ring doorbells (through Brilliant's own Ring link) wake the panel and show that door's camera full-screen. Camera cards from HA dashboards work as tiles too. |
 | 🛡️ **Ring Alarm and Schlage locks** | Alarm status on the Home screen, arm / disarm with your code, and lock / unlock (two taps to unlock), through Brilliant's integrations. Home Assistant gets read-only status. If a Brilliant update changes something, only the affected control switches off, with the reason on the panel and in HA. ([How this works](docs/MANUAL.md#how-the-alarm-and-lock-control-works)) |
+| 🏢 **Multi-unit ready (lite groups)** | For duplexes and rentals: group panels by unit with shared settings, keep the intercom inside the unit, limit each panel to its own doors and locks (or view only), and lock the mic or camera where needed. ([How it works and what it doesn't isolate](docs/MANUAL.md#213-multi-unit-and-rental-properties-lite-groups)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
 
 <p align="center">
@@ -93,20 +94,28 @@ a computer with `bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTT
    git clone https://github.com/MikeI-Code/brilliant-ha-kiosk.git
    cd brilliant-ha-kiosk
    mkdir -p .private
-   cp config/panel.env.example  .private/panel1.env    # panel IP + root password
-   cp config/kiosk.env.example  .private/kiosk.env     # HA address, schedule, features
+   cp config/panel.env.example  .private/panel1.env    # panel IP + root password (one file per panel)
+   cp config/kiosk.env.example  .private/kiosk.env     # HA address, schedule, features (shared by all panels)
    ```
 3. **Create a Home Assistant token** (your profile → *Security* → *Long-lived access tokens*) and
    save it as `.private/token`.
 4. **Install:**
    ```bash
-   scripts/install.sh panel1
+   scripts/install.sh panel1     # one panel
+   scripts/install.sh all        # every panel in .private/ (panel1.env, panel2.env, ...)
    ```
    The panel restarts its screen into the new interface (about 30 s).
-5. **Make it yours:** create the editable *Panel Layout* dashboard in HA, then edit it there:
-   ```bash
-   HA_URL=http://<ha-ip>:8123 HA_TOKEN=$(cat .private/token) python3 scripts/publish_layout.py native/layout.example.json
-   ```
+5. **Design the screens in Home Assistant.** In HA go to *Settings → Dashboards → Add dashboard*,
+   choose *New dashboard from scratch* and give it the URL **`panel-layout`**. Add cards in HA's
+   editor; every panel rebuilds within a second of pressing **Save**. Each view becomes a tab.
+   *(Optional: `scripts/publish_layout.py native/layout.example.json` fills a new dashboard with a
+   starter layout to edit, instead of starting empty.)*
+
+**Many panels, one setup.** All panels share `.private/kiosk.env` and the same HA dashboard, so
+ten panels need no more configuration than one. Each panel's own file (`.private/panelN.env` for
+its address, and optionally `.private/panelN.kiosk.env`) holds only what is physically different:
+its wired light (`LOAD_ENTITY`), the room's speakers and lights, or opt-in features such as voice
+or capture. Change the shared file, run `scripts/install.sh all`, and every panel is updated.
 
 To go back to the stock Brilliant interface at any time: `scripts/uninstall.sh panel1`.
 
@@ -156,7 +165,7 @@ flowchart LR
 ## Repository layout
 
 ```
-native/        Native UI (Qt Quick): main.qml, tiles, Sonos page, gestures, HA client
+native/        Native UI (Qt Quick): main.qml, tiles, Music and Security pages, gestures, HA client
 kiosk/         On-panel services: display manager, local bridge, smart dimming, swap, web-mode UI
 systemd/       Units and drop-ins installed on the panel
 scripts/       install / uninstall / logs, plus publishing layouts to Home Assistant

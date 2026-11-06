@@ -7,6 +7,16 @@ Flickable {
     id: page
     property var speakers: []            // [{entity, name}]
     property int sel: 0
+    // Open on this room's speaker (ROOM_SPEAKERS), not the first in the list; back to it when the
+    // panel returns Home after being idle. A speaker picked by hand stays until then.
+    function roomIndex() {
+        for (var i = 0; i < speakers.length; i++) if (Panel.speakers.indexOf(speakers[i].entity) >= 0) return i;
+        return -1;
+    }
+    function selectRoom() { var i = roomIndex(); if (i >= 0) sel = i; else if (sel >= speakers.length) sel = 0; }
+    onSpeakersChanged: selectRoom()
+    Component.onCompleted: selectRoom()
+    Connections { target: Panel; function onGoHome() { page.selectRoom(); } }
     property var st: null
     property var favorites: []
     property bool favLoading: false

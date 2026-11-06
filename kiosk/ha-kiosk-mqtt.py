@@ -14,6 +14,8 @@ Enabled when MQTT_HOST is set in kiosk.env. One HA device per panel ("<room> Bri
   number  Day brightness            backlight level when awake (1-15)
   button  Wake screen
   event   Gesture                   every multi-finger gesture, for automations
+  sensor  Privacy                   open / mic_locked / camera_locked / mic_and_camera_locked
+                                    (ALLOW_MIC / ALLOW_CAMERA, plus PANEL_GROUP; diagnostic)
 
 Runtime overrides are written to /var/lib/ha-kiosk/overrides.env (read after kiosk.env) and the
 display service is restarted to apply them.
@@ -199,8 +201,27 @@ class KioskMqtt:
                                      "command_topic": f"{b}/wake/press"})
         self._cfg("event", "gesture", {"name": "Gesture", "state_topic": f"{b}/gesture",
                                        "event_types": GESTURES, "icon": "mdi:gesture"})
+        self._cfg("sensor", "privacy", {"name": "Privacy", "icon": "mdi:shield-lock",
+                                        "entity_category": "diagnostic", "device_class": "enum",
+                                        "options": ["open", "mic_locked", "camera_locked",
+                                                    "mic_and_camera_locked"],
+                                        "state_topic": f"{b}/privacy",
+                                        "json_attributes_topic": f"{b}/privacy/attributes"})
         self.last = {}   # force a full state publish
         self.next_diag = 0.0
+        self.publish_privacy()
+
+    def publish_privacy(self):
+        """Mic / camera locks (ALLOW_MIC / ALLOW_CAMERA = 0, deny wins at install) and the group."""
+        deny = ("0", "off", "false", "no")
+        mic = str(self.env.get("ALLOW_MIC", "")).strip().lower() in deny
+        cam = str(self.env.get("ALLOW_CAMERA", "")).strip().lower() in deny
+        state = ("mic_and_camera_locked" if mic and cam else "mic_locked" if mic
+                 else "camera_locked" if cam else "open")
+        self._pub("privacy", state)
+        self._pub("privacy/attributes", json.dumps({
+            "mic": "locked" if mic else "allowed", "camera": "locked" if cam else "allowed",
+            "group": str(self.env.get("PANEL_GROUP", "")).strip()}, sort_keys=True))
 
     # ---------- connection ----------
     def start(self):

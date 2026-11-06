@@ -188,6 +188,55 @@ ALARM_MODES = {0: "unknown", 1: "disarmed", 2: "armed_home", 3: "armed_away", 4:
                15: "disarmed_bypass"}
 
 
+def read_kiosk_env():
+    """This panel's settings: kiosk.env, then overrides.env, then the process environment
+    (each file read in order, so the last assignment wins, like systemd)."""
+    env = {}
+    for path in ("/etc/ha-kiosk/kiosk.env", "/var/lib/ha-kiosk/overrides.env"):
+        try:
+            for line in open(path, encoding="utf-8"):
+                if "=" in line and not line.lstrip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    env[k.strip()] = v.strip().strip('"')
+        except OSError:
+            pass
+    for k in ("SECURITY_ACCESS", "SECURITY_DEVICES"):
+        if k not in env and k in os.environ:
+            env[k] = os.environ[k]
+    return env
+
+
+class SecurityAccess:
+    """SECURITY_ACCESS=control|view|off (default control) and SECURITY_DEVICES (comma list of
+    names, case-insensitive; empty = all). Filters what GET /ring shows and what this panel may
+    control. The owner panel's MQTT publishing to Home Assistant is not filtered."""
+
+    def __init__(self, env=None):
+        env = read_kiosk_env() if env is None else env
+        mode = (env.get("SECURITY_ACCESS") or "control").strip().lower()
+        self.mode = mode if mode in ("control", "view", "off") else "control"
+        self.devices = {d.strip().lower() for d in (env.get("SECURITY_DEVICES") or "").split(",") if d.strip()}
+
+    def device_ok(self, name):
+        if self.mode == "off":
+            return False
+        return not self.devices or str(name or "").strip().lower() in self.devices
+
+    def alarm_ok(self, name):
+        if self.mode == "off":
+            return False
+        return not self.devices or "alarm" in self.devices or str(name or "").strip().lower() in self.devices
+
+    def check_control(self, allowed):
+        if self.mode != "control":
+            raise ValueError("view only on this panel")
+        if not allowed:
+            raise ValueError("not allowed on this panel")
+
+
+access = SecurityAccess({})            # replaced with the real settings in main()
+
+
 def wake_screen():
     """Same as a touch: one harmless sync event on the touchscreen (the display manager wakes)."""
     with open("/dev/input/event0", "wb", buffering=0) as f:
@@ -211,10 +260,23 @@ class RingWatch:
         self.owner = False                   # this panel hosts the Ring integration (publishes to HA)
 
     def status(self):
+        """What this panel may see (SECURITY_ACCESS / SECURITY_DEVICES)."""
         with self.lock:
-            return {"seq": self.seq, "doorbell": self.doorbell, "alarm": self.alarm, "locks": self.locks,
-                    "security": health.status(),
-                    "devices": sorted(self.devices.values(), key=lambda d: (d["kind"] != "doorbell", d["name"]))}
+            alarm = self.alarm if self.alarm and access.alarm_ok(self.alarm.get("name")) else None
+            locks = [lk for lk in self.locks if access.device_ok(lk.get("name"))]
+            devices = [d for d in self.devices.values() if access.device_ok(d.get("name"))]
+            doorbell = self.doorbell if self.doorbell and access.device_ok(self.doorbell.get("name")) else None
+            sec = dict(health.status(), access=access.mode)
+            return {"seq": self.seq, "doorbell": doorbell, "alarm": alarm, "locks": locks, "security": sec,
+                    "devices": sorted(devices, key=lambda d: (d["kind"] != "doorbell", d["name"]))}
+
+    def raw_alarm(self):
+        with self.lock:
+            return self.alarm
+
+    def raw_lock(self, pid):
+        with self.lock:
+            return next((lk for lk in self.locks if lk["id"] == pid), None)
 
     def _check_owner(self):
         try:
@@ -286,15 +348,18 @@ class RingWatch:
                 self.dings[pid] = v["last_ding"]
                 if prev is not None and v["last_ding"] != prev:
                     print(f"ring: doorbell pressed: {name}", flush=True)
-                    try:
-                        wake_screen()
-                    except OSError:
-                        pass
+                    ts = int(time.time())
                     with self.lock:
-                        self.seq += 1
-                        self.doorbell = {"name": name, "ts": int(time.time())}
                         if pid in self.devices:
-                            self.devices[pid]["last_press"] = self.doorbell["ts"]
+                            self.devices[pid]["last_press"] = ts
+                    if access.device_ok(name):         # only doorbells this panel may see wake it
+                        try:
+                            wake_screen()
+                        except OSError:
+                            pass
+                        with self.lock:
+                            self.seq += 1
+                            self.doorbell = {"name": name, "ts": ts}
                     if mqtt_link and self.owner:
                         mqtt_link.ring_doorbell(name)
             elif p.peripheral_type == 89 and "current_system_mode" in v:  # SECURITY_SYSTEM
@@ -431,7 +496,7 @@ class SecurityHealth:
             t0 = time.time()
             while time.time() - t0 < VERIFY_SECS:
                 time.sleep(1)
-                a = ring.status().get("alarm") or {}
+                a = ring.raw_alarm() or {}
                 if a.get("state") in ("disarmed", "disarmed_bypass", "disarmed_not_ready"):
                     with self.lock:
                         self.fails, self.last_disarm, self.verified_fw = 0, "accepted", self.firmware
@@ -458,6 +523,8 @@ health = SecurityHealth()
 def lock_command(req):
     """{"id": <schlage peripheral id>, "locked": true|false} -> Brilliant's Schlage integration."""
     pid = str(req.get("id", ""))
+    lk = ring.raw_lock(pid)
+    access.check_control(lk is not None and access.device_ok(lk.get("name")))
     if not health.caps["lock"]:
         raise ValueError("lock control is unavailable: " + health.reasons.get("lock", "no lock") + ". Use the lock's own app.")
     if not pid or not isinstance(req.get("locked"), bool):
@@ -493,7 +560,8 @@ def _encrypt_pin(pin, public_key_value):
 def alarm_command(req):
     """{"mode": "armed_home"|"armed_away"} or {"mode": "disarmed", "pin": "1234"} -> Ring Alarm via
     Brilliant. The PIN is used for this one request only (never logged or kept)."""
-    a = ring.status().get("alarm")
+    a = ring.raw_alarm()
+    access.check_control(bool(a) and access.alarm_ok(a.get("name")))
     if not a:
         raise ValueError("no Ring alarm on this panel")
     dev, pid = "ring_virtual_device", a.get("id")
@@ -562,6 +630,10 @@ def start_photo_sync():
 
 
 def main():
+    global access
+    access = SecurityAccess()
+    print(f"bridge: security access {access.mode}"
+          + (f" (devices: {', '.join(sorted(access.devices))})" if access.devices else ""), flush=True)
     for i in range(30):                  # the bus may still be starting at boot
         try:
             print("bridge: load", json.dumps(control.state()), flush=True)

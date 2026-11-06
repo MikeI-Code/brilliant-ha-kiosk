@@ -19,6 +19,7 @@ Item {
     readonly property bool recording: state_ === "recording"
     readonly property bool processing: state_ === "processing"
     readonly property bool video: !!st.video
+    readonly property bool audio: st.audio !== false    // false = mic locked (ALLOW_MIC=0)
     readonly property real level: st.level || 0
     readonly property var last: st.last || null
 
@@ -87,6 +88,7 @@ Item {
         Rectangle {
             id: big
             anchors.horizontalCenter: parent.horizontalCenter
+            visible: page.audio || page.recording      // still the stop button for a video clip
             width: 150 * Theme.u; height: width; radius: width / 2
             color: page.recording ? Theme.red : (bigMa.pressed ? Theme.cardPressed : Theme.card)
             border.color: page.recording ? Theme.red : Theme.border; border.width: 2
@@ -132,7 +134,9 @@ Item {
                 : page.state_ === "error" ? "Error: " + (page.st.error || "unknown")
                 : page.processing ? "Publishing…"
                 : page.recording ? "Recording " + page.kindName(page.st.kind).toLowerCase() + " · tap to stop"
-                : "Tap to record a voice clip"
+                : page.audio ? "Tap to record a voice clip"
+                : page.video ? "Microphone locked on this panel"
+                : "Microphone and camera locked on this panel"
         }
 
         // Video buttons (CAPTURE_VIDEO=1)

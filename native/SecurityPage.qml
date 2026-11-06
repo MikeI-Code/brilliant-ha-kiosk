@@ -31,6 +31,7 @@ Flickable {
     property string alarmMsg: ""
     property bool alarmBusy: false
     readonly property var sec: Panel.security
+    readonly property bool viewOnly: !!sec && !!sec.access && sec.access !== "control"   // SECURITY_ACCESS=view
     readonly property bool canArm: !sec || sec.caps.arm
     readonly property bool canDisarm: !sec || (sec.caps.disarm && !sec.lockout_until)
     readonly property bool canLock: !sec || sec.caps.lock
@@ -79,7 +80,7 @@ Flickable {
                     }
                     Row {
                         width: parent.width; spacing: 10 * Theme.u
-                        visible: !page.armed
+                        visible: !page.armed && !page.viewOnly
                         Repeater {
                             model: [{ m: "armed_home", t: "Arm home", i: "shield-home" }, { m: "armed_away", t: "Arm away", i: "shield-lock" }]
                             Rectangle {
@@ -96,7 +97,7 @@ Flickable {
                     }
                     Rectangle {
                         width: parent.width; height: 64 * Theme.u; radius: 14 * Theme.u
-                        visible: page.armed
+                        visible: page.armed && !page.viewOnly
                         opacity: page.canDisarm ? 1 : 0.4
                         color: db.pressed ? Theme.cardPressed : Theme.track
                         Row {
@@ -106,10 +107,12 @@ Flickable {
                         }
                         MouseArea { id: db; anchors.fill: parent; enabled: page.canDisarm; onClicked: Panel.showAlarm() }
                     }
-                    Label { width: parent.width; wrapMode: Text.WordWrap; size: 14; visible: page.disarmNote !== ""
+                    Label { width: parent.width; wrapMode: Text.WordWrap; size: 14; visible: page.viewOnly
+                            color: Theme.textDim; text: "View only on this panel" }
+                    Label { width: parent.width; wrapMode: Text.WordWrap; size: 14; visible: page.disarmNote !== "" && !page.viewOnly
                             color: page.canDisarm ? Theme.textDim : Theme.amber; text: page.disarmNote }
                     Label { width: parent.width; wrapMode: Text.WordWrap; size: 14; color: Theme.amber
-                            visible: !!page.sec && !page.canArm
+                            visible: !!page.sec && !page.canArm && !page.viewOnly
                             text: "Arming from the panel is unavailable: " + (page.sec && page.sec.reasons.arm || "") + ". Use the Ring app." }
                     Label { width: parent.width; wrapMode: Text.WordWrap; size: 14; visible: page.alarmMsg !== ""
                             color: page.alarmMsg.indexOf("Couldn't") === 0 ? Theme.red : Theme.textDim; text: page.alarmMsg }
@@ -122,6 +125,7 @@ Flickable {
             width: parent.width; spacing: 8 * Theme.u
             visible: Panel.locks.length > 0
             Label { text: "LOCKS"; size: 15; color: Theme.textDim; font.weight: Font.DemiBold; leftPadding: 4 * Theme.u }
+            Label { text: "View only on this panel"; size: 14; color: Theme.textDim; leftPadding: 4 * Theme.u; visible: page.viewOnly }
             Repeater {
                 model: Panel.locks
                 Rectangle {
@@ -161,10 +165,11 @@ Flickable {
                     }
                     Label { anchors { right: parent.right; rightMargin: Theme.pad; verticalCenter: parent.verticalCenter }
                             size: 14; color: page.canLock ? Theme.textDim : Theme.amber
-                            text: !page.canLock ? "Control unavailable" : (lk.locked ? "Tap to unlock" : "Tap to lock"); visible: !lk.pending && !lk.confirm }
-                    opacity: page.canLock ? 1 : 0.5
+                            text: !page.canLock ? "Control unavailable" : (lk.locked ? "Tap to unlock" : "Tap to lock")
+                            visible: !lk.pending && !lk.confirm && !page.viewOnly }
+                    opacity: page.canLock || page.viewOnly ? 1 : 0.5
                     MouseArea {
-                        id: la; anchors.fill: parent; enabled: !lk.pending && page.canLock
+                        id: la; anchors.fill: parent; enabled: !lk.pending && page.canLock && !page.viewOnly
                         onClicked: {
                             if (lk.locked && !lk.confirm) { lk.confirm = true; lkConfirm.restart(); return; }
                             lk.confirm = false; lk.pending = true; lkPending.restart();

@@ -120,10 +120,13 @@ start() {
     # Voice satellite / announcements: opt-in (mic + speaker), only with KIOSK_VOICE=1 in kiosk.env.
     # last assignment wins (kiosk.env = shared file + per-panel file), like systemd's EnvironmentFile
     envflag() { [ "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 ')" = 1 ]; }
-    if envflag KIOSK_VOICE; then
+    # ALLOW_MIC / ALLOW_CAMERA = 0|off|false|no lock the mic / camera (scripts/install.sh appends deny-wins lines last)
+    envdeny() { case "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 \r' | tr 'A-Z' 'a-z')" in 0|off|false|no) return 0 ;; esac; return 1; }
+    if envflag KIOSK_VOICE && ! envdeny ALLOW_MIC; then
         systemctl enable ha-kiosk-voice.service; systemctl restart ha-kiosk-voice.service
         log "voice satellite enabled (KIOSK_VOICE=1)"
     else
+        envflag KIOSK_VOICE && log "voice satellite not started: microphone locked (ALLOW_MIC=0)"
         systemctl disable --now ha-kiosk-voice.service 2>/dev/null || true
     fi
     # Intercom between panels: opt-in, KIOSK_INTERCOM=1 (receive); the mic also needs INTERCOM_MIC=1.
@@ -134,10 +137,11 @@ start() {
         systemctl disable --now ha-kiosk-intercom.service 2>/dev/null || true
     fi
     # Voice/video capture API: opt-in, KIOSK_CAPTURE=1 (camera only with CAPTURE_VIDEO=1 as well).
-    if envflag KIOSK_CAPTURE; then
+    if envflag KIOSK_CAPTURE && { ! envdeny ALLOW_MIC || { envflag CAPTURE_VIDEO && ! envdeny ALLOW_CAMERA; }; }; then
         systemctl enable ha-kiosk-capture.service; systemctl restart ha-kiosk-capture.service
-        log "capture enabled (KIOSK_CAPTURE=1$(envflag CAPTURE_VIDEO && echo ', video on' || echo ', audio only'))"
+        log "capture enabled (KIOSK_CAPTURE=1$(envflag CAPTURE_VIDEO && echo ', video on' || echo ', audio only')$(envdeny ALLOW_MIC && echo ', mic locked')$(envdeny ALLOW_CAMERA && echo ', camera locked'))"
     else
+        envflag KIOSK_CAPTURE && log "capture not started: microphone and camera locked or video off"
         systemctl disable --now ha-kiosk-capture.service 2>/dev/null || true
     fi
     sleep 3

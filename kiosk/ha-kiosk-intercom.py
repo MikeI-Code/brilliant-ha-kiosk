@@ -50,7 +50,10 @@ PT = 96
 ALL = "All panels"
 PORT = int(ENV.get("INTERCOM_PORT", "10710"))
 MAX_SECS = float(ENV.get("INTERCOM_MAX_SECS", "30"))
-MIC_ON = ENV.get("INTERCOM_MIC", "0") == "1"
+MIC_WANTED = ENV.get("INTERCOM_MIC", "0") == "1"
+MIC_DENIED = ENV.get("ALLOW_MIC", "").strip().lower() in ("0", "off", "false", "no")
+MIC_ON = MIC_WANTED and not MIC_DENIED        # ALLOW_MIC=0 forces receive-only
+GROUP = ENV.get("PANEL_GROUP", "").strip()    # only peers in the same group are listed/accepted
 HANGOVER = 0.6                    # s without packets before the speaker is released
 
 
@@ -177,7 +180,7 @@ class Intercom:
             self.talking.clear()
             return True
         if not (MIC_ON or tone):
-            log("talk ignored: INTERCOM_MIC is not 1 on this panel")
+            log("talk ignored: " + ("microphone locked by ALLOW_MIC=0" if MIC_DENIED else "INTERCOM_MIC is not 1 on this panel"))
             return False
         dest = self.destinations()
         if not dest:
@@ -310,7 +313,7 @@ class IntercomMqtt:
         b = f"{self.base}/intercom"
         client.publish(f"{self.peer_topic}/{self.ic.node}",
                        json.dumps({"name": self.ic.room, "host": self.ic.addr, "port": PORT,
-                                   "mic": MIC_ON}), retain=True)
+                                   "mic": MIC_ON, "group": GROUP}), retain=True)
         client.subscribe([(f"{self.peer_topic}/+", 0), (f"{b}/target/set", 0), (f"{b}/talk/set", 0),
                           (f"{b}/tone", 0), (f"{self.disc}/status", 0)])
         self.publish_entities()
@@ -331,8 +334,11 @@ class IntercomMqtt:
                 before = self.ic.target_options()
                 if p:
                     info = json.loads(p)
-                    if re.match(r"^[0-9.]+$", str(info.get("host", ""))):
+                    if (re.match(r"^[0-9.]+$", str(info.get("host", "")))
+                            and str(info.get("group") or "") == GROUP):
                         self.ic.peers[node] = info
+                    else:
+                        self.ic.peers.pop(node, None)    # other group (or bad address): ignore
                 else:
                     self.ic.peers.pop(node, None)
                 if node != self.ic.node:
@@ -409,6 +415,9 @@ def main():
     finally:
         b.close()
     node = "brilliant_" + dev[:12]
+    if MIC_WANTED and MIC_DENIED:
+        log("microphone locked by ALLOW_MIC=0: receive only")
+    log(f"group: {GROUP or '(none)'}")
     addr = ENV.get("INTERCOM_BIND") or lan_address(socket.gethostbyname(ENV["MQTT_HOST"]))
     ic = Intercom(node, room or node, addr)
     ic.mqtt = IntercomMqtt(ic, ENV.get("MQTT_BASE", "brilliant_kiosk"),

@@ -549,6 +549,63 @@ actions:
         {{ trigger.to_state.attributes.firmware }})
 ```
 
+### 2.13 Multi-unit and rental properties (lite groups)
+
+For a duplex, a building with a few units, or a rental with an owner's suite, you can put panels
+into **groups**. A group is a label (`PANEL_GROUP`) plus a shared settings file. "Lite" because it
+works entirely through settings files and per-panel filtering; full groups (managed from Home
+Assistant, with their own credentials) are planned.
+
+**Three settings layers.** `scripts/install.sh` builds each panel's `kiosk.env` from up to three
+files, later wins:
+
+1. `.private/kiosk.env`: the whole property (HA address, MQTT broker, defaults).
+2. `.private/<group>.group.env`: everything shared by one unit, used when the panel's own file sets
+   `PANEL_GROUP=<group>` (lowercase letters, digits and `-`).
+3. `.private/<panel>.kiosk.env`: this panel only.
+
+```
+.private/
+  kiosk.env              # property-wide: HA_URL, MQTT_HOST, ...
+  unit-2b.group.env      # unit 2B: SECURITY_DEVICES=Unit 2B Door, ALLOW_CAMERA=0
+  panel3.env             # PANEL_HOST=192.168.1.x (how to reach the panel)
+  panel3.kiosk.env       # PANEL_GROUP=unit-2b, ROOM_LIGHTS=...
+```
+
+`scripts/install.sh all` skips `*.group.env` files; only `.private/<panel>.env` files with
+`PANEL_HOST` are panels.
+
+**Intercom stays inside the group.** Each panel advertises its group, and the intercom lists and
+accepts only panels with the same group. Panels without a group form one group of their own.
+
+**Security access.** `SECURITY_ACCESS=control` (default) allows arm/disarm and lock/unlock; `view`
+shows status only ("View only on this panel"); `off` hides the Security tab, alarm, locks and
+doorbell pop-ups on this panel. `SECURITY_DEVICES` limits the panel to the named devices
+(comma-separated, case-insensitive; empty = all). The word `alarm` in the list includes the Ring
+Alarm. A doorbell that is not in the list does not wake the panel. The owner's view in Home
+Assistant (the MQTT sensors) is not filtered.
+
+**Mic and camera locks, deny wins.** `ALLOW_MIC=0` turns off this project's voice satellite, the
+intercom microphone (the panel can still receive) and audio capture. `ALLOW_CAMERA=0` turns off
+snapshots and video capture. `0`, `off`, `false` and `no` all count. A deny in **any** layer wins:
+if the property file says `ALLOW_MIC=0`, a group or panel file cannot turn it back on. The install
+prints `privacy: mic blocked / camera blocked`, and with MQTT each panel has a diagnostic
+**Privacy** sensor (`open`, `mic_locked`, `camera_locked`, `mic_and_camera_locked`, with the group
+as an attribute) so the owner can check every panel from Home Assistant.
+
+Residents never get the panel's root password; settings are changed by whoever runs
+`scripts/install.sh`.
+
+#### What this does and doesn't isolate
+
+| Layer | Isolation | What to do |
+|---|---|---|
+| Brilliant | Strong when each unit is its own Brilliant home | Set up a separate Brilliant home per unit in the Brilliant app |
+| Home Assistant | None per entity. HA has no per-entity permissions: with one shared HA, a panel's token can reach everything if someone gets root on the panel | Use one HA per unit, or no HA on resident panels. Groups only limit what the panel shows |
+| MQTT | Shared credentials unless you set per-group credentials and broker ACLs | See [INTEGRATION.md section 9.5](INTEGRATION.md#95-network-listeners-and-broker-acl) |
+| Network | None from this project | Put each unit on its own VLAN |
+| Brilliant's own services | Not covered | The mic/camera locks govern this project's features only. Brilliant's own voice assistant and similar features are controlled in the Brilliant app |
+
 ## 3. Using the panel
 
 <p align="center">
@@ -727,6 +784,10 @@ appended last, so it wins). After changing them, run `scripts/install.sh <panel>
 | `CLIMATE_CONTROLLER` | — | A climate entity that drives your thermostats, such as a Flair "structure" or a Keen home. Thermostat tiles then show a **Mode** chip and −/+ that go to this controller, and a **Fan** chip that goes to the thermostat itself. Room tiles keep their own setpoint and show the house mode. Empty = every tile controls its own entity. |
 | `CLIMATE_THERMOSTATS` | — (auto) | Which climate entities count as thermostats for `CLIMATE_CONTROLLER`. Default: those with fan modes. Comma-separated. |
 | `SECURITY_TAB` | `1` | `0` hides the Security tab (Ring Alarm, Schlage locks, Ring doorbells and cameras from Brilliant's integrations) on this panel |
+| `SECURITY_ACCESS` | `control` | `control`, `view` (status only) or `off` (no Security tab, alarm, locks or doorbell pop-up) on this panel. See 2.13 |
+| `SECURITY_DEVICES` | — (all) | Comma-separated device names this panel may see and control (case-insensitive); `alarm` includes the Ring Alarm |
+| `PANEL_GROUP` | — | Group (unit) this panel belongs to; adds `.private/<group>.group.env` as a settings layer and limits the intercom to the group. Set it in `.private/<panel>.kiosk.env` |
+| `ALLOW_MIC` / `ALLOW_CAMERA` | `1` / `1` | `0` locks this project's microphone / camera features. A `0` in any settings layer wins |
 | `DOORBELL` / `DOORBELL_SECS` / `DOORBELL_MOTION` | `1` / `45` / `0` | Doorbell pop-up on/off, how long it stays, and whether camera motion also pops up |
 
 ### Display

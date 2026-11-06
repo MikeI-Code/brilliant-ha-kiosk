@@ -43,7 +43,11 @@ sys.path.insert(0, "/etc/ha-kiosk")
 ENV = os.environ
 RATE, CHUNK = 16000, 1024                      # 16 kHz mono S16_LE, 64 ms chunks
 PORT = int(ENV.get("CAPTURE_PORT", "10720"))
-VIDEO = ENV.get("CAPTURE_VIDEO", "0") == "1"
+_DENY = ("0", "off", "false", "no")
+MIC_DENIED = ENV.get("ALLOW_MIC", "").strip().lower() in _DENY        # privacy lock (deny wins)
+CAM_DENIED = ENV.get("ALLOW_CAMERA", "").strip().lower() in _DENY
+AUDIO = not MIC_DENIED
+VIDEO = ENV.get("CAPTURE_VIDEO", "0") == "1" and not CAM_DENIED
 MAX_SECS = max(1.0, float(ENV.get("CAPTURE_MAX_SECS", "30")))
 VIDEO_MAX = 10.0
 TTL = max(10, int(ENV.get("CAPTURE_TTL", "300")))
@@ -279,7 +283,7 @@ class Recorder:
         if r and r["until"] and time.time() > r["until"]:
             self.reply = r = None
         busy = self.state in ("recording", "processing")
-        return {"enabled": True, "video": VIDEO, "state": self.state,
+        return {"enabled": True, "audio": AUDIO, "video": VIDEO, "state": self.state,
                 "kind": self.kind if busy else None, "source": self.source if busy else None,
                 "elapsed": round(time.monotonic() - self.t0, 1) if self.state == "recording" else 0,
                 "max": self.max if busy else MAX_SECS,
@@ -303,8 +307,10 @@ class Recorder:
         """Returns (ok, reason)."""
         if kind not in EVENT:
             return False, "unknown kind"
+        if kind == "audio" and not AUDIO:
+            return False, "microphone locked"
         if kind in ("video", "snapshot") and not VIDEO:
-            return False, "video capture is off (CAPTURE_VIDEO=0)"
+            return False, "camera locked" if CAM_DENIED else "video capture is off (CAPTURE_VIDEO=0)"
         with self.lock:
             if self.state in ("recording", "processing"):
                 return False, "busy"
@@ -714,6 +720,14 @@ def main():
     if ENV.get("KIOSK_CAPTURE", "0") != "1":
         log("KIOSK_CAPTURE is not 1; nothing to do")
         return 0
+    if not AUDIO and not VIDEO:
+        log("microphone locked by ALLOW_MIC=0 and no camera capture"
+            + (" (camera locked by ALLOW_CAMERA=0)" if CAM_DENIED else "") + "; nothing to do")
+        return 0
+    if MIC_DENIED:
+        log("microphone locked by ALLOW_MIC=0: audio capture refused")
+    if CAM_DENIED and ENV.get("CAPTURE_VIDEO", "0") == "1":
+        log("camera locked by ALLOW_CAMERA=0: video and snapshots refused")
     ha_host = urllib.parse.urlsplit(ENV.get("HA_URL", "")).hostname or ""
     allow = {a.strip() for a in ENV.get("CAPTURE_ALLOW", "").split(",") if a.strip()}
     if not allow and ha_host:
@@ -765,7 +779,7 @@ def main():
     firewall_open(PORT, allow)
     clip_server(clips, bind, allow)
     control_server(rec)
-    log(f"ready (audio{', video' if VIDEO else ''}; max {MAX_SECS:g} s, clips kept {TTL} s)")
+    log(f"ready ({', '.join(k for k, on in (('audio', AUDIO), ('video', VIDEO)) if on)}; max {MAX_SECS:g} s, clips kept {TTL} s)")
 
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *a: stop.set())
