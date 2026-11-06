@@ -20,6 +20,48 @@ Flickable {
     readonly property var a: st ? st.attributes : ({})
     readonly property bool playing: st && st.state === "playing"
     readonly property var members: a.group_members || []
+    readonly property bool grouped: members.length > 1
+
+    // Group volume is handled here, not by the speaker integration: the group bar moves every
+    // member and keeps their balance. The balance (each speaker's share of the loudest one) is
+    // remembered, so going to 0 and back up restores the mix instead of setting all to one level.
+    property var balance: ({})
+    property int volTick: 0                 // bumped when a member's state changes (re-evaluates bars)
+    Timer { id: balanceHold; interval: 4000 }   // ignore our own updates while they arrive one by one
+    function volOf(e) {
+        var s = Ha.get(e);
+        return s && s.attributes.volume_level !== undefined && s.attributes.volume_level !== null
+            ? s.attributes.volume_level : 0;
+    }
+    function groupVol() {
+        var v = 0;
+        for (var i = 0; i < members.length; i++) v = Math.max(v, volOf(members[i]));
+        return v;
+    }
+    function captureBalance() {
+        if (balanceHold.running || !grouped) return;
+        var mx = groupVol();
+        if (mx < 0.02) return;                  // all silent: keep the last known mix
+        var b = {};
+        for (var i = 0; i < members.length; i++) b[members[i]] = volOf(members[i]) / mx;
+        balance = b;
+    }
+    function setVol(e, v) {
+        Ha.callService("media_player", "volume_set", { volume_level: Math.round(Math.max(0, Math.min(1, v)) * 100) / 100 }, e);
+    }
+    function setGroup(v) {
+        captureBalance();
+        balanceHold.restart();
+        for (var i = 0; i < members.length; i++) {
+            var share = balance[members[i]] !== undefined ? balance[members[i]] : 1;
+            setVol(members[i], v * share);
+        }
+    }
+    function setOne(e, v) {
+        setVol(e, v);
+        // The mix changed on purpose: re-learn it once the new level arrives.
+        balanceHold.stop();
+    }
 
     contentWidth: width
     contentHeight: body.height + 24 * Theme.u
@@ -102,6 +144,7 @@ Flickable {
     Connections {
         target: Ha
         function onEntityUpdated(id) {
+            if (page.members.indexOf(id) >= 0) { page.volTick++; page.captureBalance(); }
             if (id !== page.entity) return;
             page.refresh();
             if (page.playingId && (page.a.media_title || "") !== page.titleAtTap) page.playingId = "";
@@ -224,8 +267,28 @@ Flickable {
                     }
                     Bar {
                         width: parent.width - 40 * Theme.u; fill: Theme.blue
-                        value: page.a.volume_level || 0
-                        onCommitted: function (v) { Ha.callService("media_player", "volume_set", { volume_level: Math.round(v * 100) / 100 }, page.entity); }
+                        value: page.grouped ? (page.volTick, page.groupVol()) : (page.a.volume_level || 0)
+                        onCommitted: function (v) {
+                            if (page.grouped) page.setGroup(v);
+                            else page.setVol(page.entity, v);
+                        }
+                    }
+                }
+                // Grouped: one bar per speaker under the group bar.
+                Column {
+                    width: parent.width; spacing: 8 * Theme.u
+                    visible: page.grouped && (page.features & 4) !== 0
+                    Repeater {
+                        model: page.grouped ? page.members : []
+                        Column {
+                            width: parent.width; spacing: 4 * Theme.u
+                            Label { size: 13; color: Theme.textDim; text: page.nameOf(modelData) }
+                            Bar {
+                                width: parent.width; fill: Theme.blue
+                                value: (page.volTick, page.volOf(modelData))
+                                onCommitted: function (v) { page.setOne(modelData, v); }
+                            }
+                        }
                     }
                 }
             }

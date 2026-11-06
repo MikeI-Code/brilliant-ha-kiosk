@@ -26,8 +26,9 @@ ExecStartPre=-/usr/bin/pkill -x fbi
 #                         web    = HA's web dashboard in QtWebEngine (slow on this CPU)
 # qmlscene (not qml) sets AA_ShareOpenGLContexts, which QtWebEngine needs for GPU compositing.
 ExecStart=/bin/sh -c 'if [ "$${KIOSK_MODE:-native}" = web ]; then exec /usr/bin/qmlscene /etc/ha-kiosk/kiosk.qml; else exec /usr/bin/qmlscene /etc/ha-kiosk/native/main.qml; fi'
-# Show the splash again if the kiosk stops, like the stock UI does
-ExecStopPost=-/usr/bin/fbi -noverbose -vt 1 /etc/splash-720x1280p.png -persist -t 1 -1
+# No splash on stop: fbi has no terminal under systemd and prints "Bad file descriptor" errors
+# straight onto the screen. A restart is back within ~2 s, and uninstall hands the screen to
+# Brilliant's own UI, which draws its own splash.
 Restart=always
 RestartSec=5
 
