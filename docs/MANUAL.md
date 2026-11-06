@@ -79,14 +79,19 @@ mkdir -p .private
 Everything specific to your home goes in **`.private/`**. It is git-ignored, so it never ends up in
 a commit:
 
-| File | Start from | Contents |
+| File | Needed? | What it's for |
 |---|---|---|
-| `.private/panel1.env` | `config/panel.env.example` | `PANEL_HOST`, `PANEL_PASSWORD`, `PANEL_HOSTKEY` for one panel. Add `panel2.env` and so on for more panels. |
-| `.private/kiosk.env` | `config/kiosk.env.example` | Shared settings: HA address, schedule, features (see [§7](#7-configuration-reference)). |
-| `.private/panel1.kiosk.env` | *(optional)* | Per-panel settings, appended to `kiosk.env` for that panel: `LOAD_ENTITY`, `ROOM_SPEAKERS`, `ROOM_LIGHTS`, `LIGHT_SENSOR`, gestures. |
-| `.private/token` | HA | A long-lived access token (below). |
-| `.private/layout.json` | `native/layout.example.json` | *(optional)* A local layout, used when you don't edit the screens in HA. |
-| `.private/photos/` | your photos | *(optional)* Screensaver photos (JPEG/PNG), copied to every panel by `install.sh`. |
+| `.private/kiosk.env` | **Yes, one** | **Settings for every panel**: Home Assistant address, schedule, features (see [§7](#7-configuration-reference)). Start from `config/kiosk.env.example`. |
+| `.private/panel1.env`, `panel2.env`, ... | **Yes, one per panel** | **How to reach that panel** and nothing else: `PANEL_HOST`, `PANEL_PASSWORD`, `PANEL_HOSTKEY`. Start from `config/panel.env.example`. The file name is the panel's name for the scripts (`panel1`). |
+| `.private/panel1.kiosk.env`, ... | Optional | **Settings for that panel only**, when it needs something different: its wired light (`LOAD_ENTITY`), room speakers and lights, or a feature turned on or off just here (e.g. `KIOSK_VOICE=1`, `DOORBELL=0`). Start from `config/panel.kiosk.env.example`. **Without it, the panel uses `kiosk.env` as is.** |
+| `.private/<group>.group.env` | Optional | Settings for a group of panels, e.g. one apartment (see [§2.13](#213-multi-unit-and-rental-properties-lite-groups)). |
+| `.private/token` | Yes | A Home Assistant long-lived access token (below). |
+| `.private/layout.json` | Optional | A local layout, used only when you don't design the screens in HA. |
+| `.private/photos/` | Optional | Screensaver photos (JPEG/PNG), copied to every panel. |
+
+**How each panel's settings are built:** `kiosk.env`, then the panel's group file (if it has one),
+then the panel's own `.kiosk.env` (if it has one). Later lines win, so a panel file only needs the
+lines that differ. Turning a shared feature off for one panel is just `FEATURE=0` in its file.
 
 ```bash
 cp config/panel.env.example .private/panel1.env
@@ -769,8 +774,10 @@ drives the real backlight.
 
 ## 7. Configuration reference
 
-All settings live in `.private/kiosk.env` (shared) and `.private/<panel>.kiosk.env` (per panel,
-appended last, so it wins). After changing them, run `scripts/install.sh <panel>`.
+Every setting below goes in `.private/kiosk.env` (all panels). To change one for a single panel, put
+just that line in `.private/<panel>.kiosk.env`; to change it for a group, in `.private/<group>.group.env`
+(see [§2.2](#22-get-the-code-and-create-your-private-config) for the files and the order). After changing them, run
+`scripts/install.sh all` (or `scripts/install.sh <panel>`).
 
 ### Home Assistant and layout
 
@@ -910,7 +917,22 @@ On the panel itself: `journalctl -u ha-kiosk -u ha-kiosk-display -u ha-kiosk-bri
 | `/run/ha-kiosk-display/levels` | Current smart-dimming levels (awake, screensaver) |
 | `echo 2 > /run/ha-kiosk-display/page` | Switch the UI to tab 2 (handy for testing) |
 
-**Updating**: `git pull`, then `scripts/install.sh <panel>` for each panel.
+**Updating**: `git pull`, then `scripts/install.sh all` (or `scripts/install.sh <panel>` for one).
+
+**What an install does with your settings.** `install.sh` only *reads* `.private/`; it never changes
+your files there. On each panel it:
+
+* **replaces** the panel's settings with a fresh combination of `kiosk.env` + group file + that
+  panel's `.kiosk.env`. Per-panel features are kept because they live in your `panelN.kiosk.env`;
+  only edits made by hand directly on a panel are overwritten.
+* **replaces** the HA token (from `.private/token`) and the fallback layout.
+* **updates** the program files to this version.
+* **keeps** choices made from Home Assistant switches (screensaver, night mode, motion wake, smart
+  dimming, day brightness; stored separately and taking precedence over `kiosk.env`), photos synced
+  from HA, and the Security and capture state.
+
+So the same command both upgrades the software and applies your current settings, for one panel or
+all of them.
 
 **Brilliant OS updates**: over-the-air updates stay enabled. They replace the read-only system
 image. Everything this project installs lives in `/etc` and `/var`, which updates are expected to

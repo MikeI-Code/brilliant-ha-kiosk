@@ -94,9 +94,12 @@ a computer with `bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTT
    git clone https://github.com/MikeI-Code/brilliant-ha-kiosk.git
    cd brilliant-ha-kiosk
    mkdir -p .private
-   cp config/panel.env.example  .private/panel1.env    # panel IP + root password (one file per panel)
-   cp config/kiosk.env.example  .private/kiosk.env     # HA address, schedule, features (shared by all panels)
+   cp config/kiosk.env.example  .private/kiosk.env     # settings for ALL panels: HA address, features
+   cp config/panel.env.example  .private/panel1.env    # how to reach panel1: IP + root password
    ```
+   Add `.private/panel2.env`, `panel3.env`, ... for more panels (address only). If one panel needs
+   different settings, add `.private/panel2.kiosk.env` with just those lines (see
+   `config/panel.kiosk.env.example`); without it, the panel uses `kiosk.env` as is.
 3. **Create a Home Assistant token** (your profile → *Security* → *Long-lived access tokens*) and
    save it as `.private/token`.
 4. **Install:**
@@ -112,10 +115,18 @@ a computer with `bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTT
    starter layout to edit, instead of starting empty.)*
 
 **Many panels, one setup.** All panels share `.private/kiosk.env` and the same HA dashboard, so
-ten panels need no more configuration than one. Each panel's own file (`.private/panelN.env` for
-its address, and optionally `.private/panelN.kiosk.env`) holds only what is physically different:
-its wired light (`LOAD_ENTITY`), the room's speakers and lights, or opt-in features such as voice
-or capture. Change the shared file, run `scripts/install.sh all`, and every panel is updated.
+ten panels need no more configuration than one:
+
+| File | Per | Holds |
+|---|---|---|
+| `.private/kiosk.env` | all panels | the settings |
+| `.private/panelN.env` | panel (required) | only how to reach it: IP and password |
+| `.private/panelN.kiosk.env` | panel (optional) | only what differs for that panel: its wired light, room speakers, or a feature turned on or off just there |
+
+`scripts/install.sh all` upgrades every panel and re-applies these settings. It never changes your
+files in `.private/`, and per-panel features are kept because they live in `panelN.kiosk.env`; only
+edits made by hand on a panel are replaced. Choices made from HA switches (screensaver, night mode,
+...) are kept too.
 
 To go back to the stock Brilliant interface at any time: `scripts/uninstall.sh panel1`.
 
