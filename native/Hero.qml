@@ -1,6 +1,7 @@
 // Home header: big clock, date, current weather, inside temp, 5-day forecast.
 import QtQuick 2.15
 import "."
+import "WeatherNote.js" as WeatherNote
 
 Item {
     id: hero
@@ -9,6 +10,8 @@ Item {
     property var w: null
     property var inside: null
     property var forecast: []
+    property var hourly: []
+    readonly property string note: WeatherNote.note(hourly, w ? w.state : "", 12)
     property date now: new Date()
     height: col.height
 
@@ -33,6 +36,10 @@ Item {
         Ha.callService("weather", "get_forecasts", { type: "daily" }, weatherEntity, function (r) {
             if (r.success && r.result && r.result.response && r.result.response[hero.weatherEntity])
                 hero.forecast = r.result.response[hero.weatherEntity].forecast.slice(0, 5);
+        });
+        Ha.callService("weather", "get_forecasts", { type: "hourly" }, weatherEntity, function (r) {
+            if (r.success && r.result && r.result.response && r.result.response[hero.weatherEntity])
+                hero.hourly = r.result.response[hero.weatherEntity].forecast.slice(0, 12);
         });
     }
     Connections {
@@ -59,6 +66,7 @@ Item {
                 z: -1
                 condition: hero.w ? hero.w.state : ""
                 running: hero.visible
+                onTapped: Panel.showWeather()
             }
             Label { id: clock; size: 64; font.weight: Font.Light; text: Qt.formatTime(hero.now, "h:mm AP").replace(/\s*[AP]M$/i, "") }
             Label { id: date; anchors.top: clock.bottom; size: 16; color: Theme.textDim; text: Qt.formatDate(hero.now, "dddd, MMMM d") }
@@ -131,6 +139,7 @@ Item {
                 Label { anchors.right: parent.right; size: 12; color: Theme.textDim; text: hero.w ? hero.cond(hero.w.state) : "" }
                 Label { anchors.right: parent.right; size: 12; color: Theme.textDim
                         text: hero.inside ? "Inside " + Math.round(parseFloat(hero.inside.state)) + "°" : "" }
+                Label { anchors.right: parent.right; size: 12; color: Theme.text; visible: hero.note !== ""; text: hero.note }
             }
         }
 

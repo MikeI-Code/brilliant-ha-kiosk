@@ -14,6 +14,7 @@ mkdir -p "$B/ha-kiosk/native/fonts" "$B/systemd" "$OUT"
 cp "$ROOT"/native/*.qml "$ROOT"/native/*.js "$ROOT"/native/icons.json "$ROOT"/native/qmldir \
    "$ROOT"/native/layout.example.json "$B/ha-kiosk/native/"
 cp "$ROOT"/native/fonts/*.ttf "$B/ha-kiosk/native/fonts/"
+mkdir -p "$B/ha-kiosk/native/sky" && cp "$ROOT"/native/sky/*.png "$B/ha-kiosk/native/sky/"
 cp "$ROOT"/kiosk/kiosk.qml "$ROOT"/kiosk/ha-kiosk-*.sh "$ROOT"/kiosk/ha-kiosk-*.py "$B/ha-kiosk/"
 cp "$ROOT"/tools/brilliant_bus.py "$ROOT"/tools/inject_touch.py "$B/ha-kiosk/"
 cp "$ROOT"/systemd/* "$B/systemd/"

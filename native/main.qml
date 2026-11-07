@@ -398,7 +398,26 @@ Window {
     }
     // After waking from night/dim, go back to Home.
     onCurrentChanged: if (pages.currentIndex !== current) pages.currentIndex = current
-    onDisplayStateChanged: if (displayState === "asleep" || displayState === "photos") { current = 0; Panel.goHome(); }
+    property string _prevDisplay: "awake"
+    onDisplayStateChanged: {
+        if (displayState === "asleep" || displayState === "photos") { current = 0; Panel.goHome(); }
+        else if (displayState === "awake" && _prevDisplay !== "awake") wakeFx.restart();
+        _prevDisplay = displayState;
+    }
+    Timer { id: wakeFx; interval: 350; onTriggered: Panel.woke() }   // after the screen is lit
+
+    // Full-screen weather, opened by tapping the Home sky; closes on idle like other overlays.
+    Loader {
+        id: weatherPage
+        anchors.fill: parent; z: 112
+        active: false
+        source: "WeatherPage.qml"
+        onLoaded: { item.weatherEntity = Qt.binding(function () { return win.layout.weather || ""; });
+                    item.closed.connect(function () { weatherPage.active = false; }); }
+        Connections { target: Panel
+            function onShowWeather() { if (win.layout.weather) weatherPage.active = true; }
+            function onGoHome() { weatherPage.active = false; } }
+    }
 
     // Idle: after 2 minutes without a touch, go back to Home and scroll pages to the top.
     Timer { id: idleHome; interval: 120000; running: true

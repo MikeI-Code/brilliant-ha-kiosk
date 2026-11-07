@@ -39,6 +39,8 @@ Item {
     property var ringAlarm: null
     signal showAlarm()                   // Disarm tapped: code pad (AlarmPad.qml)
     signal showSecurity()                // header summary tapped: open the Security tab
+    signal showWeather()                 // Home sky tapped: full-screen weather (WeatherPage.qml)
+    signal woke()                        // display came back from asleep/photos (sky flourish)
     property var ringDevices: []
     property var security: null          // {status, caps, reasons, disarm_unverified, lockout_until, last_disarm}         // [{name, kind: doorbell|camera, last_press}] from Brilliant's Ring link
     readonly property bool hasSecurity: !!ringAlarm || locks.length > 0 || ringDevices.length > 0

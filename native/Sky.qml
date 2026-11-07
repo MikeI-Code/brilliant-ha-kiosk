@@ -12,6 +12,10 @@ Item {
     property string condition: ""
     property bool running: true           // pause motion when off-screen
     property real radius: Theme.radius
+    property string phaseOverride: ""     // weather page preview of another hour: day | night | dawn | dusk
+    property real fxSize: 1               // particle/sprite scale (bigger on the weather page)
+    property bool touchable: true         // finger blows particles; a tap emits tapped()
+    signal tapped()
     readonly property string mode: {
         var m = /^\s*WEATHER_FX\s*=\s*"?(off|sky|full)/mi.exec(Ha.readFile("/etc/ha-kiosk/kiosk.env"));
         return m ? m[1].toLowerCase() : "full";
@@ -22,7 +26,8 @@ Item {
     property var sun: Ha.get("sun.sun")
     Connections { target: Ha; function onEntityUpdated(id) { if (id === "sun.sun") sky.sun = Ha.get("sun.sun"); }
                              function onStatesLoaded() { sky.sun = Ha.get("sun.sun"); } }
-    readonly property string phase: {
+    readonly property string phase: phaseOverride || livePhase
+    readonly property string livePhase: {
         if (!sun || !sun.attributes) return "day";
         var e = sun.attributes.elevation;
         if (e === undefined) return sun.state === "below_horizon" ? "night" : "day";
@@ -69,7 +74,19 @@ Item {
         ScriptAction { script: { base.topColor = fade.topColor; base.bottomColor = fade.bottomColor; fade.opacity = 0; } }
     }
 
+    Connections { target: Panel; function onWoke() { if (fxLoader.item && sky.running) fxLoader.item.burst(); } }
+    MouseArea {
+        anchors.fill: parent
+        z: 3
+        enabled: sky.touchable && sky.visible
+        onPressed: if (fxLoader.item) fxLoader.item.pushAt(mouse.x - fxLoader.x, mouse.y - fxLoader.y)
+        onPositionChanged: if (fxLoader.item) fxLoader.item.pushAt(mouse.x - fxLoader.x, mouse.y - fxLoader.y)
+        onReleased: if (fxLoader.item) fxLoader.item.release()
+        onCanceled: if (fxLoader.item) fxLoader.item.release()
+        onClicked: sky.tapped()
+    }
     Loader {
+        id: fxLoader
         anchors { fill: parent; leftMargin: sky.radius / 2; rightMargin: sky.radius / 2 }
         z: 2
         active: sky.mode === "full"
@@ -78,6 +95,7 @@ Item {
             item.condition = Qt.binding(function () { return sky.condition; });
             item.running = Qt.binding(function () { return sky.running; });
             item.night = Qt.binding(function () { return sky.phase === "night"; });
+            item.size = Qt.binding(function () { return sky.fxSize; });
         }
     }
 }
