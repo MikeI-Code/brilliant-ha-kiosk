@@ -33,14 +33,8 @@ Item {
     }
     function loadForecast() {
         if (!weatherEntity) return;
-        Ha.callService("weather", "get_forecasts", { type: "daily" }, weatherEntity, function (r) {
-            if (r.success && r.result && r.result.response && r.result.response[hero.weatherEntity])
-                hero.forecast = r.result.response[hero.weatherEntity].forecast.slice(0, 5);
-        });
-        Ha.callService("weather", "get_forecasts", { type: "hourly" }, weatherEntity, function (r) {
-            if (r.success && r.result && r.result.response && r.result.response[hero.weatherEntity])
-                hero.hourly = r.result.response[hero.weatherEntity].forecast.slice(0, 12);
-        });
+        Ha.getForecast(weatherEntity, "daily", function (l) { hero.forecast = l.slice(0, 5); });
+        Ha.getForecast(weatherEntity, "hourly", function (l) { hero.hourly = l.slice(0, 12); });
     }
     Connections {
         target: Ha

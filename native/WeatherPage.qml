@@ -34,10 +34,7 @@ Rectangle {
 
     Connections { target: Ha; function onEntityUpdated(id) { if (id === wp.weatherEntity) wp.w = Ha.get(id); } }
     function load() {
-        Ha.callService("weather", "get_forecasts", { type: "hourly" }, weatherEntity, function (r) {
-            if (r.success && r.result && r.result.response && r.result.response[wp.weatherEntity])
-                wp.hourly = r.result.response[wp.weatherEntity].forecast.slice(0, 24);
-        });
+        Ha.getForecast(weatherEntity, "hourly", function (l) { wp.hourly = l.slice(0, 24); });
     }
     Component.onCompleted: load()
 

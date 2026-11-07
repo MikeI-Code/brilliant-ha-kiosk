@@ -84,6 +84,36 @@ Item {
         return id;
     }
 
+    // Background forecast fetch: no "Couldn't do that" toast on failure. cb(list) gets [] on failure.
+    // type "daily" falls back to "twice_daily" (e.g. NWS), merged into one entry per day with
+    // temperature = daytime high and templow = night low.
+    function getForecast(entityId, type, cb) {
+        function req(t, done) {
+            var id = send({ type: "call_service", domain: "weather", service: "get_forecasts",
+                            service_data: { type: t }, target: { entity_id: entityId }, return_response: true },
+                          function (r) {
+                              var f = r.success && r.result && r.result.response && r.result.response[entityId];
+                              done(f ? f.forecast || [] : null);
+                          });
+            if (id < 0) done(null);
+        }
+        req(type, function (list) {
+            if (list || type !== "daily") return cb(list || []);
+            req("twice_daily", function (tw) {
+                var days = [], byDay = {};
+                (tw || []).forEach(function (e) {
+                    var k = String(e.datetime).slice(0, 10), d = byDay[k];
+                    if (!d) { d = byDay[k] = { datetime: e.datetime, condition: e.condition, temperature: e.temperature,
+                                                templow: undefined, precipitation_probability: e.precipitation_probability };
+                              days.push(d); }
+                    if (e.is_daytime === false) d.templow = e.temperature;
+                    else { d.temperature = e.temperature; d.condition = e.condition; }
+                });
+                cb(days);
+            });
+        });
+    }
+
     function _handle(m) {
         if (m.type === "auth_required") {
             sock.sendTextMessage(JSON.stringify({ type: "auth", access_token: token }));
