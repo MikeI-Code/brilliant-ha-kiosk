@@ -51,22 +51,22 @@ Item {
     readonly property var colors: (palettes[group(condition)] || palettes.cloud)[phase === "day" && condition === "clear-night" ? "night" : phase]
 
     // 'base' shows the current sky; 'fade' brings the next one in over 3 s, then hands it over.
-    onColorsChanged: { fade.top = colors[0]; fade.bottom = colors[1]; fadeIn.restart(); }
-    Component.onCompleted: { base.top = colors[0]; base.bottom = colors[1]; }
+    onColorsChanged: { fade.topColor = colors[0]; fade.bottomColor = colors[1]; fadeIn.restart(); }
+    Component.onCompleted: { base.topColor = colors[0]; base.bottomColor = colors[1]; }
 
     component SkyLayer: Rectangle {
-        property color top: "#0e1013"
-        property color bottom: "#0e1013"
+        property color topColor: "#0e1013"
+        property color bottomColor: "#0e1013"
         anchors.fill: parent
         radius: sky.radius
-        gradient: Gradient { GradientStop { position: 0; color: top } GradientStop { position: 1; color: bottom } }
+        gradient: Gradient { GradientStop { position: 0; color: topColor } GradientStop { position: 1; color: bottomColor } }
     }
     SkyLayer { id: base }
     SkyLayer { id: fade; opacity: 0; visible: opacity > 0 }
     SequentialAnimation {
         id: fadeIn
         NumberAnimation { target: fade; property: "opacity"; from: 0; to: 1; duration: 3000 }
-        ScriptAction { script: { base.top = fade.top; base.bottom = fade.bottom; fade.opacity = 0; } }
+        ScriptAction { script: { base.topColor = fade.topColor; base.bottomColor = fade.bottomColor; fade.opacity = 0; } }
     }
 
     Loader {
