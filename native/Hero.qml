@@ -53,6 +53,13 @@ Item {
             width: parent.width
             height: clock.height + date.height + (alarmRow.visible ? alarmRow.height + 4 * Theme.u : 0)
                     + (lockRow.visible ? lockRow.height + 4 * Theme.u : 0)
+            // BETA: animated sky behind the clock and current weather (WEATHER_FX in kiosk.env).
+            Sky {
+                anchors { fill: parent; margins: -10 * Theme.u }
+                z: -1
+                condition: hero.w ? hero.w.state : ""
+                running: hero.visible
+            }
             Label { id: clock; size: 64; font.weight: Font.Light; text: Qt.formatTime(hero.now, "h:mm AP").replace(/\s*[AP]M$/i, "") }
             Label { id: date; anchors.top: clock.bottom; size: 16; color: Theme.textDim; text: Qt.formatDate(hero.now, "dddd, MMMM d") }
             // Ring Alarm mode from Brilliant's own Ring integration (read-only).
