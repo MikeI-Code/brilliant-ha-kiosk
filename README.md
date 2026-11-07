@@ -10,6 +10,13 @@ it keeps working as a light switch.**
   <img src="docs/images/sonos.png" width="19%" alt="Music tab with transport, volume and grouping">
   <img src="docs/images/house.png" width="19%" alt="House tab with presence, appliances and temperatures">
 </p>
+<p align="center">
+  <img src="docs/images/security.png" width="19%" alt="Security tab: Ring alarm, Schlage lock, doorbells and cameras">
+  <img src="docs/images/capture.png" width="19%" alt="Capture tab: voice clip, snapshot and video clip">
+  <img src="docs/images/saver.jpg" width="19%" alt="Screensaver with clock and local weather">
+  <img src="docs/images/dim.png" width="19%" alt="Two-finger dimming with a live percentage readout">
+</p>
+<p align="center"><sub>Second row: Security (camera pictures blanked for this screenshot), Capture, the screensaver with local weather, and two-finger dimming.</sub></p>
 
 Brilliant panels are great hardware: a 720×1280 touchscreen, a dimmer, Wi-Fi, a speaker and
 microphones in a light-switch box. This project replaces the stock touchscreen app with a
@@ -70,13 +77,6 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | 🏢 **Multi-unit ready (lite groups)** | For duplexes and rentals: group panels by unit with shared settings, keep the intercom inside the unit, limit each panel to its own doors and locks (or view only), and lock the mic or camera where needed. ([How it works and what it doesn't isolate](docs/MANUAL.md#213-multi-unit-and-rental-properties-lite-groups)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
 
-<p align="center">
-  <img src="docs/images/security.png" width="23%" alt="Security tab: Ring alarm, Schlage lock, doorbells and cameras">
-  <img src="docs/images/capture.png" width="23%" alt="Capture tab: voice clip, snapshot and video clip">
-  <img src="docs/images/dim.png" width="23%" alt="Two-finger dimming with a live percentage readout">
-  <img src="docs/images/saver.jpg" width="23%" alt="Screensaver with clock and local weather">
-</p>
-<p align="center"><sub>Security (camera pictures blanked for this screenshot), Capture, two-finger dimming with a live readout, and the screensaver with clock and local weather.</sub></p>
 
 ---
 
