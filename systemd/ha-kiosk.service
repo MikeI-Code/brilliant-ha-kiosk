@@ -20,7 +20,10 @@ Environment="QTWEBENGINE_CHROMIUM_FLAGS=--ignore-gpu-blocklist --enable-gpu-rast
 RuntimeDirectory=ha-kiosk
 RuntimeDirectoryMode=0700
 StateDirectory=ha-kiosk
-# Stop the boot splash so it doesn't fight for the framebuffer
+# Stop the boot splash so it doesn't fight for the framebuffer. Stop bootsplash.path too: it
+# re-launches bootsplash.service (fbi) whenever /dev/fb0 exists, and a headless fbi spams
+# "ioctl ...: Bad file descriptor" over the screen. Until next boot only; the cold-boot splash stays.
+ExecStartPre=-/bin/systemctl --no-block stop bootsplash.path bootsplash.service
 ExecStartPre=-/usr/bin/pkill -x fbi
 # KIOSK_MODE (kiosk.env): native = Qt Quick UI talking to HA's API (fast, default)
 #                         web    = HA's web dashboard in QtWebEngine (slow on this CPU)
