@@ -3,6 +3,10 @@
 **Turn a Brilliant smart-home control into a fast, dark, native Home Assistant wall panel, while
 it keeps working as a light switch.**
 
+[![Latest stable](https://img.shields.io/github/v/release/MikeI-Code/brilliant-ha-kiosk?label=stable&sort=semver&style=flat-square)](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/latest)
+[![Latest nightly](https://img.shields.io/github/v/release/MikeI-Code/brilliant-ha-kiosk?include_prereleases&filter=nightly-*&label=nightly&color=orange&style=flat-square)](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true)
+[![Changelog](https://img.shields.io/badge/changelog-read-blue?style=flat-square)](CHANGELOG.md)
+
 <p align="center">
   <img src="docs/images/home.png" width="19%" alt="Home tab: clock, weather, forecast, scenes and lights">
   <img src="docs/images/lights.png" width="19%" alt="Lights tab">
@@ -80,6 +84,21 @@ That's why this project only replaces the screen and never removes Brilliant's b
 
 
 ---
+
+## Releases
+
+There are two release channels. Both ship the same kind of checksummed install bundle.
+
+| Channel | Where | What it is |
+| --- | --- | --- |
+| **Stable** | [Latest release](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/latest) · tags `vX.Y.Z` | Tested releases. Use this unless you want to try new features early. |
+| **Nightly** | [Nightly prereleases](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true) · branch [`nightly`](https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/nightly) | Built each night when the `nightly` branch changed. New work, including integrations with other services, lands here first. May have rough edges. |
+
+What changed, and what is waiting on the nightly channel: [**CHANGELOG.md**](CHANGELOG.md).
+
+To install a channel, check it out before running the installer below: `git checkout v1.4.0`
+(or the newest `vX.Y.Z`) for stable, `git checkout nightly && git pull` for nightly.
+Going back is the same `scripts/install.sh` from the other checkout.
 
 ## Quick start
 
@@ -174,6 +193,7 @@ flowchart LR
 
 | | |
 |---|---|
+| 📝 [**Changelog**](CHANGELOG.md) | Every release, and what is on the nightly channel |
 | 📘 [**Manual**](docs/MANUAL.md) | Installation, configuration reference, editing screens, gestures, maintenance, troubleshooting |
 | 🔧 [Hardware & services](docs/hardware-and-services.md) | Hardware, kernel interfaces, Brilliant's services, and the message-bus API |
 | 📊 [Resources & optimizations](docs/resource-utilization-and-optimizations.md) | Memory and CPU measurements, what is safe to change |
