@@ -58,6 +58,7 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | ⚡ **Native and fast** | Qt Quick on the GPU, talking to HA's websocket API. Instant taps, smooth scrolling and swiping, about 350 MB of RAM to spare. |
 | 🏠 **Ready-made tabs** | Home (clock, weather, 5-day forecast, scenes, key lights, thermostats, now playing), Lights, Climate, Music, House, plus **Security** when Brilliant reports Ring or Schlage devices. Swipe or tap to switch. |
 | ✏️ **Edit screens in Home Assistant** | Lay out the panel in HA's own drag-and-drop dashboard editor. Every panel rebuilds within a second of pressing **Save**. |
+| 🎨 **Same look in Home Assistant** | A matching HA theme (`ha/themes/brilliant-kiosk.yaml`) gives HA's web interface and phone app the panel's colours. |
 | 💡 **Local control of the wired light** | The panel dims its own load directly over Brilliant's message bus, in about 0.1 s, even if Home Assistant is down. |
 | ✌️ **Multi-touch gestures** | Two fingers up/down dim the room light, a two-finger tap toggles it, three fingers up/down set the room's speaker volume, plus your own custom gestures. |
 | 🎵 **One music screen for any player** | Works with whatever music integration Home Assistant has: Sonos, WiiM/LinkPlay, Music Assistant, Bluesound, Google Cast, Spotify and more. Room picker, album art, transport, volume, sources, grouping with a volume per speaker, and the player's favorites or library as tap-to-play tiles. Buttons the player doesn't support are hidden. |
@@ -70,11 +71,12 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
 
 <p align="center">
-  <img src="docs/images/dim.png" width="30%" alt="Two-finger dimming with a live percentage readout">
-  &nbsp;&nbsp;
-  <img src="docs/images/saver.jpg" width="30%" alt="Photo screensaver with clock">
+  <img src="docs/images/security.png" width="23%" alt="Security tab: Ring alarm, Schlage lock, doorbells and cameras">
+  <img src="docs/images/capture.png" width="23%" alt="Capture tab: voice clip, snapshot and video clip">
+  <img src="docs/images/dim.png" width="23%" alt="Two-finger dimming with a live percentage readout">
+  <img src="docs/images/saver.jpg" width="23%" alt="Screensaver with clock and local weather">
 </p>
-<p align="center"><sub>Left: two-finger dimming with a live readout. Right: the photo screensaver.</sub></p>
+<p align="center"><sub>Security (camera pictures blanked for this screenshot), Capture, two-finger dimming with a live readout, and the screensaver with clock and local weather.</sub></p>
 
 ---
 

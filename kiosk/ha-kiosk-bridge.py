@@ -163,6 +163,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._reply(200, {"ok": True})
             except OSError as e:
                 return self._reply(503, {"error": str(e)})
+        if self.path == "/heartbeat":        # the UI is up; ha-kiosk-setup checks this after an install
+            try:
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
+                os.makedirs("/run/ha-kiosk", exist_ok=True)
+                with open("/run/ha-kiosk/heartbeat.json.tmp", "w", encoding="utf-8") as f:
+                    json.dump({"time": time.time(), "ha": str(req.get("ha", ""))[:20]}, f)
+                os.replace("/run/ha-kiosk/heartbeat.json.tmp", "/run/ha-kiosk/heartbeat.json")
+            except Exception:
+                pass
+            return self._reply(200, {"ok": True})
         if self.path == "/gesture":          # the UI reports every multi-finger gesture
             name = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}").get("name", "")
             if mqtt_link:
@@ -601,6 +611,9 @@ def start_mqtt():
     if env.get("KIOSK_MQTT", "1").strip().lower() in ("0", "off", "false", "no"):
         print("bridge: MQTT off (KIOSK_MQTT=0; another tool publishes this panel)", flush=True)
         return
+    if env.get("KIOSK_MQTT", "1").strip().lower() == "kiosk":
+        print("bridge: MQTT kiosk mode (kiosk entities only"
+              + (f", joining device {env['MQTT_DEVICE_ID']}" if env.get("MQTT_DEVICE_ID") else "") + ")", flush=True)
     if not env.get("MQTT_HOST"):
         print("bridge: MQTT off (no MQTT_HOST)", flush=True)
         return

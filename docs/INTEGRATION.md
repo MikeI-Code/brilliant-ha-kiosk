@@ -17,6 +17,79 @@ MUST, SHOULD and MAY are used as in RFC 2119.
 
 ---
 
+## 0. Implemented in v1.4.0 (pilot)
+
+v1.4.0 ships a first `ha-kiosk-setup` for the single-panel pilot. **Where this section and the
+rest of the document differ, this section describes the code; the rest is the contract-1 design.**
+The biggest differences: no minisign signature (the integration pins SHA-256 and size), simpler
+exit codes, no `--json` flag (output is always JSON), and no `version`/`display` commands yet.
+
+**Artifacts.** Each GitHub release has `brilliant-ha-kiosk-<tag>.tar.gz` and its `.sha256`.
+Builds are reproducible (fixed file order, owner and time), and `scripts/build-bundle.sh` also
+writes `<name>.release.json` = `{name, version, sha256, size}`. Root of trust: the integration's
+own pinned SHA-256 and size, as for its voice payload.
+
+**Running it.** The bundle carries `ha-kiosk-setup` at its root. For a first install, check the
+bundle's hash, extract that one file and run it with the panel's Python:
+
+```
+echo "<sha256>  bundle.tar.gz" | sha256sum -c
+tar -xzOf bundle.tar.gz <name>/ha-kiosk-setup > setup.py
+/data/switch-embedded/env/bin/python setup.py install --bundle bundle.tar.gz --sha256 <sha256> \
+    [--size N] [--env FILE] [--token FILE | --token-stdin] [--layout FILE] [--allow-offline] [--detach]
+```
+
+Afterwards use the installed copy, `/var/lib/ha-kiosk/ha-kiosk-setup`, which survives firmware
+updates:
+
+```
+ha-kiosk-setup reapply | enable | disable | rollback | uninstall | purge   [--detach]
+ha-kiosk-setup wait [--timeout SECS]        default 100 s
+ha-kiosk-setup status | diagnostics | check-env FILE
+```
+
+**Detach and wait.** Enabling or disabling restarts Brilliant's `message_bus` (60–90 s by
+itself), so a caller with a per-command SSH limit (e.g. 120 s) runs changing commands with
+`--detach` (they return at once as the transient unit `ha-kiosk-setup-job`) and then repeats
+`wait --timeout 100` until it exits with something other than 9. `--detach` cannot read stdin:
+pass `--env FILE` / `--token FILE`.
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Internal error |
+| 2 | Usage error (also: not root, `--detach` with stdin) |
+| 3 | Verification failed (SHA-256, size, the bundle's own `MANIFEST.sha256`) |
+| 4 | Settings or token rejected |
+| 5 | Activation failed; rolled back to the previous version |
+| 6 | Activation failed; Brilliant's stock UI restored |
+| 7 | Not installed |
+| 8 | Busy (another run or a detached job) |
+| 9 | `wait`: the job is still running |
+
+**Health check.** The UI posts a heartbeat every 10 s (`/run/ha-kiosk/heartbeat.json`, with its HA
+connection state). After `install-local.sh` returns, the tool waits up to 60 s for a fresh
+heartbeat, `ha-kiosk.service` active and Home Assistant connected (or `--allow-offline`).
+
+**Layout on the panel.** `/var/lib/ha-kiosk/`: `releases/<version>` (current + previous),
+`config/` (0700; settings, token and layout, 0600), `current`, `previous`, `state`, `setup.log`,
+`ha-kiosk-setup`. `/etc/ha-kiosk` is the running copy, rebuilt by `reapply`. `uninstall` keeps
+non-secret preferences and photos in `/var/lib/ha-kiosk-keep` (removed by `purge`) and leaves
+`status.secrets_present` empty.
+
+**Settings.** `kiosk.env` is parsed, not sourced: keys must be on an allowlist, values may not
+contain quotes, backslashes, `$`, backticks or control characters, and the tool writes a normalised `KEY="value"` file.
+`check-env FILE` validates without installing.
+
+**MQTT.** `KIOSK_MQTT=kiosk` publishes only kiosk-owned entities, withdraws its retained discovery
+for panel entities (load, power, motion, diagnostics) and, with `MQTT_DEVICE_ID`, joins that HA
+device (identifiers only). Retained `<base>/kiosk_state` is `active` while running and
+`disabled` / `not_installed` / `failed` otherwise.
+
+---
+
 ## 1. Scope and roles
 
 | Role | Responsibility |

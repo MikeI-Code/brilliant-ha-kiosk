@@ -108,6 +108,11 @@ class KioskMqtt:
         self.peripherals = set()
         self.gangboxes = [0]
         self.next_diag = 0.0
+        # KIOSK_MQTT=kiosk: another integration (e.g. brilliant-mqtt) publishes the panel itself
+        # (wired load, power, motion, diagnostics); we publish only what the kiosk owns and join
+        # that integration's HA device through MQTT_DEVICE_ID.
+        self.kiosk_only = str(env.get("KIOSK_MQTT", "1")).strip().lower() == "kiosk"
+        self.device_id = str(env.get("MQTT_DEVICE_ID", "")).strip()
         c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"{self.node}_kiosk")
         if env.get("MQTT_USER"):
             c.username_pw_set(env["MQTT_USER"], env.get("MQTT_PASSWORD", ""))
@@ -119,6 +124,8 @@ class KioskMqtt:
 
     # ---------- discovery ----------
     def _device(self):
+        if self.device_id:              # join the other integration's device; identifiers only
+            return {"identifiers": [self.device_id]}
         return {"identifiers": [self.node], "name": f"{self.room} Brilliant panel",
                 "manufacturer": "Brilliant", "model": "Brilliant Control (HA kiosk)"}
 
@@ -128,8 +135,34 @@ class KioskMqtt:
         payload.update(extra)
         self.c.publish(f"{self.disc}/{component}/{self.node}/{key}/config", json.dumps(payload), retain=True)
 
+    # Entities another integration owns in KIOSK_MQTT=kiosk mode (component, key prefix).
+    PANEL_OWNED = (("light", "load"), ("sensor", "load_power"), ("sensor", "load_temperature"),
+                   ("sensor", "faceplate_temperature"), ("sensor", "cpu_temperature"),
+                   ("sensor", "firmware_version"), ("sensor", "boot_time"), ("sensor", "min_dim_level"),
+                   ("sensor", "max_dim_level"), ("sensor", "dimming_edge"), ("sensor", "dim_calibration"),
+                   ("binary_sensor", "homekit_paired"), ("binary_sensor", "homekit_enabled"),
+                   ("sensor", "shelly_ble"), ("binary_sensor", "motion"))
+
+    def _withdraw_panel_owned(self):
+        """Remove our retained discovery for panel entities (switching from full to kiosk mode)."""
+        for comp, key in self.PANEL_OWNED:
+            for n in self.gangboxes or [0]:
+                k = key + (gb_suffix(n)[0] if key in ("load_power", "load_temperature", "min_dim_level",
+                                                      "max_dim_level", "dimming_edge", "dim_calibration") else "")
+                self.c.publish(f"{self.disc}/{comp}/{self.node}/{k}/config", "", retain=True)
+
     def publish_discovery(self):
         b = self.base
+        if self.kiosk_only:
+            try:
+                self.peripherals = set(self.control.peripherals())
+            except Exception as e:
+                print(f"mqtt: peripheral list: {e}", flush=True)
+            self.gangboxes = sorted((int(p.rsplit("_", 1)[1]) for p in self.peripherals
+                                     if re.fullmatch(r"gangbox_peripheral_\d+", p)), key=int) or [0]
+            self._withdraw_panel_owned()
+            self._publish_kiosk_entities()
+            return
         self._cfg("light", "load", {"name": "Wired light", "schema": "json", "brightness": True,
                                     "brightness_scale": 100, "state_topic": f"{b}/load/state",
                                     "command_topic": f"{b}/load/set"})
@@ -181,6 +214,11 @@ class KioskMqtt:
                                                "entity_category": "diagnostic"})
         self._cfg("binary_sensor", "motion", {"name": "Motion", "device_class": "motion",
                                               "state_topic": f"{b}/motion"})
+        self._publish_kiosk_entities()
+
+    def _publish_kiosk_entities(self):
+        """What the kiosk itself owns: display, gestures, screensaver/night settings, privacy."""
+        b = self.base
         self._cfg("sensor", "display_state", {"name": "Display", "state_topic": f"{b}/display_state",
                                               "icon": "mdi:tablet-dashboard"})
         self._cfg("sensor", "backlight", {"name": "Backlight", "state_topic": f"{b}/backlight",
@@ -239,6 +277,12 @@ class KioskMqtt:
         client.subscribe(f"{self.disc}/status")         # HA restarted -> resend discovery
         self.publish_discovery()
         client.publish(f"{self.base}/availability", "online", retain=True)
+        client.publish(f"{self.base}/kiosk_state", "active", retain=True)   # for other integrations
+        try:                                # so ha-kiosk-setup can report disable/uninstall here
+            with open("/var/lib/ha-kiosk/mqtt_base", "w", encoding="utf-8") as f:
+                f.write(self.base)
+        except OSError:
+            pass
 
     def _on_message(self, client, userdata, msg):
         topic, payload = msg.topic, msg.payload.decode(errors="replace").strip()
@@ -373,6 +417,9 @@ class KioskMqtt:
     def _poll(self):
         if not self.c.is_connected():
             return
+        if self.kiosk_only:
+            self._poll_display()
+            return
         v = self.control.variables()
         on = v["on"] == "1"
         bri = round(100 * int(v["intensity"]) / int(v.get("max_intensity_value") or 1000))
@@ -393,7 +440,9 @@ class KioskMqtt:
             self.motion_until = time.time() + int(self.env.get("MOTION_CLEAR_SECS", "60"))
         self.brilliant_on = b_on
         self._pub("motion", "ON" if time.time() < self.motion_until else "OFF")
+        self._poll_display()
 
+    def _poll_display(self):
         cfg = {**read_env("/etc/ha-kiosk/kiosk.env"), **read_env(OVERRIDES)}
         self._pub("display_state", read(f"{STATE_DIR}/state", "unknown"))
         self._pub("backlight", read(f"{BL}/brightness"))

@@ -1,0 +1,623 @@
+#!/data/switch-embedded/env/bin/python
+"""ha-kiosk-setup: install, update, roll back and remove the HA kiosk on a Brilliant panel.
+
+Made to be driven over SSH by other tools (fleet managers, Home Assistant integrations) as well as
+by hand. Every command is idempotent, prints one JSON object on stdout (status/diagnostics) or log
+lines on stderr, and exits with a documented code (see EXIT below and docs/INTEGRATION.md).
+
+  ha-kiosk-setup install --bundle FILE.tar.gz --sha256 HEX [--size BYTES]
+                         [--env FILE|-] [--token FILE | --token-stdin] [--layout FILE] [--allow-offline]
+  ha-kiosk-setup reapply      re-activate the current version (after a firmware update)
+  ha-kiosk-setup enable       start the kiosk again after `disable`
+  ha-kiosk-setup disable      hand the screen back to Brilliant's UI; keep everything for `enable`
+  ha-kiosk-setup rollback     activate the previous version
+  ha-kiosk-setup uninstall    remove the kiosk, its code and every secret; keep photos/preferences
+  ha-kiosk-setup purge        uninstall and also delete photos and preferences
+  ha-kiosk-setup wait [--timeout SECS]   wait for a --detach job (default 100 s); exit 9 if still running
+  ha-kiosk-setup status       JSON status
+  ha-kiosk-setup diagnostics  JSON status plus recent logs, secrets redacted
+  ha-kiosk-setup check-env FILE   validate a settings file without installing
+
+  --detach (any changing command): run in the background and return at once; then call `wait`
+  until it returns. Turning the kiosk on or off restarts Brilliant's message bus, which alone can
+  take 60-90 s, so tools with a per-command time limit should always use --detach + wait.
+
+Run it as /var/lib/ha-kiosk/ha-kiosk-setup once installed: that copy survives firmware updates.
+
+Layout: releases live in /var/lib/ha-kiosk/releases/<version> (kept across firmware updates);
+the running copy is /etc/ha-kiosk, written by the release's own install-local.sh. The settings and
+token are kept in /var/lib/ha-kiosk/config (0600) so `reapply` can restore /etc after an update.
+"""
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+
+VAR = "/var/lib/ha-kiosk"
+REL = f"{VAR}/releases"
+CFG = f"{VAR}/config"
+KEEP = "/var/lib/ha-kiosk-keep"          # non-secret preferences kept by `uninstall`
+ETC = "/etc/ha-kiosk"
+HEARTBEAT = "/run/ha-kiosk/heartbeat.json"
+LOCK = "/run/ha-kiosk-setup.lock"
+LOG = f"{VAR}/setup.log"
+RESULT = "/run/ha-kiosk/setup-result.json"
+JOB = "ha-kiosk-setup-job"
+CHECK_SECS = 60
+KEEP_RELEASES = 2
+
+EXIT = {"ok": 0, "error": 1, "usage": 2, "verify": 3, "config": 4,
+        "rolled_back": 5, "stock_restored": 6, "not_installed": 7, "busy": 8, "in_progress": 9}
+
+# Settings kiosk.env may contain. Anything else is rejected, so a typo is an error, not a no-op.
+KEYS = set("""
+KIOSK_MODE HA_URL HA_ZOOM LAYOUT_DASHBOARD SLEEP_START SLEEP_END DAY_LEVEL DIM_LEVEL MIN_LEVEL
+IDLE_DIM_SECS NIGHT_WAKE_SECS NIGHT_MODE SCREENSAVER SCREENSAVER_WEATHER PHOTO_LEVEL PHOTO_SECS
+HA_PHOTO_FOLDER PHOTO_SYNC_MINS PHOTO_DIRS STOCK_ART TZ TZ_LOCAL MOTION_WAKE MOTION_CLEAR_SECS
+CPU_AWAKE_GOV CPU_IDLE_GOV CPU_SLEEP_GOV SWAP_MB SWAPPINESS SMART_DIM SUN_DARK_ELEV SUN_BRIGHT_ELEV
+AMBIENT_SECS LIGHT_SENSOR LUX_DARK LUX_BRIGHT LOAD_ENTITY ROOM_SPEAKERS ROOM_LIGHTS TOUCH_DEVICE
+KIOSK_MQTT MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASSWORD MQTT_BASE MQTT_DISCOVERY_PREFIX MQTT_DEVICE_ID
+DIAG_SECS KIOSK_VOICE VOICE_PORT VOICE_NAME VOICE_WAKE VOICE_ALLOW VOICE_BIND VOICE_LISTEN_SECS
+VOICE_TTS_ENGINE VOICE_MIC VOICE_SPEAKER VOICE_DEBUG KIOSK_INTERCOM INTERCOM_MIC INTERCOM_PORT
+INTERCOM_MAX_SECS INTERCOM_MIC_DEVICE INTERCOM_SPEAKER INTERCOM_BIND KIOSK_CAPTURE CAPTURE_VIDEO
+CAPTURE_PORT CAPTURE_ALLOW CAPTURE_BIND CAPTURE_MAX_SECS CAPTURE_TTL CAPTURE_MIC CAPTURE_UPLOAD
+CAPTURE_UPLOAD_DIR CAMERA_LIVE CAMERA_LIVE_ON CLIMATE_CONTROLLER CLIMATE_THERMOSTATS DOORBELL DOORBELL_CAMERAS DOORBELL_MOTION
+DOORBELL_SECS SECURITY_TAB SECURITY_ACCESS SECURITY_DEVICES PANEL_GROUP ALLOW_MIC ALLOW_CAMERA
+""".split())
+KEY_PATTERNS = (re.compile(r"GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))"),)
+SECRET_KEYS = {"MQTT_PASSWORD"}
+BAD_VALUE = re.compile(r'["`$\\\x00-\x1f\x7f]')
+
+
+def log(msg):
+    print(f"ha-kiosk-setup: {msg}", file=sys.stderr, flush=True)
+    try:
+        if not os.path.isdir(VAR):          # not installed (or just uninstalled): don't recreate it
+            return
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + msg + "\n")
+    except OSError:
+        pass
+
+
+class Fail(Exception):
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
+# ---------- settings ----------
+def parse_env(text):
+    """Strict KEY=value parser. Returns (dict, errors). Never executes anything."""
+    out, errors = {}, []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if not m:
+            errors.append(f"line {n}: not KEY=value")
+            continue
+        key, val = m.group(1), m.group(2).strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        if key not in KEYS and not any(p.fullmatch(key) for p in KEY_PATTERNS):
+            errors.append(f"line {n}: unknown setting {key}")
+            continue
+        if BAD_VALUE.search(val) or "'" in val:
+            errors.append(f"line {n}: {key} contains a character that is not allowed (\" ' ` $ \\ or a control character)")
+            continue
+        if len(val) > 1024:
+            errors.append(f"line {n}: {key} is too long")
+            continue
+        out[key] = val                     # last assignment wins, as before
+    if out.get("HA_URL") and not re.match(r"https?://[^\s/]+", out["HA_URL"]):
+        errors.append("HA_URL must start with http:// or https://")
+    for k in ("MQTT_PORT", "VOICE_PORT", "INTERCOM_PORT", "CAPTURE_PORT"):
+        if out.get(k) and not (out[k].isdigit() and 0 < int(out[k]) < 65536):
+            errors.append(f"{k} must be a port number")
+    if out.get("KIOSK_MQTT", "1").lower() not in ("1", "0", "on", "off", "true", "false", "yes", "no", "kiosk", ""):
+        errors.append("KIOSK_MQTT must be 1, 0 or kiosk")
+    return out, errors
+
+
+def render_env(env):
+    lines = ["# Written by ha-kiosk-setup from validated settings. Edit the source file, not this one."]
+    lines += [f'{k}="{v}"' for k, v in env.items()]
+    return "\n".join(lines) + "\n"
+
+
+def write_secret(path, data):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+# ---------- helpers ----------
+def sh(*cmd, check=True, timeout=110):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if check and r.returncode != 0:
+        raise Fail(EXIT["error"], f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+    return r
+
+
+def read(path, default=""):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def write(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def active(unit):
+    return subprocess.run(["systemctl", "is-active", "--quiet", unit], stderr=subprocess.DEVNULL).returncode == 0
+
+
+def enabled(unit):
+    return subprocess.run(["systemctl", "is-enabled", "--quiet", unit], stderr=subprocess.DEVNULL).returncode == 0
+
+
+def releases():
+    try:
+        return sorted(d for d in os.listdir(REL) if os.path.isfile(f"{REL}/{d}/install-local.sh"))
+    except OSError:
+        return []
+
+
+def mqtt_state(state):
+    """Tell other integrations (retained <base>/kiosk_state) when the kiosk stops publishing."""
+    base = read(f"{VAR}/mqtt_base")
+    env, _ = parse_env(read(f"{CFG}/kiosk.env"))
+    if not base or not env.get("MQTT_HOST"):
+        return
+    try:
+        import paho.mqtt.client as mqtt
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="ha_kiosk_setup")
+        if env.get("MQTT_USER"):
+            c.username_pw_set(env["MQTT_USER"], env.get("MQTT_PASSWORD", ""))
+        c.connect(env["MQTT_HOST"], int(env.get("MQTT_PORT") or 1883), 10)
+        c.loop_start()
+        c.publish(f"{base}/kiosk_state", state, retain=True).wait_for_publish(5)
+        if state in ("not_installed", "disabled"):
+            c.publish(f"{base}/availability", "offline", retain=True).wait_for_publish(5)
+        c.loop_stop()
+        c.disconnect()
+    except Exception as e:                 # best effort: never block an uninstall on the broker
+        log(f"could not publish kiosk_state={state}: {e}")
+
+
+# ---------- activation ----------
+def activate(version, allow_offline=False):
+    """Run the release's install-local.sh with the stored settings, then wait for the UI."""
+    rdir = f"{REL}/{version}"
+    if not os.path.isfile(f"{rdir}/install-local.sh"):
+        raise Fail(EXIT["not_installed"], f"release {version} is not on this panel")
+    args = ["/bin/sh", f"{rdir}/install-local.sh"]
+    if os.path.isfile(f"{CFG}/kiosk.env"):
+        args += ["--env", f"{CFG}/kiosk.env"]
+    if os.path.isfile(f"{CFG}/token"):
+        args += ["--token", f"{CFG}/token"]
+    if os.path.isfile(f"{CFG}/layout.json"):
+        args += ["--layout", f"{CFG}/layout.json"]
+    started = time.time()
+    try:
+        os.remove(HEARTBEAT)
+    except OSError:
+        pass
+    write(f"{VAR}/state", "activating")
+    r = subprocess.run(args, capture_output=True, text=True, timeout=400)
+    for line in (r.stdout + r.stderr).splitlines():
+        log(line)
+    if r.returncode != 0:
+        return False, "install-local.sh failed"
+    # A cold start of the UI takes 10-20 s; give it CHECK_SECS after install-local.sh returns
+    # (which can itself take 60-90 s when Brilliant's message bus is restarted).
+    ready = time.time()
+    while time.time() - ready < CHECK_SECS:
+        time.sleep(2)
+        try:
+            hb = json.loads(read(HEARTBEAT) or "{}")
+        except ValueError:
+            hb = {}
+        if hb.get("time", 0) >= started and active("ha-kiosk.service"):
+            if hb.get("ha") == "connected" or allow_offline:
+                return True, f"UI up, Home Assistant {hb.get('ha')}"
+    hb = _json(read(HEARTBEAT)) or {}
+    if hb.get("time", 0) < started:
+        return False, "UI never reported in"
+    return False, f"UI up but Home Assistant {hb.get('ha') or 'unknown'}"
+
+
+def restore_stock():
+    """Hand the screen back to Brilliant's UI (code and settings stay)."""
+    for script in (f"{ETC}/install-local.sh",) + tuple(f"{REL}/{v}/install-local.sh" for v in reversed(releases())):
+        if os.path.isfile(script):
+            r = subprocess.run(["/bin/sh", script, "--uninstall"], capture_output=True, text=True, timeout=400)
+            if r.returncode == 0:
+                return
+    sh("systemctl", "enable", "--now", "switch_ui_app", check=False)
+
+
+def switch_to(version, allow_offline):
+    """Activate `version`; on failure go back to the previous one, else to the stock UI."""
+    prev = read(f"{VAR}/current")
+    ok, why = activate(version, allow_offline)
+    if ok:
+        if prev and prev != version:
+            write(f"{VAR}/previous", prev)
+        write(f"{VAR}/current", version)
+        write(f"{VAR}/state", "active")
+        # A stable path that survives firmware updates (which replace /etc): use this one for reapply.
+        src = f"{REL}/{version}/ha-kiosk-setup"
+        if os.path.isfile(src):
+            shutil.copy(src, f"{VAR}/ha-kiosk-setup.tmp")
+            os.chmod(f"{VAR}/ha-kiosk-setup.tmp", 0o755)
+            os.replace(f"{VAR}/ha-kiosk-setup.tmp", f"{VAR}/ha-kiosk-setup")
+        log(f"{version} active: {why}")
+        return
+    log(f"{version} did not come up ({why})")
+    if prev and prev != version and os.path.isdir(f"{REL}/{prev}"):
+        ok2, why2 = activate(prev, True)
+        if ok2:
+            write(f"{VAR}/state", "active")
+            raise Fail(EXIT["rolled_back"], f"{version} failed ({why}); rolled back to {prev}")
+    restore_stock()
+    write(f"{VAR}/state", "failed")
+    mqtt_state("failed")
+    raise Fail(EXIT["stock_restored"], f"{version} failed ({why}); Brilliant's UI restored")
+
+
+def prune():
+    keep = {read(f"{VAR}/current"), read(f"{VAR}/previous")}
+    for v in releases():
+        if v not in keep:
+            shutil.rmtree(f"{REL}/{v}", ignore_errors=True)
+
+
+# ---------- commands ----------
+def cmd_install(a):
+    if not a.get("bundle") or not a.get("sha256"):
+        raise Fail(EXIT["usage"], "install needs --bundle and --sha256")
+    want = a["sha256"].lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", want):
+        raise Fail(EXIT["usage"], "--sha256 must be 64 hex characters")
+    size = os.path.getsize(a["bundle"])
+    if a.get("size") and int(a["size"]) != size:
+        raise Fail(EXIT["verify"], f"bundle size {size} != expected {a['size']}")
+    h = hashlib.sha256()
+    with open(a["bundle"], "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    if h.hexdigest() != want:
+        raise Fail(EXIT["verify"], "bundle SHA-256 does not match; not installing")
+    # Settings and token are validated before anything on the panel changes.
+    env_text = None
+    if a.get("env"):
+        env_text = sys.stdin.read() if a["env"] == "-" else read(a["env"])
+        env, errors = parse_env(env_text)
+        if errors:
+            raise Fail(EXIT["config"], "settings rejected: " + "; ".join(errors[:10]))
+    token = None
+    if a.get("token_stdin"):
+        token = sys.stdin.readline().strip()
+    elif a.get("token"):
+        token = read(a["token"])
+    if token is not None and not re.fullmatch(r"[A-Za-z0-9._-]{20,4096}", token):
+        raise Fail(EXIT["config"], "token does not look like a Home Assistant access token")
+    # Unpack into a staging dir, check the bundle's own manifest, then move into place.
+    os.makedirs(REL, mode=0o700, exist_ok=True)
+    stage = f"{REL}/.staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    with tarfile.open(a["bundle"], "r:gz") as t:
+        for m in t.getmembers():
+            if m.name.startswith("/") or ".." in m.name.split("/") or not (m.isfile() or m.isdir()):
+                raise Fail(EXIT["verify"], f"unsafe path in bundle: {m.name}")
+        t.extractall(stage)
+    tops = os.listdir(stage)
+    if len(tops) != 1:
+        raise Fail(EXIT["verify"], "bundle must contain one top-level folder")
+    src = f"{stage}/{tops[0]}"
+    version = read(f"{src}/VERSION")
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,64}", version or ""):
+        raise Fail(EXIT["verify"], "bundle has no valid VERSION")
+    if subprocess.run(["sha256sum", "-c", "MANIFEST.sha256"], cwd=src, capture_output=True).returncode != 0:
+        raise Fail(EXIT["verify"], "bundle contents do not match its MANIFEST.sha256")
+    dest = f"{REL}/{version}"
+    if version == read(f"{VAR}/current"):
+        shutil.rmtree(dest, ignore_errors=True)
+    if not os.path.isdir(dest):
+        os.replace(src, dest)
+    shutil.rmtree(stage, ignore_errors=True)
+    if env_text is not None:
+        write_secret(f"{CFG}/kiosk.env", render_env(env))
+    elif not os.path.isfile(f"{CFG}/kiosk.env") and os.path.isfile(f"{ETC}/kiosk.env"):
+        env, errors = parse_env(read(f"{ETC}/kiosk.env"))   # adopt an existing install's settings
+        if errors:
+            raise Fail(EXIT["config"], "existing /etc/ha-kiosk/kiosk.env rejected: " + "; ".join(errors[:10])
+                       + ". Pass corrected settings with --env.")
+        write_secret(f"{CFG}/kiosk.env", render_env(env))
+    if token is not None:
+        write_secret(f"{CFG}/token", token + "\n")
+    elif not os.path.isfile(f"{CFG}/token") and os.path.isfile(f"{ETC}/token"):
+        write_secret(f"{CFG}/token", read(f"{ETC}/token") + "\n")
+    if a.get("layout"):
+        shutil.copy(a["layout"], f"{CFG}/layout.json")
+    restore_keep()
+    try:
+        switch_to(version, a.get("allow_offline", False))
+    finally:
+        prune()
+
+
+def restore_keep():
+    """After an uninstall + reinstall, bring back photos and preferences kept by `uninstall`."""
+    if not os.path.isdir(KEEP):
+        return
+    if os.path.isfile(f"{KEEP}/overrides.env") and not os.path.isfile(f"{VAR}/overrides.env"):
+        shutil.copy(f"{KEEP}/overrides.env", f"{VAR}/overrides.env")
+    if os.path.isdir(f"{KEEP}/photos") and not os.path.isdir(f"{ETC}/photos"):
+        os.makedirs(ETC, exist_ok=True)
+        shutil.copytree(f"{KEEP}/photos", f"{ETC}/photos")
+    shutil.rmtree(KEEP, ignore_errors=True)
+
+
+def need_current():
+    v = read(f"{VAR}/current")
+    if not v or not os.path.isdir(f"{REL}/{v}"):
+        raise Fail(EXIT["not_installed"], "the kiosk is not installed with ha-kiosk-setup")
+    return v
+
+
+def cmd_reapply(a):
+    v = need_current()
+    if read(f"{VAR}/state") == "disabled":
+        log("disabled; reapply leaves Brilliant's UI on (use enable)")
+        return
+    switch_to(v, a.get("allow_offline", False))
+
+
+def cmd_enable(a):
+    switch_to(need_current(), a.get("allow_offline", False))
+
+
+def cmd_disable(a):
+    need_current()
+    mqtt_state("disabled")
+    restore_stock()
+    write(f"{VAR}/state", "disabled")
+    log("disabled; Brilliant's UI is back. `enable` restarts the kiosk.")
+
+
+def cmd_rollback(a):
+    need_current()
+    prev = read(f"{VAR}/previous")
+    if not prev or not os.path.isdir(f"{REL}/{prev}"):
+        raise Fail(EXIT["error"], "no previous version on this panel")
+    cur = read(f"{VAR}/current")
+    switch_to(prev, a.get("allow_offline", False))
+    write(f"{VAR}/previous", cur)
+
+
+def cmd_uninstall(a, purge=False):
+    mqtt_state("not_installed")
+    keep_photos = not purge and os.path.isdir(f"{ETC}/photos")
+    if not purge:
+        os.makedirs(KEEP, mode=0o700, exist_ok=True)
+        if os.path.isfile(f"{VAR}/overrides.env"):
+            shutil.copy(f"{VAR}/overrides.env", f"{KEEP}/overrides.env")
+        if keep_photos:
+            shutil.rmtree(f"{KEEP}/photos", ignore_errors=True)
+            shutil.copytree(f"{ETC}/photos", f"{KEEP}/photos")
+    script = next((s for s in [f"{ETC}/install-local.sh"] + [f"{REL}/{v}/install-local.sh" for v in releases()]
+                   if os.path.isfile(s)), None)
+    if script:
+        tmp = "/run/ha-kiosk-uninstall.sh"
+        shutil.copy(script, tmp)            # it deletes the folder it lives in
+        r = subprocess.run(["/bin/sh", tmp, "--uninstall", "--purge"], capture_output=True, text=True, timeout=400)
+        for line in (r.stdout + r.stderr).splitlines():
+            log(line)
+        os.remove(tmp)
+    else:
+        sh("systemctl", "enable", "--now", "switch_ui_app", check=False)
+    for path in (ETC, VAR):
+        shutil.rmtree(path, ignore_errors=True)
+    if purge or (os.path.isdir(KEEP) and not os.listdir(KEEP)):
+        shutil.rmtree(KEEP, ignore_errors=True)
+    left = secrets_present()
+    if left:
+        raise Fail(EXIT["error"], "uninstalled, but secret files remain: " + ", ".join(left))
+    log("uninstalled" + ("" if purge else " (photos and preferences kept in " + KEEP + ")")
+        + ". Revoke the Home Assistant token and MQTT login if this panel leaves your home.")
+
+
+def secrets_present():
+    paths = [f"{ETC}/token", f"{ETC}/kiosk.env", f"{CFG}/token", f"{CFG}/kiosk.env"]
+    return [p for p in paths if os.path.exists(p)]
+
+
+def status():
+    cur = read(f"{VAR}/current")
+    state = read(f"{VAR}/state") or ("unmanaged" if os.path.isfile(f"{ETC}/native/main.qml") else "not_installed")
+    if job_running() and not os.environ.get("HA_KIOSK_SETUP_JOB"):
+        state = "in_progress"
+    elif state == "activating":             # interrupted mid-activation (e.g. power cut)
+        state = "failed"
+    elif state == "active" and not active("ha-kiosk.service"):
+        state = "failed"
+    try:
+        hb = json.loads(read(HEARTBEAT) or "{}")
+    except ValueError:
+        hb = {}
+    units = ["ha-kiosk", "ha-kiosk-bridge", "ha-kiosk-display", "ha-kiosk-voice", "ha-kiosk-intercom",
+             "ha-kiosk-capture", "switch_ui_app"]
+    env, _ = parse_env(read(f"{CFG}/kiosk.env") or read(f"{ETC}/kiosk.env"))
+    return {
+        "schema": 1,
+        "state": state,     # not_installed | unmanaged | active | disabled | failed | in_progress
+        "version": cur or read(f"{ETC}/VERSION") or None,
+        "previous": read(f"{VAR}/previous") or None,
+        "releases": releases(),
+        "ui": {"heartbeat_age_s": round(time.time() - hb["time"], 1) if hb.get("time") else None,
+               "home_assistant": hb.get("ha")},
+        "services": {u: {"active": active(f"{u}.service"), "enabled": enabled(f"{u}.service")} for u in units},
+        "mqtt": {"mode": env.get("KIOSK_MQTT", "1"), "base": read(f"{VAR}/mqtt_base") or None},
+        "firmware": read("/etc/brilliant_release") or read("/etc/os-release").split("\n")[0] or None,
+        "secrets_present": secrets_present(),
+        "last_result": _json(read(RESULT)),
+    }
+
+
+def _json(text):
+    try:
+        return json.loads(text) if text else None
+    except ValueError:
+        return None
+
+
+def job_running():
+    return active(f"{JOB}.service")
+
+
+def diagnostics():
+    d = status()
+    r = subprocess.run(["journalctl", "-o", "cat", "-n", "150", "-u", "ha-kiosk", "-u", "ha-kiosk-bridge",
+                        "-u", "ha-kiosk-display"], capture_output=True, text=True)
+    redact = [v for k, v in parse_env(read(f"{CFG}/kiosk.env"))[0].items() if k in SECRET_KEYS and v]
+    tok = read(f"{CFG}/token")
+    redact += [tok] if tok else []
+    text = (r.stdout + "\n" + read(LOG)[-6000:])
+    for s in redact:
+        text = text.replace(s, "**redacted**")
+    text = re.sub(r"(Bearer\s+|access_token\W+)[A-Za-z0-9._-]{20,}", r"\1**redacted**", text)
+    d["logs"] = text.splitlines()[-250:]
+    return d
+
+
+def parse_args(argv):
+    if not argv:
+        raise Fail(EXIT["usage"], "missing command (see --help)")
+    cmd, a, i = argv[0], {}, 1
+    flags = {"--allow-offline": "allow_offline", "--token-stdin": "token_stdin", "--detach": "detach"}
+    opts = {"--bundle": "bundle", "--sha256": "sha256", "--size": "size", "--env": "env",
+            "--token": "token", "--layout": "layout", "--timeout": "timeout"}
+    while i < len(argv):
+        if argv[i] in flags:
+            a[flags[argv[i]]] = True
+        elif argv[i] in opts and i + 1 < len(argv):
+            a[opts[argv[i]]] = argv[i + 1]
+            i += 1
+        elif cmd == "check-env" and "file" not in a:
+            a["file"] = argv[i]
+        else:
+            raise Fail(EXIT["usage"], f"unknown option {argv[i]}")
+        i += 1
+    if a.get("env") == "-" and a.get("token_stdin"):
+        raise Fail(EXIT["usage"], "--env - and --token-stdin cannot both read stdin")
+    return cmd, a
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    try:
+        cmd, a = parse_args(argv)
+        if cmd == "status":
+            print(json.dumps(status(), indent=1))
+            return 0
+        if cmd == "diagnostics":
+            print(json.dumps(diagnostics(), indent=1))
+            return 0
+        if cmd == "wait":
+            end = time.time() + min(float(a.get("timeout") or 100), 3600)
+            while job_running() and time.time() < end:
+                time.sleep(2)
+            st = status()
+            print(json.dumps(st, indent=1))
+            if st["state"] == "in_progress":
+                return EXIT["in_progress"]
+            return int((st.get("last_result") or {}).get("exit", 0))
+        if cmd == "check-env":
+            _, errors = parse_env(read(a.get("file", "")) if a.get("file") != "-" else sys.stdin.read())
+            print(json.dumps({"ok": not errors, "errors": errors}))
+            return 0 if not errors else EXIT["config"]
+        actions = {"install": cmd_install, "reapply": cmd_reapply, "enable": cmd_enable,
+                   "disable": cmd_disable, "rollback": cmd_rollback, "uninstall": cmd_uninstall,
+                   "purge": lambda x: cmd_uninstall(x, purge=True)}
+        if cmd not in actions:
+            raise Fail(EXIT["usage"], f"unknown command {cmd}")
+        if os.getuid() != 0:
+            raise Fail(EXIT["usage"], "run as root")
+        if job_running() and not os.environ.get("HA_KIOSK_SETUP_JOB"):
+            raise Fail(EXIT["busy"], "a background ha-kiosk-setup job is running (use wait)")
+        if a.get("detach"):
+            return detach(argv, a)
+        import fcntl
+        lock = open(LOCK, "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Fail(EXIT["busy"], "another ha-kiosk-setup is running")
+        actions[cmd](a)
+        record(cmd, 0, "ok")
+        print(json.dumps(status(), indent=1))
+        return 0
+    except Fail as e:
+        log(f"error: {e}")
+        record(argv[0] if argv else "", e.code, str(e))
+        print(json.dumps({"error": str(e), "exit": e.code}))
+        return e.code
+    except Exception as e:                  # unexpected: report, never a traceback-only exit
+        log(f"error: {type(e).__name__}: {e}")
+        record(argv[0] if argv else "", EXIT["error"], f"{type(e).__name__}: {e}")
+        print(json.dumps({"error": f"{type(e).__name__}: {e}", "exit": EXIT['error']}))
+        return EXIT["error"]
+
+
+def detach(argv, a):
+    """Re-run this command as a transient systemd unit and return at once."""
+    if a.get("env") == "-" or a.get("token_stdin"):
+        raise Fail(EXIT["usage"], "--detach cannot read stdin; pass --env FILE / --token FILE")
+    argv2 = [x for x in argv if x != "--detach"]
+    for i in range(1, len(argv2)):          # the job runs from / : make paths absolute
+        if argv2[i - 1] in ("--bundle", "--env", "--token", "--layout"):
+            argv2[i] = os.path.abspath(argv2[i])
+    try:
+        os.remove(RESULT)
+    except OSError:
+        pass
+    sh("systemctl", "reset-failed", f"{JOB}.service", check=False)
+    sh("systemd-run", f"--unit={JOB}", "--quiet", "--setenv=HA_KIOSK_SETUP_JOB=1", sys.executable, os.path.abspath(__file__), *argv2)
+    time.sleep(1)
+    print(json.dumps({"state": "in_progress", "job": JOB, "next": "ha-kiosk-setup wait"}))
+    return 0
+
+
+def record(cmd, code, msg):
+    if cmd in ("status", "diagnostics", "wait", "check-env"):
+        return
+    try:
+        os.makedirs(os.path.dirname(RESULT), exist_ok=True)
+        write(RESULT, json.dumps({"command": cmd, "exit": code, "message": msg, "time": int(time.time())}))
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

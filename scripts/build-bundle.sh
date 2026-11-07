@@ -4,7 +4,7 @@
 # Usage: scripts/build-bundle.sh [version]   (default: git describe, e.g. v1.1.0 or v1.0.0-3-gabc123)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${1:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}"
+VERSION="${KIOSK_VERSION:-${1:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo dev)}}"
 NAME="brilliant-ha-kiosk-$VERSION"
 OUT="$ROOT/dist"
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
@@ -18,12 +18,20 @@ cp "$ROOT"/kiosk/kiosk.qml "$ROOT"/kiosk/ha-kiosk-*.sh "$ROOT"/kiosk/ha-kiosk-*.
 cp "$ROOT"/tools/brilliant_bus.py "$ROOT"/tools/inject_touch.py "$B/ha-kiosk/"
 cp "$ROOT"/systemd/* "$B/systemd/"
 cp "$ROOT"/kiosk/install-local.sh "$B/install-local.sh"
+cp "$ROOT"/kiosk/ha-kiosk-setup "$B/ha-kiosk-setup"
+cp "$ROOT"/kiosk/ha-kiosk-setup "$B/ha-kiosk/ha-kiosk-setup"
 cp "$ROOT"/config/kiosk.env.example "$B/kiosk.env.example"
 cp "$ROOT"/LICENSE "$ROOT"/NOTICE "$B/"
 echo "$VERSION" > "$B/VERSION"
-chmod 755 "$B/install-local.sh" "$B"/ha-kiosk/*.sh "$B"/ha-kiosk/*.py
+chmod 755 "$B/install-local.sh" "$B/ha-kiosk-setup" "$B/ha-kiosk/ha-kiosk-setup" "$B"/ha-kiosk/*.sh "$B"/ha-kiosk/*.py
 (cd "$B" && find . -type f ! -name MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > MANIFEST.sha256)
 
-tar -C "$STAGE" -czf "$OUT/$NAME.tar.gz" "$NAME"
+# Reproducible: fixed order, owner and timestamps (the last commit's), no gzip name/time.
+EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)}"
+tar -C "$STAGE" --sort=name --mtime="@$EPOCH" --owner=0 --group=0 --numeric-owner -cf - "$NAME" | gzip -9n > "$OUT/$NAME.tar.gz"
 (cd "$OUT" && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+# release.json: what an installer pins (name, version, SHA-256, size) before it uploads the bundle
+SHA=$(cut -d' ' -f1 "$OUT/$NAME.tar.gz.sha256"); SIZE=$(wc -c < "$OUT/$NAME.tar.gz" | tr -d ' ')
+printf '{"name": "%s.tar.gz", "version": "%s", "sha256": "%s", "size": %s}
+' "$NAME" "$VERSION" "$SHA" "$SIZE" > "$OUT/$NAME.release.json"
 echo "$OUT/$NAME.tar.gz"

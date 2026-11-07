@@ -1,0 +1,134 @@
+# Home Assistant theme matching the Brilliant panel UI (dark, warm amber for "on").
+#
+# Install: copy this file to /config/themes/ in Home Assistant, make sure configuration.yaml has
+#   frontend:
+#     themes: !include_dir_merge_named themes
+# then reload themes (Developer tools > Actions > "Home Assistant Frontend: Reload themes").
+#
+# Make it the default for every user and device (each device can still pick its own theme in
+# its profile; "Use default theme" follows this):
+#   action: frontend.set_theme
+#   data: { name: Brilliant kiosk }
+#   action: frontend.set_theme
+#   data: { name: Brilliant kiosk, mode: dark }
+#
+# The theme is dark-only (it defines only `modes: dark`), so HA always draws it on its own dark
+# base, whatever the device's light/dark setting. Colours are plain hex values (YAML anchors
+# below) so HA can derive the rgb variants it uses for tints and highlights.
+Brilliant kiosk:
+  # Palette: the same values as native/Theme.qml. Also usable in custom cards as var(--bk-*).
+  bk-bg: &bg "#0e1013"
+  bk-surface: &surface "#121418"
+  bk-card: &card "#181b21"
+  bk-card-pressed: &card_pressed "#22262e"
+  bk-border: &border "#232730"
+  bk-track: &track "#2a2f38"
+  bk-text: &text "#eef0f3"
+  bk-text-dim: &text_dim "#a3a9b4"
+  bk-text-faint: &text_faint "#555b66"
+  bk-amber: &amber "#f5b54a"
+  bk-amber-deep: &amber_deep "#d99a33"
+  bk-amber-soft: &amber_soft "#3a2f1b"
+  bk-blue: &blue "#5ec2e8"
+  bk-orange: &orange "#ff8a4c"
+  bk-green: &green "#7bd88f"
+  bk-red: &red "#ff6b6b"
+
+  # Shape and type: flat, rounded cards with a thin border, like the panel's tiles
+  ha-card-border-radius: "18px"
+  ha-card-border-width: "1px"
+  ha-card-box-shadow: "none"
+  primary-font-family: "'Open Sans', Roboto, 'Noto Sans', sans-serif"
+  ha-font-family-body: "'Open Sans', Roboto, 'Noto Sans', sans-serif"
+
+  modes:
+    dark:
+      # Base
+      primary-color: *amber
+      accent-color: *amber
+      dark-primary-color: *amber_deep
+      light-primary-color: *amber_soft
+      primary-background-color: *bg
+      secondary-background-color: *surface
+      primary-text-color: *text
+      secondary-text-color: *text_dim
+      disabled-text-color: *text_faint
+      text-primary-color: *bg
+      text-accent-color: *bg
+      divider-color: *border
+      error-color: *red
+      warning-color: *amber
+      success-color: *green
+      info-color: *blue
+
+      # Newer HA controls (buttons, links, chips, dialogs) take their colours from these
+      # tokens: an amber ramp from dark tint (05) to pale (95), with dark text on amber.
+      ha-color-primary-05: "#241c0f"
+      ha-color-primary-10: *amber_soft
+      ha-color-primary-20: "#5c4622"
+      ha-color-primary-30: *amber_deep
+      ha-color-primary-40: *amber
+      ha-color-primary-50: "#f7c165"
+      ha-color-primary-60: "#f9cd80"
+      ha-color-primary-70: "#fbd99c"
+      ha-color-primary-80: "#fce5ba"
+      ha-color-primary-90: "#fef1d9"
+      ha-color-primary-95: "#fff8ec"
+      ha-color-on-primary-loud: *bg
+      ha-color-surface-default: *card
+      ha-color-surface-low: *surface
+      ha-color-surface-lower: *bg
+
+      # Cards and dialogs
+      card-background-color: *card
+      ha-card-background: *card
+      ha-card-border-color: *border
+      ha-dialog-surface-background: *card
+      mdc-theme-surface: *card
+      input-fill-color: *track
+      ha-slider-background: *track
+
+      # Header and sidebar
+      app-header-background-color: *surface
+      app-header-text-color: *text
+      app-header-selection-bar-color: *amber
+      app-header-edit-background-color: *surface
+      sidebar-background-color: *surface
+      sidebar-text-color: *text_dim
+      sidebar-icon-color: *text_dim
+      sidebar-selected-text-color: *amber
+      sidebar-selected-icon-color: *amber
+
+      # Icons and state colours (tile cards use these)
+      state-icon-color: *text_dim
+      state-active-color: *amber
+      state-inactive-color: *text_dim
+      state-light-active-color: *amber
+      state-switch-active-color: *amber
+      state-fan-active-color: *amber
+      state-input_boolean-active-color: *amber
+      state-media_player-active-color: *blue
+      state-climate-heat-color: *orange
+      state-climate-cool-color: *blue
+      state-climate-heat_cool-color: *amber
+      state-climate-auto-color: *green
+      state-climate-off-color: *text_dim
+      state-lock-locked-color: *green
+      state-lock-unlocked-color: *amber
+      state-lock-jammed-color: *red
+      state-cover-active-color: *amber
+      state-alarm_control_panel-disarmed-color: *green
+      state-alarm_control_panel-armed_home-color: *amber
+      state-alarm_control_panel-armed_away-color: *amber
+      state-alarm_control_panel-triggered-color: *red
+      paper-item-icon-active-color: *amber
+
+      # Switches and sliders
+      switch-checked-color: *amber
+      switch-checked-button-color: *amber
+      switch-checked-track-color: *amber_soft
+      switch-unchecked-button-color: *text_dim
+      switch-unchecked-track-color: *track
+      paper-slider-knob-color: *amber
+      paper-slider-active-color: *amber
+      paper-slider-container-color: *track

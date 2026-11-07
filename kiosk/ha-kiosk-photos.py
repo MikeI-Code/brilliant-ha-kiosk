@@ -17,6 +17,9 @@ import aiohttp
 
 DEST = "/var/lib/ha-kiosk/ha-photos"
 IMAGE_EXT = (".jpg", ".jpeg", ".png")
+# Clips the panels upload themselves (ha-kiosk-capture, CAPTURE_UPLOAD=1) are not screensaver photos:
+# <panel>-YYYYmmdd-HHMMSS-<audio|snapshot|video>-<id6>.<ext>
+CAPTURE_NAME = re.compile(r"-\d{8}-\d{6}-(audio|snapshot|video)-[0-9a-f]{6}\.(jpe?g|png|mp4|wav)$", re.I)
 
 
 def _safe(name):
@@ -30,6 +33,8 @@ class PhotoSync:
         self.token = open("/etc/ha-kiosk/token", encoding="utf-8").read().strip()
         folder = env.get("HA_PHOTO_FOLDER", "").strip().strip("/")
         self.root = "media-source://media_source/local/" + (folder if folder else ".")
+        up = env.get("CAPTURE_UPLOAD_DIR", "").strip().strip("/")      # a dedicated capture folder
+        self.skip_dir = "media-source://media_source/local/" + up if up else ""
         self.every = max(5, int(env.get("PHOTO_SYNC_MINS", "30"))) * 60
         self.last_note = ""
 
@@ -76,7 +81,10 @@ class PhotoSync:
                     for c in r["result"].get("children") or []:
                         cid = c["media_content_id"]
                         if c.get("can_expand"):
-                            todo.append(cid)
+                            if cid.rstrip("/") != self.skip_dir:
+                                todo.append(cid)
+                        elif CAPTURE_NAME.search(cid):
+                            continue
                         elif c.get("media_class") == "image" or cid.lower().endswith(IMAGE_EXT):
                             rel = cid.split("/local/", 1)[-1]
                             images[_safe(rel)] = cid

@@ -151,6 +151,9 @@ Window {
     // Connection banner: what is wrong and for how long. Sits above the tab bar, clear of the clock.
     property double now: Date.now()
     Timer { interval: 1000; running: !Ha.connected; repeat: true; onTriggered: win.now = Date.now() }
+    // Heartbeat for ha-kiosk-setup: the UI is drawing frames and knows its HA connection state.
+    Timer { interval: 10000; running: true; repeat: true; triggeredOnStart: true
+        onTriggered: Panel.bridgePost("/heartbeat", { ha: Ha.status }, null) }
     Rectangle {
         anchors { bottom: tabs.top; horizontalCenter: parent.horizontalCenter; bottomMargin: 10 * Theme.u }
         z: 70

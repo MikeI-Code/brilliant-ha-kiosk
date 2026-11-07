@@ -90,5 +90,17 @@ if [ -d "$PRIVATE/photos" ]; then
   echo "Screensaver photos: $(echo $want | wc -w) in .private/photos ($sent copied)"
 fi
 
-remote "cd $W && tar -xzf bundle.tar.gz && sh $NAME/install-local.sh $ARGS; rc=\$?; rm -rf $W; exit \$rc"
-remote 'systemctl --no-pager status ha-kiosk | head -5'
+# ha-kiosk-setup checks the bundle, keeps the previous version, waits for the screen to come up
+# and connect to Home Assistant, and rolls back (or restores Brilliant's UI) if it doesn't.
+SHA="$(cut -d' ' -f1 "$BUNDLE.sha256")"
+PY=/data/switch-embedded/env/bin/python
+set +e
+remote "cd $W && echo '$SHA  bundle.tar.gz' | sha256sum -c >/dev/null && tar -xzOf bundle.tar.gz $NAME/ha-kiosk-setup > setup.py && $PY setup.py install --bundle bundle.tar.gz --sha256 $SHA $ARGS > result.json; rc=\$?; head -c 400 result.json | grep -o '\"error\": \"[^\"]*\"'; rm -rf $W; exit \$rc"
+rc=$?
+set -e
+case $rc in
+  0) echo "Installed $NAME on $PANEL." ;;
+  5) echo "$NAME did not come up on $PANEL; the previous version is running again."; exit $rc ;;
+  6) echo "$NAME did not come up on $PANEL; Brilliant's own screen is back."; exit $rc ;;
+  *) echo "Install failed on $PANEL (exit $rc)."; exit $rc ;;
+esac

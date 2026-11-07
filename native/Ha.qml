@@ -40,6 +40,31 @@ Item {
 
     function get(entityId) { return states[entityId] || null; }
 
+    // Some cameras (e.g. CuboAI) only return a still while their live stream is running.
+    // For a camera whose still failed, keep HA's HLS stream alive while it is on screen:
+    // ask for the stream once, then fetch only the small playlist (never the video), which
+    // resets HA's 30 s idle timer. The panel decodes nothing.
+    property var _warm: ({})             // entity -> playlist url ("" while asking)
+    function stillFailed(entityId) { if (!(entityId in _warm)) { _warm[entityId] = ""; keepWarm(entityId); } }
+    function keepWarm(entityId) {
+        if (!(entityId in _warm)) return;
+        var s = get(entityId);
+        if (!s || !((s.attributes.supported_features || 0) & 2)) return;   // no STREAM support
+        var url = _warm[entityId];
+        if (url) {
+            var x = new XMLHttpRequest();
+            x.onreadystatechange = function () {
+                if (x.readyState === XMLHttpRequest.DONE && x.status !== 200) _warm[entityId] = "";  // expired: re-ask
+            };
+            x.open("GET", baseUrl + url); x.send();
+            return;
+        }
+        send({ type: "camera/stream", entity_id: entityId, format: "hls" }, function (r) {
+            if (r.success && r.result && r.result.url) _warm[entityId] = r.result.url;
+            else console.log("ha: no stream for " + entityId + ": " + JSON.stringify(r.error));
+        });
+    }
+
     function send(msg, cb) {
         if (sock.status !== WebSocket.Open) return -1;
         msg.id = _nextId++;

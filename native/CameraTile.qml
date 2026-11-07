@@ -7,11 +7,14 @@ Tile {
     id: t
     height: (width - 2 * Theme.pad) * 9 / 16 + 2 * Theme.pad + 30 * Theme.u
     property int tick: 0
+    property bool warm: false             // still failed once: keep the stream running
     readonly property string pic: attrs.entity_picture || ""      // carries an access token
     onTapped: Panel.showCamera(entity, name)
 
     // Refresh every 20 s, only while this tile is actually on screen.
-    Timer { interval: 20000; repeat: true; running: t.visible && t.pic !== ""; onTriggered: t.tick++ }
+    // Cameras that need a running stream for stills: keep it warm and refresh faster.
+    Timer { interval: t.warm ? 8000 : 20000; repeat: true; running: t.visible && t.pic !== ""
+            onTriggered: { Ha.keepWarm(t.entity); t.tick++ } }
 
     Rectangle {
         id: frame
@@ -24,6 +27,7 @@ Tile {
             sourceSize.width: width
             source: t.pic && t.visible ? Ha.baseUrl + t.pic + (t.pic.indexOf("?") >= 0 ? "&" : "?") + "_=" + t.tick : ""
             visible: status === Image.Ready
+            onStatusChanged: if (status === Image.Error) { t.warm = true; Ha.stillFailed(t.entity) }
         }
         Icon { anchors.centerIn: parent; size: 34; name: "cctv"; color: Theme.textDim; visible: !t.pic }
     }

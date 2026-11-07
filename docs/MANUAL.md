@@ -395,7 +395,7 @@ The installer enables `ha-kiosk-capture.service` only when `KIOSK_CAPTURE=1`, an
 | `CAPTURE_TTL` | `300` | Seconds a clip can be downloaded; then it is deleted |
 | `CAPTURE_MIC` | `default` | ALSA capture device (shared with Brilliant and the voice service) |
 | `CAPTURE_UPLOAD` | `0` | `1` also uploads each clip into HA's media library (Media > My media) and adds `media_id` to the event, so automations can use the clip directly (for example as an AI task attachment). Needs an admin token. |
-| `CAPTURE_UPLOAD_DIR` | *(empty)* | Folder under `/media` for uploads; it must already exist. Empty = top level. |
+| `CAPTURE_UPLOAD_DIR` | *(empty)* | Folder under `/media` for uploads; it must already exist. Empty = top level. Uploaded clips never appear in the photo screensaver, wherever they are stored. |
 
 **The screen.** A **Capture** tab appears. Tap the big round button to start a voice recording and
 again to stop (it stops by itself at `CAPTURE_MAX_SECS`). A level meter and timer show while it
@@ -619,6 +619,10 @@ Residents never get the panel's root password; settings are changed by whoever r
   <img src="images/sonos.png" width="23%" alt="Sonos">
   <img src="images/house.png" width="23%" alt="House">
 </p>
+<p align="center">
+  <img src="images/security.png" width="23%" alt="Security">
+  <img src="images/capture.png" width="23%" alt="Capture">
+</p>
 
 **Navigating**: tap a tab in the bottom bar, or **swipe left/right** anywhere. Drag up and down to
 scroll a page.
@@ -636,6 +640,24 @@ scroll a page.
 | Sensor / presence | | Live value |
 
 A light tile marked **"this switch"** is the panel's own wired load, controlled locally (section 5).
+
+**Cameras.** A camera tile shows Home Assistant's still picture, refreshed while it is on screen.
+Tap it for full screen. **Pinch** or **double-tap** to zoom (up to 4×), **drag** to move around,
+double-tap again to reset.
+
+**Live video** plays in the full-screen view when the camera has an **H.264** stream. It is
+decoded by the panel's video chip, the way Brilliant's own UI played Ring video, and starts in
+about 4 s with a red **LIVE** badge. The panel cannot decode **H.265**, so:
+
+* **CuboAI** cameras: turn on the integration's **H.264 transcode** for the camera (720p is plenty
+  for this screen). The panel finds the stream by itself. The transcode runs on the Home Assistant
+  machine only while someone is watching (about 60% of a Raspberry Pi 4 for one camera).
+* Any other camera with an H.264 RTSP stream: list it in `CAMERA_LIVE` (section 7).
+* Cameras without one show refreshed stills, which zoom the same way.
+
+Some cameras (CuboAI again) only give Home Assistant a still while their stream is running. When
+a still fails, the panel keeps that camera's stream awake while its tile is on screen, so the
+pictures appear after a few seconds.
 
 **Music tab** (works with any Home Assistant media player: Sonos, WiiM/LinkPlay, Music Assistant,
 Bluesound, HEOS, Chromecast, ...): pick a room at the top; see album art, title and progress; use shuffle,
@@ -677,6 +699,26 @@ Every Material Design icon (`mdi:…`) from HA's icon picker works.
 > `native/layout.example.json`), then re-run `scripts/install.sh`.
 
 ---
+
+### Match the look in Home Assistant's web interface
+
+`ha/themes/brilliant-kiosk.yaml` is a Home Assistant theme with the panel's colours: the near-black
+background, dark rounded cards, warm amber for "on", and the same blue, green and red.
+
+1. Copy it to Home Assistant's `themes/` folder (for example with the File editor add-on).
+2. Make sure `configuration.yaml` loads themes (many setups already do):
+   ```yaml
+   frontend:
+     themes: !include_dir_merge_named themes
+   ```
+3. Run **Developer tools → Actions → `frontend.reload_themes`**.
+4. Either pick **Brilliant kiosk** in your HA profile (all dashboards, on that device), or add
+   `theme: Brilliant kiosk` to the views of the panel dashboard (that dashboard only, everywhere).
+
+For tiles that behave like the panel's in a browser, give them HA's tile **features**: a brightness
+slider on lights (`light-brightness`), −/+ on thermostats (`target-temperature`), and a fan control
+(`climate-fan-modes`). The panel ignores features and view themes, so this changes only how the
+dashboard looks in a browser or the phone app.
 
 ## 5. This switch: local control and gestures
 
@@ -726,7 +768,7 @@ volume gesture.
 
 ## 6. Display: night mode, screensaver, motion wake, smart dimming
 
-<img src="images/saver.jpg" width="30%" align="right" alt="Photo screensaver">
+<img src="images/saver.jpg" width="30%" align="right" alt="Screensaver with clock and local weather">
 
 The **`ha-kiosk-display`** service owns the screen:
 
@@ -796,6 +838,8 @@ just that line in `.private/<panel>.kiosk.env`; to change it for a group, in `.p
 | `PANEL_GROUP` | — | Group (unit) this panel belongs to; adds `.private/<group>.group.env` as a settings layer and limits the intercom to the group. Set it in `.private/<panel>.kiosk.env` |
 | `ALLOW_MIC` / `ALLOW_CAMERA` | `1` / `1` | `0` locks this project's microphone / camera features. A `0` in any settings layer wins |
 | `DOORBELL` / `DOORBELL_SECS` / `DOORBELL_MOTION` | `1` / `45` / `0` | Doorbell pop-up on/off, how long it stays, and whether camera motion also pops up |
+| `CAMERA_LIVE` | — | H.264 RTSP streams for live video, `camera.x=rtsp://host:port/path,...`. CuboAI cameras with the H.264 transcode on are found automatically |
+| `CAMERA_LIVE_ON` | `1` | `0` = full-screen cameras show stills only |
 
 ### Display
 
@@ -919,6 +963,23 @@ On the panel itself: `journalctl -u ha-kiosk -u ha-kiosk-display -u ha-kiosk-bri
 
 **Updating**: `git pull`, then `scripts/install.sh all` (or `scripts/install.sh <panel>` for one).
 
+Each install goes through `ha-kiosk-setup` on the panel. It checks the bundle's SHA-256, keeps the
+previous version, and waits up to 60 s for the screen to come up and connect to Home Assistant. If it
+doesn't, the panel goes back to the previous version (or to Brilliant's own screen if there is none),
+and `install.sh` says which. On the panel (as root), `/var/lib/ha-kiosk/ha-kiosk-setup` also offers:
+
+| Command | Does |
+|---|---|
+| `status` | JSON: state, version, previous version, services, last result |
+| `rollback` | Switch back to the previous version |
+| `disable` / `enable` | Hand the screen back to Brilliant's UI and keep everything / start the kiosk again |
+| `reapply` | Restore the kiosk after a firmware update replaced `/etc` |
+| `uninstall` / `purge` | Remove the kiosk and every secret (keep / also delete photos and preferences) |
+| `diagnostics` | Status plus recent logs, secrets removed |
+
+Turning the kiosk on or off restarts Brilliant's message bus, which takes 60–90 s. Add `--detach`
+to return at once, then `wait` for the result.
+
 **What an install does with your settings.** `install.sh` only *reads* `.private/`; it never changes
 your files there. On each panel it:
 
@@ -937,7 +998,7 @@ all of them.
 **Brilliant OS updates**: over-the-air updates stay enabled. They replace the read-only system
 image. Everything this project installs lives in `/etc` and `/var`, which updates are expected to
 keep (not yet confirmed on every firmware). If an update ever re-enables the stock UI, run
-`scripts/install.sh` again.
+`/var/lib/ha-kiosk/ha-kiosk-setup reapply` on the panel (or `scripts/install.sh` again).
 
 **Uninstall**
 
