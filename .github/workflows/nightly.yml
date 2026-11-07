@@ -47,9 +47,21 @@ jobs:
           TAG: ${{ steps.build.outputs.tag }}
           VERSION: ${{ steps.build.outputs.version }}
         run: |
+          # Notes: the changelog's "Unreleased (nightly)" section, then the commits since the last nightly.
+          prev=$(git tag -l 'nightly-*' --sort=-creatordate | head -1)
+          base=${prev:-$(git describe --tags --abbrev=0 --exclude 'nightly-*')}
+          {
+            echo "Nightly build from the \`nightly\` branch ($(git rev-parse --short HEAD)). Not a stable release: stable is the newest vX.Y.Z marked *Latest*."
+            echo
+            awk '/^## Unreleased/{on=1; next} on && /^## /{exit} on' CHANGELOG.md 2>/dev/null || true
+            echo
+            echo "### Commits since $base"
+            echo
+            git log --no-merges --format='- %s (%h)' "$base"..HEAD
+          } > "$RUNNER_TEMP/notes.md"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" \
             --prerelease --latest=false --title "Nightly $VERSION" \
-            --notes "Nightly build from the \`nightly\` branch. Not a stable release: the stable channel is the latest vX.Y.Z release." \
+            --notes-file "$RUNNER_TEMP/notes.md" \
             "dist/brilliant-ha-kiosk-$VERSION.tar.gz" "dist/brilliant-ha-kiosk-$VERSION.tar.gz.sha256"
           # Keep the 14 newest nightlies.
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' \
