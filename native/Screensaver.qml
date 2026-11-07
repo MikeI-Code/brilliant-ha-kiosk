@@ -32,10 +32,7 @@ Rectangle {
     function loadWeather() {
         w = weatherEntity ? Ha.get(weatherEntity) : null;
         if (!weatherEntity || !showWeather) return;
-        Ha.callService("weather", "get_forecasts", { type: "daily" }, weatherEntity, function (r) {
-            var f = r.success && r.result && r.result.response && r.result.response[ss.weatherEntity];
-            ss.today = f && f.forecast && f.forecast.length ? f.forecast[0] : null;
-        });
+        Ha.getForecast(weatherEntity, "daily", function (l) { ss.today = l.length ? l[0] : null; });
     }
     Connections {
         target: Ha
