@@ -24,7 +24,7 @@ cp "$ROOT"/config/kiosk.env.example "$B/kiosk.env.example"
 cp "$ROOT"/LICENSE "$ROOT"/NOTICE "$B/"
 echo "$VERSION" > "$B/VERSION"
 chmod 755 "$B/install-local.sh" "$B/ha-kiosk-setup" "$B/ha-kiosk/ha-kiosk-setup" "$B"/ha-kiosk/*.sh "$B"/ha-kiosk/*.py
-(cd "$B" && find . -type f ! -name MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum > MANIFEST.sha256)
+(cd "$B" && find . -type f ! -name MANIFEST.sha256 | sed 's|^\./||' | LC_ALL=C sort | xargs sha256sum | sed 's/ \*/  /' > MANIFEST.sha256)   # Windows sha256sum marks binary mode with '*'
 
 # Reproducible: fixed order, owner and timestamps (the last commit's), no gzip name/time.
 EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)}"
