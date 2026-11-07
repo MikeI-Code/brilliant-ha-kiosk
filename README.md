@@ -73,6 +73,7 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | 📡 **Shows up in Home Assistant** | Optional MQTT discovery: each panel becomes an HA device with its wired light, power, motion, display state, screensaver/night switches, and gestures as automation triggers. |
 | 🔆 **Smart dimming** | Brightness follows the room: from an HA light sensor if you have one, otherwise from the sun and the room's lights. |
 | 🔔 **Doorbell pop-up** | Ring doorbells (through Brilliant's own Ring link) wake the panel and show that door's camera full-screen. Camera cards from HA dashboards work as tiles too. |
+| 📹 **Live camera video** | H.264 cameras play live in the full-screen view on the panel's hardware video decoder; others show refreshed stills. Pinch to zoom, drag to pan, double-tap to reset. ([Cameras](docs/MANUAL.md#3-using-the-panel)) |
 | 🛡️ **Ring Alarm and Schlage locks** | Alarm status on the Home screen, arm / disarm with your code, and lock / unlock (two taps to unlock), through Brilliant's integrations. Home Assistant gets read-only status. If a Brilliant update changes something, only the affected control switches off, with the reason on the panel and in HA. ([How this works](docs/MANUAL.md#how-the-alarm-and-lock-control-works)) |
 | 🏢 **Multi-unit ready (lite groups)** | For duplexes and rentals: group panels by unit with shared settings, keep the intercom inside the unit, limit each panel to its own doors and locks (or view only), and lock the mic or camera where needed. ([How it works and what it doesn't isolate](docs/MANUAL.md#213-multi-unit-and-rental-properties-lite-groups)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
@@ -129,6 +130,9 @@ ten panels need no more configuration than one:
 files in `.private/`, and per-panel features are kept because they live in `panelN.kiosk.env`; only
 edits made by hand on a panel are replaced. Choices made from HA switches (screensaver, night mode,
 ...) are kept too.
+
+Every install checks itself: if the new version doesn't come up and connect to Home Assistant
+within a minute, the panel goes back to the previous version on its own.
 
 To go back to the stock Brilliant interface at any time: `scripts/uninstall.sh panel1`.
 

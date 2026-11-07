@@ -1,5 +1,9 @@
 # Brilliant panel — device survey (2026-11-03)
 
+*A snapshot from the first look at the panel, kept for reference. Current details are in
+[hardware-and-services.md](hardware-and-services.md) and
+[resource-utilization-and-optimizations.md](resource-utilization-and-optimizations.md).*
+
 ## Hardware
 | | |
 |---|---|

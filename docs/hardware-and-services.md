@@ -1,4 +1,6 @@
-# Brilliant Panel Hardware & Service Architecture (2026-11-04)
+# Brilliant Panel Hardware & Service Architecture
+
+*First written 2026-11-04; updated 2026-11-07 (video decoding, shared audio, bus client).*
 
 Hardware devices, kernel interfaces, daemon architecture and sensors on the Brilliant Control (NXP i.MX6 DualLite), as found on two panels running Brilliant OS v26.10.21.1. Items marked *unverified* were read from code or configs but not exercised.
 
@@ -12,7 +14,19 @@ Hardware devices, kernel interfaces, daemon architecture and sensors on the Bril
 | **Driver** | `ov9732_mipi` attached to `ipu0:/csi0` (`mxc_v4l2_cap0`) |
 | **V4L2 Nodes** | Primary capture: `/dev/video0`<br>Overlay / IPU post-proc: `/dev/video16`, `/dev/video17` (`DISP3 BG`) |
 | **I2C Control Bus** | `/sys/bus/i2c/devices/1-0036` (I2C Bus 1, address `0x36`) |
-| **Direct Access** | Standard Linux V4L2 API (`v4l2src`, `imxv4l2videosrc` in GStreamer, `ffmpeg`, or OpenCV). Stock `switch-ui` reportedly served RTSP on port `8554` (*unverified*; nothing listens on 8554 now). `hardware_peripheral` reports `camera_on = 0`. |
+| **Direct Access** | Standard Linux V4L2 API (`v4l2src`, `imxv4l2videosrc` in GStreamer, `ffmpeg`, or OpenCV). Stock `switch-ui` links `gst_rtsp_server`, so it likely served the camera over RTSP (*unverified*; nothing listens on 8554 now). `hardware_peripheral` reports `camera_on = 0` while idle. The kiosk's Capture tab (`CAPTURE_VIDEO=1`) uses it for snapshots and clips; the red privacy LED lights while it is on. |
+
+### 1.1 Video decoding (verified 2026-11-07)
+
+| Path | Status |
+|---|---|
+| **VPU** (CODA960, `/dev/mxc_vpu`, GStreamer `imxvpu` plugin) | H.264, MPEG-2/4, H.263, VC-1, VP8, JPEG decode; H.264/MPEG-4/JPEG encode. **No H.265/HEVC** |
+| **Display paths** | `qmlglsink` (Qt), `imxeglvivsink`, `imxg2dvideosink`, `imxipuvideosink`; Qt Multimedia's GStreamer backend (`gst-pipeline:` sources with `qtvideosink`) |
+| **Network sources** | `rtspsrc`, `webrtcbin`, `hlsdemux` |
+| **Software decode** | GStreamer has no `avdec_*`; `/usr/bin/ffmpeg` is built with `--disable-decoders` (audio only). A static FFmpeg 7.0.2 (NEON) decoded 2560×1440 H.265 at 8 fps on both cores |
+| **Stock `switch-ui`** | `RTSP Receiver`, `WebRTCReceiver` and `SkybellReceiver`: `rtph264depay ! h264parse ! imxvpudec_h264 ! glupload ! qmlglsink`, one pipeline shared behind a semaphore |
+
+The kiosk plays live H.264 RTSP the same way (see `native/Doorbell.qml`): 720p at ~10% CPU.
 
 ---
 
@@ -76,14 +90,15 @@ The faceplate has its own sensors, reported over the faceplate UART (`/dev/ttymx
   * Voice daemon (`voice.ini`) runs in Python via uWSGI vassal with Alexa Voice Service & Pryon Lite wake word engine (`pryon_lite-2.14.0`).
   * DSnoop device: `dsnoop_48000` (48 kHz capture).
   * Acoustic Echo Cancellation (AEC): Input delay `-100ms`, recommended capture latency `0.12s`, playback latency `0.16s`.
-* **Direct Capture**:
-  * ALSA: `arecord -D hw:2,0 -f S16_LE -r 48000` (*unverified*; the voice daemon may hold the device).
+* **Shared use** (verified): Brilliant's Alexa `voice` daemon keeps running; the kiosk's voice
+  satellite, intercom and Capture open the ALSA `default` capture device (`dsnoop`) and play
+  through `dmix_filtered`, alongside it. Opening `hw:2,0` directly would conflict with the daemon.
 
 ---
 
 ## 5. Core Services & IPC Architecture
 
-Brilliant's daemons talk **Apache Thrift over Unix domain sockets** (and to Brilliant's cloud over a websocket). The schemas (`ttypes.py`) are readable Python; the bus client itself (`bus/message_bus*.so`, `lib/…`) is compiled, so there is no ready-made CLI to read or set variables:
+Brilliant's daemons talk **Apache Thrift over Unix domain sockets** (and to Brilliant's cloud over a websocket). The schemas (`ttypes.py`) are readable Python; the bus client itself (`bus/message_bus*.so`, `lib/…`) is compiled, so this project wrote its own client, `tools/brilliant_bus.py` (section 6):
 
 * **Socket Hub**: `/var/run/brilliant/server_socket` (message bus server socket).
 * **Zygote Fork Server**: `/var/run/brilliant/fork_server.socket` (uWSGI Emperor manages vassals under `/var/run/brilliant/processes/`).

@@ -1019,9 +1019,17 @@ without this repo:
 
 ```sh
 # on the panel, as root
-tar -xzf brilliant-ha-kiosk-v1.1.0.tar.gz
-sh brilliant-ha-kiosk-v1.1.0/install-local.sh --env /path/kiosk.env --token /path/token
+V=v1.4.0; SHA=<sha256 from the release>
+echo "$SHA  brilliant-ha-kiosk-$V.tar.gz" | sha256sum -c
+tar -xzOf brilliant-ha-kiosk-$V.tar.gz brilliant-ha-kiosk-$V/ha-kiosk-setup > setup.py
+/data/switch-embedded/env/bin/python setup.py install --bundle brilliant-ha-kiosk-$V.tar.gz     --sha256 $SHA --env /path/kiosk.env --token /path/token
 ```
+
+This goes through `ha-kiosk-setup` (section 8, *Updating*): it verifies the bundle, keeps the
+previous version and rolls back if the new one doesn't come up. Its commands, exit codes and
+`--detach`/`wait` are described in [INTEGRATION.md](INTEGRATION.md) section 0.
+
+Underneath, each release's `install-local.sh` does the file work. It can still be run by hand:
 
 | `install-local.sh` option | Effect |
 |---|---|
@@ -1038,8 +1046,8 @@ settings, photos and layout, and records the installed version in `/etc/ha-kiosk
 stays at `/etc/ha-kiosk/install-local.sh`, so a panel can always be returned to the stock UI with
 `sh /etc/ha-kiosk/install-local.sh --uninstall`.
 
-Tools that install the kiosk for you (such as a Home Assistant integration) should follow the
-draft contract in [INTEGRATION.md](INTEGRATION.md).
+Tools that install the kiosk for you (such as a Home Assistant integration) should use
+`ha-kiosk-setup` as described in [INTEGRATION.md](INTEGRATION.md) section 0.
 
 **Security notes**
 
