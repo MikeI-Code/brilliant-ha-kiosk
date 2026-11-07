@@ -1,0 +1,57 @@
+# Nightly channel: integration work (new services, beta UI) lands on the `nightly` branch.
+# Each night, if `nightly` moved since the last nightly build, this builds the bundle and
+# publishes it as a GitHub *prerelease* tagged nightly-YYYYMMDD. Prereleases never become
+# "Latest", so the stable channel stays on the newest vX.Y.Z release (currently v1.4.0).
+# Bundle VERSION: <last stable tag>-nightly.YYYYMMDD.g<short sha>, e.g. v1.4.0-nightly.20261108.g89ec239
+name: Nightly bundle
+on:
+  schedule:
+    - cron: "0 6 * * *"          # 06:00 UTC = 1-2 AM US Eastern
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: nightly
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: nightly
+          fetch-depth: 0
+      - name: Skip if nothing new
+        id: check
+        run: |
+          last=$(git tag -l 'nightly-*' --sort=-creatordate | head -1)
+          if [ -n "$last" ] && [ "$(git rev-parse "$last^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            echo "nightly unchanged since $last"; echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build bundle
+        if: steps.check.outputs.skip != '1'
+        id: build
+        run: |
+          stable=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)
+          day=$(date -u +%Y%m%d)
+          tag="nightly-$day"
+          git rev-parse -q --verify "refs/tags/$tag" >/dev/null && tag="$tag.$(date -u +%H%M)"
+          version="$stable-nightly.$day.g$(git rev-parse --short HEAD)"
+          bash scripts/build-bundle.sh "$version"
+          tar -xzf "dist/brilliant-ha-kiosk-$version.tar.gz" -C "$RUNNER_TEMP"
+          ( cd "$RUNNER_TEMP/brilliant-ha-kiosk-$version" && sha256sum -c MANIFEST.sha256 >/dev/null && sh -n install-local.sh \
+            && test "$(cat VERSION)" = "$version" )
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"; echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Publish prerelease
+        if: steps.check.outputs.skip != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.build.outputs.tag }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" \
+            --prerelease --latest=false --title "Nightly $VERSION" \
+            --notes "Nightly build from the \`nightly\` branch. Not a stable release: the stable channel is the latest vX.Y.Z release." \
+            "dist/brilliant-ha-kiosk-$VERSION.tar.gz" "dist/brilliant-ha-kiosk-$VERSION.tar.gz.sha256"
+          # Keep the 14 newest nightlies.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' \
+            | grep '^nightly-' | sort -r | tail -n +15 \
+            | xargs -r -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
