@@ -15,6 +15,7 @@ Rectangle {
     property var hourly: []
     property var days: []                 // [{date, day, night}] from twice_daily (or daily)
     property int sel: -1                  // hour previewed in the sky; -1 = now
+    property int openDay: -1              // 7-day row expanded to show its detail; -1 = none
     signal closed()
     color: Theme.bg
 
@@ -33,6 +34,21 @@ Rectangle {
     function compass(deg) {
         if (deg === undefined || deg === null) return "";
         return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+    }
+    function windText(e) {
+        if (!e || e.wind_speed === undefined || e.wind_speed === null) return "";
+        var c = typeof e.wind_bearing === "number" ? compass(e.wind_bearing) : (e.wind_bearing || "");
+        return Math.round(e.wind_speed) + " " + (a("wind_speed_unit") || "") + (c ? " " + c : "");
+    }
+    function partFacts(e) {               // one line of the extra fields a forecast entry carries
+        if (!e) return "";
+        var f = [];
+        if (e.precipitation_probability) f.push(e.precipitation_probability + "% rain");
+        if (e.precipitation) f.push(e.precipitation + " " + (a("precipitation_unit") || ""));
+        if (windText(e)) f.push("Wind " + windText(e));
+        if (e.humidity !== undefined && e.humidity !== null) f.push(Math.round(e.humidity) + "% humidity");
+        if (e.uv_index !== undefined && e.uv_index !== null) f.push("UV " + e.uv_index);
+        return f.join(" · ");
     }
     function clock(iso) { return iso ? Qt.formatTime(new Date(iso), "h:mm AP") : "--"; }
 
@@ -249,6 +265,10 @@ Rectangle {
                     Label { size: 12; color: Theme.textDim; text: wp.days.length + "-DAY FORECAST"; bottomPadding: 4 * Theme.u }
                     Repeater {
                         model: wp.days
+                        Column {
+                        id: dayCol
+                        readonly property bool open: wp.openDay === index
+                        width: weekCol.width
                         Item {
                             id: dayRow
                             readonly property var dy: modelData.day
@@ -280,6 +300,35 @@ Rectangle {
                             Label { x: dayRow.width - 36 * Theme.u; width: 36 * Theme.u; horizontalAlignment: Text.AlignRight
                                     anchors.verticalCenter: parent.verticalCenter; size: 15
                                     text: dayRow.dy ? Math.round(dayRow.hiT) + "°" : "" }
+                            MouseArea { anchors.fill: parent
+                                        onClicked: wp.openDay = dayCol.open ? -1 : index }
+                        }
+                        // Tap a day: day and night detail inline (no overlay — keeps the GPU cheap).
+                        Column {
+                            visible: dayCol.open
+                            width: parent.width
+                            spacing: 6 * Theme.u
+                            bottomPadding: 10 * Theme.u
+                            Repeater {
+                                model: [[dayRow.dy, "Day", "High"], [dayRow.nt, "Night", "Low"]]
+                                Column {
+                                    readonly property var e: modelData[0]
+                                    visible: !!e && e.condition !== undefined
+                                    width: parent.width
+                                    spacing: 2 * Theme.u
+                                    Row { spacing: 6 * Theme.u
+                                        Icon { size: 16; color: Theme.amber; anchors.verticalCenter: parent.verticalCenter
+                                               name: e ? (wp.condIcon[e.condition] || "weather-cloudy") : "" }
+                                        Label { size: 13; color: Theme.text
+                                                text: e ? modelData[1] + " · " + wp.cond(e.condition) + " · " + modelData[2] + " "
+                                                          + Math.round(e.temperature) + "°" : "" } }
+                                    Label { width: parent.width; size: 12; color: Theme.blue; wrapMode: Text.WordWrap
+                                            text: wp.partFacts(e); visible: text !== "" }
+                                    Label { width: parent.width; size: 13; color: Theme.textDim; wrapMode: Text.WordWrap
+                                            text: e && e.detailed_description ? e.detailed_description : ""; visible: text !== "" }
+                                }
+                            }
+                        }
                         }
                     }
                 }

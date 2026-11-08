@@ -19,6 +19,9 @@ These changes will be part of the next stable release.
   stars, the sun or the moon, and lightning flashes. Drag a finger across it to blow the rain
   or snow aside; waking the screen gives a short flourish. `WEATHER_FX=off|sky|full` in
   `kiosk.env` (default `full`; `sky` keeps the colours without motion).
+- **Tap a day in the weather forecast** to expand its day and night detail in place: condition,
+  high/low, rain chance and amount, wind, humidity, UV, and the written forecast where the
+  integration provides one (NWS does). Tap again to collapse.
 - **Full-screen weather page.** Tap the sky: wind (speed and direction), humidity, pressure,
   visibility, sunrise and sunset, day length, moon phase, a 24-hour temperature and rain-chance
   chart (drag along it to preview each hour's sky), and a 7-day forecast with highs, lows and
