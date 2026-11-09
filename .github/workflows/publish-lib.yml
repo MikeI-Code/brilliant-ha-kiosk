@@ -16,8 +16,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       - name: Check the tag matches the package version
         run: |
           tag="${GITHUB_REF_NAME#pybrilliantkiosk-v}"
@@ -39,8 +39,8 @@ jobs:
         run: uv run --python 3.14 --with-editable '.[dev]' pytest -q
       - name: Build
         working-directory: lib/pybrilliantkiosk
-        run: uv build && uvx twine check dist/*
-      - uses: actions/upload-artifact@v4
+        run: uv build && uvx twine@6.2.0 check dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: lib/pybrilliantkiosk/dist/
@@ -52,8 +52,8 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
