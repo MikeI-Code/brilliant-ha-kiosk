@@ -9,6 +9,7 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 
 ## Unreleased (nightly)
 
+- Admin helper, phase 1: `lib/pybrilliantkiosk`, a typed async library for panel health, kiosk.env, services, logs, Brilliant bus variables, version installs and GitHub releases (spec: docs/admin-helper-spec.md).
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
