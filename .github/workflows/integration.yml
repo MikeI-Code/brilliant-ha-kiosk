@@ -46,7 +46,21 @@ concurrency:
   group: integration-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  present:
+    name: Integration code present
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.check.outputs.found }}
+    steps:
+      - uses: actions/checkout@v4
+      # The workflow lives on main (repo rule), but the integration is developed on nightly;
+      # skip every job on a branch that doesn't contain it yet instead of failing.
+      - id: check
+        run: echo "found=$([ -f custom_components/brilliant_kiosk/manifest.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   library:
+    needs: present
+    if: needs.present.outputs.found == 'true'
     name: Library (pybrilliantkiosk, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -74,6 +88,8 @@ jobs:
         run: python -m pytest -q -p no:homeassistant
 
   integration:
+    needs: present
+    if: needs.present.outputs.found == 'true'
     name: Integration (Home Assistant tests)
     runs-on: ubuntu-latest
     steps:
@@ -96,6 +112,8 @@ jobs:
         run: python -m pytest tests -q
 
   hassfest:
+    needs: present
+    if: needs.present.outputs.found == 'true'
     name: Hassfest
     runs-on: ubuntu-latest
     steps:
@@ -103,6 +121,8 @@ jobs:
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
+    needs: present
+    if: needs.present.outputs.found == 'true'
     name: HACS validation
     runs-on: ubuntu-latest
     steps:
@@ -110,3 +130,8 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # The brand images are the integration's own custom_components/brilliant_kiosk/brand/
+          # folder, which Home Assistant itself serves since 2026.3 (hacs.json). The action's
+          # brands check only looks in the home-assistant/brands repository (its docs do not
+          # mention a local folder), so it would fail a correct setup.
+          ignore: brands
