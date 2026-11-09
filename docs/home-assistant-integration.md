@@ -290,7 +290,11 @@ data:
 
 ### Entities
 
-Per panel (device **Brilliant panel \<host\>**): binary sensors for each kiosk service
+Per panel (device **\<room\> Brilliant kiosk**, for example *Kitchen Brilliant kiosk*; the room is
+Brilliant's own name for it, read from the panel once when the entry is set up, and a panel whose
+room is not known is called *Brilliant kiosk \<host\>*; entries made earlier as *Brilliant panel
+\<host\>* are renamed the same way at their next setup, unless you gave the entry or the device a
+name yourself; entity ids do not change): binary sensors for each kiosk service
 (`ha-kiosk`, display and bridge enabled by default, the others disabled), sensors for kiosk
 version, install state, memory used and load (load disabled by default), numbers for **Dim level**
 and **Minimum level**, a **Release channel** select, buttons (**Restart kiosk**, **Reboot panel**,
@@ -392,7 +396,13 @@ automation:
 
 * **Home Assistant version.** Home Assistant 2026.3.1 or newer is required (it runs on Python
   3.14); older versions neither show the integration's own brand images nor are tested.
-* **Discovery.** MQTT discovery uses the default topic `brilliant_kiosk/<node>/kiosk_state` and
+* **Discovery.** A kiosk of the nightly that added it also publishes retained
+  `brilliant_kiosk/<node>/discovery`, JSON with `state`, `host` (the panel's LAN address),
+  `device_id` and `room`. The flow then knows which panel it is (a panel you already added is not
+  offered again), fills in the address and shows the room (*Kitchen Brilliant panel found*), so you
+  only enter the password. Older kiosks publish only the bare `kiosk_state` below; their flow
+  works as before, without the address. MQTT discovery uses the default topic
+  `brilliant_kiosk/<node>/kiosk_state` and
   offers a panel only while that retained state is `active`: `not_installed`, `disabled` and
   `failed` are what `ha-kiosk-setup` leaves on the broker when the kiosk is removed, switched off
   or fails to start, and such a stale message does not make a panel appear (add it by hand). The

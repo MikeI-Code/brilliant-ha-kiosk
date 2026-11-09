@@ -122,11 +122,43 @@ def read_env(path):
     return parse_env(read(path))[0]
 
 
+def discovery_payload(state, host, device_id, room):
+    """The retained ``<base>/discovery`` JSON the HA integration is discovered from.
+
+    ``kiosk_state`` stays the bare word other integrations read; this one adds what the
+    integration needs to prefill its form (the panel's address) and to recognise a panel it
+    already has (the Brilliant device id). ``host`` is left out when it is not known.
+    """
+    data = {"state": state, "device_id": device_id, "room": room or None}
+    if host:
+        data["host"] = host
+    return json.dumps(data, sort_keys=True)
+
+
+def lan_ip(sock, mqtt_host):
+    """The panel's LAN IPv4: the local address of the MQTT socket, else the route to the broker."""
+    import socket
+    try:
+        ip = sock.getsockname()[0]
+        if ip and ":" not in ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect((mqtt_host, 9))           # UDP: nothing is sent, it only picks a route
+            ip = probe.getsockname()[0]
+        return ip if ip and not ip.startswith("127.") else None
+    except OSError:
+        return None
+
+
 class KioskMqtt:
     def __init__(self, env, control, bus_info):
         self.env, self.control = env, control
         self.dev_id = bus_info["device_id"]
-        self.room = bus_info.get("room") or "Brilliant"
+        self.room_name = bus_info.get("room") or None   # None when Brilliant has no name for it
+        self.room = self.room_name or "Brilliant"
         self.node = "brilliant_" + self.dev_id[:12]
         self.base = f"{env.get('MQTT_BASE', 'brilliant_kiosk')}/{self.node}"
         self.disc = env.get("MQTT_DISCOVERY_PREFIX", "homeassistant")
@@ -306,6 +338,13 @@ class KioskMqtt:
         self.publish_discovery()
         client.publish(f"{self.base}/availability", "online", retain=True)
         client.publish(f"{self.base}/kiosk_state", "active", retain=True)   # for other integrations
+        try:                                # richer form of it, for the HA integration's discovery
+            host = lan_ip(client.socket(), self.env["MQTT_HOST"])
+            client.publish(f"{self.base}/discovery",
+                           discovery_payload("active", host, self.dev_id, self.room_name),
+                           retain=True)
+        except Exception as e:
+            print(f"mqtt: discovery not published: {e}", flush=True)
         try:                                # so ha-kiosk-setup can report disable/uninstall here
             with open("/var/lib/ha-kiosk/mqtt_base", "w", encoding="utf-8") as f:
                 f.write(self.base)

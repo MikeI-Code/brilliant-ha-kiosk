@@ -26,6 +26,7 @@ from pybrilliantkiosk import (
     BusVariable,
     HostKeyInfo,
     PanelHealth,
+    PanelIdentity,
     PanelSnapshot,
     Release,
     SetupStatus,
@@ -105,6 +106,16 @@ def make_panel() -> MagicMock:
     panel.setup_status = AsyncMock(return_value=SetupStatus(state="active", version="v1.4.0"))
     panel.bus_peripherals = AsyncMock(return_value=BusListing(DEVICE_ID, (BusPeripheral("p", 1),)))
     panel.device_id = AsyncMock(return_value=DEVICE_ID)
+    #: Brilliant's room name of the panel (None: not set); identity() follows device_id().
+    panel.room = None
+
+    async def identity() -> PanelIdentity:
+        effect = panel.device_id.side_effect  # follows the knobs without counting as a call
+        if isinstance(effect, BaseException):
+            raise effect
+        return PanelIdentity(panel.device_id.return_value, panel.room)
+
+    panel.identity = AsyncMock(side_effect=identity)
     panel.bus_get = AsyncMock(return_value=(BusVariable("a", "1", False),))
     panel.bus_set = AsyncMock(return_value=())
     panel.set_env = AsyncMock(return_value=("DIM_LEVEL",))
@@ -187,11 +198,11 @@ def _no_mqtt_broker() -> Generator[None]:
         yield
 
 
-def make_entry(**options: object) -> MockConfigEntry:
+def make_entry(title: str | None = None, **options: object) -> MockConfigEntry:
     """A configured panel."""
     return MockConfigEntry(
         domain=DOMAIN,
-        title=f"Brilliant panel {HOST}",
+        title=title or f"Brilliant panel {HOST}",
         unique_id=UNIQUE_ID,
         version=2,
         data={

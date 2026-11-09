@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import json
 import logging
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import voluptuous as vol
 from homeassistant.config_entries import (
@@ -74,6 +76,7 @@ from .const import (
     PROVIDERS,
     is_fingerprint,
     node_of,
+    panel_title,
     provider_of,
 )
 from .errors import InstallRefused
@@ -81,6 +84,10 @@ from .install import async_fetch_bundle
 
 _LOGGER = logging.getLogger(__name__)
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_HEX_ID_RE = re.compile(r"^[0-9A-Fa-f]{12,64}$")
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+)
 _URL_RE = re.compile(r"^https?://[^\s/]+")
 _PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 _KEY_TEXT = TextSelector(TextSelectorConfig(multiline=True, autocomplete="off"))
@@ -96,6 +103,8 @@ class Probe:
     node: str | None
     installed: bool
     settings: Mapping[str, str]
+    #: Brilliant's name for the room of the panel (None when not known).
+    room: str | None = None
 
 
 async def probe_panel(
@@ -132,8 +141,11 @@ async def probe_panel(
         status = await panel.setup_status()
         settings = await panel.get_settings()
         node: str | None = None
+        room: str | None = None
         try:
-            node = node_of(await panel.device_id())
+            identity = await panel.identity()
+            node = node_of(identity.device_id)
+            room = identity.room
         except DeviceIdUnavailable:
             if require_node:
                 raise
@@ -145,6 +157,7 @@ async def probe_panel(
         node=node,
         installed=status.installed,
         settings=settings,
+        room=room,
     )
 
 
@@ -160,6 +173,48 @@ def _kiosk_state(payload: str | bytes | bytearray) -> str:
     """The retained ``kiosk_state`` text (the MQTT payload may arrive as bytes)."""
     text = payload if isinstance(payload, str) else bytes(payload).decode("utf-8", "replace")
     return text.strip()
+
+
+@dataclass(frozen=True, slots=True)
+class Discovered:
+    """The retained ``<base>/<node>/discovery`` message of a kiosk, validated."""
+
+    state: str
+    device_id: str
+    host: str | None
+    room: str | None
+
+
+def _valid_host(host: object) -> str | None:
+    """The host if it is an IPv4 address or a host name (None otherwise)."""
+    if not isinstance(host, str):
+        return None
+    if host.replace(".", "").isdigit():
+        try:
+            return str(ipaddress.IPv4Address(host))
+        except ValueError:
+            return None
+    return host if _HOSTNAME_RE.match(host) else None
+
+
+def _parse_discovery(payload: str | bytes | bytearray) -> Discovered | None:
+    """The discovery JSON of a kiosk (None when it is not what the kiosk publishes)."""
+    try:
+        data = json.loads(_kiosk_state(payload))
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    state, device_id, room = data.get("state"), data.get("device_id"), data.get("room")
+    if not isinstance(state, str) or not isinstance(device_id, str):
+        return None
+    if not _HEX_ID_RE.match(device_id):
+        return None
+    cleaned = None
+    if isinstance(room, str):
+        text = "".join(c for c in room if c.isprintable()).strip()[:64]
+        cleaned = text or None
+    return Discovered(state, device_id, _valid_host(data.get("host")), cleaned)
 
 
 def _error_key(err: Exception) -> str:
@@ -259,6 +314,9 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         #: The node of the panel this flow was discovered for; the panel found at the address the
         #: user types must be that one (see :meth:`_async_connect`).
         self._discovered_node: str | None = None
+        #: The address and room of the panel the kiosk's ``discovery`` message named.
+        self._discovered_host: str | None = None
+        self._room: str | None = None
 
     @callback
     def async_remove(self) -> None:
@@ -280,12 +338,44 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         parts = discovery_info.topic.split("/")
         if len(parts) < 3 or not parts[1]:
             return self.async_abort(reason="unknown")
+        if parts[2] == "discovery":
+            return await self._async_discovery_message(discovery_info)
         await self.async_set_unique_id(parts[1])
         self._abort_if_unique_id_configured()
         if _kiosk_state(discovery_info.payload) != KIOSK_STATE_ACTIVE:
             return self.async_abort(reason="kiosk_not_active")
         self._discovered_node = parts[1]
         self.context["title_placeholders"] = {"name": parts[1]}
+        return await self.async_step_user()
+
+    async def _async_discovery_message(self, discovery_info: MqttServiceInfo) -> ConfigFlowResult:
+        """A kiosk's retained ``<base>/<node>/discovery``: JSON with state, host, id and room.
+
+        The unique id comes from the device id up front, so a panel that is already added is not
+        offered again, and the address is prefilled: the user only enters the password. Older
+        kiosks publish only ``kiosk_state`` (see :meth:`async_step_mqtt`), without an address.
+        """
+        found = _parse_discovery(discovery_info.payload)
+        if found is None:
+            return self.async_abort(reason="unknown")
+        node = node_of(found.device_id)
+        # A flow made by the older ``kiosk_state`` message knows less: this one replaces it.
+        for flow in self.hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN, match_context={"unique_id": node}
+        ):
+            if flow["flow_id"] != self.flow_id and not flow["context"].get("prefilled"):
+                self.hass.config_entries.flow.async_abort(flow["flow_id"])
+        await self.async_set_unique_id(node)
+        self._abort_if_unique_id_configured()
+        if found.state != KIOSK_STATE_ACTIVE:
+            return self.async_abort(reason="kiosk_not_active")
+        self._discovered_node = node
+        self._discovered_host = found.host
+        self._room = found.room
+        cast(dict[str, Any], self.context)["prefilled"] = True
+        self.context["title_placeholders"] = {
+            "name": f"{found.room} Brilliant panel found" if found.room else node
+        }
         return await self.async_step_user()
 
     # -- user: address, credentials, host key (trust on first use) -----------------------
@@ -336,6 +426,8 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         secrets = (CONF_PASSWORD, CONF_PRIVATE_KEY)
         suggested = {k: v for k, v in (previous or {}).items() if k not in secrets}
+        if self._discovered_host and CONF_HOST not in suggested:
+            suggested[CONF_HOST] = self._discovered_host
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(schema, suggested),
@@ -380,6 +472,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error connecting to %s", user_input[CONF_HOST])
             return self._show_user_form(user_input, {"base": "unknown"})
         assert probe.node is not None  # require_node
+        self._room = probe.room or self._room
         if self._discovered_node is not None and probe.node != self._discovered_node:
             return self.async_abort(reason="unique_id_mismatch")
         await self.async_set_unique_id(probe.node)
@@ -407,7 +500,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     def _create_entry(self, settings: Mapping[str, str]) -> ConfigFlowResult:
         provider = provider_of(settings)
         return self.async_create_entry(
-            title=f"Brilliant panel {self._data[CONF_HOST]}",
+            title=panel_title(self._room, self._data[CONF_HOST]),
             data=self._data,
             options={
                 CONF_MQTT_PROVIDER: provider,

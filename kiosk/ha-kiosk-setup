@@ -180,6 +180,14 @@ def releases():
         return []
 
 
+def discovery_payload(state, host, device_id, room):
+    """The retained ``<base>/discovery`` JSON of the HA integration (see ha-kiosk-mqtt.py)."""
+    data = {"state": state, "device_id": device_id, "room": room or None}
+    if host:
+        data["host"] = host
+    return json.dumps(data, sort_keys=True)
+
+
 def mqtt_state(state):
     """Tell other integrations (retained <base>/kiosk_state) when the kiosk stops publishing."""
     base = read(f"{VAR}/mqtt_base")
@@ -194,6 +202,11 @@ def mqtt_state(state):
         c.connect(env["MQTT_HOST"], int(env.get("MQTT_PORT") or 1883), 10)
         c.loop_start()
         c.publish(f"{base}/kiosk_state", state, retain=True).wait_for_publish(5)
+        node = base.rsplit("/", 1)[-1]          # brilliant_<first 12 of the Brilliant device id>
+        if node.startswith("brilliant_"):       # the address and room are not known here
+            c.publish(f"{base}/discovery",
+                      discovery_payload(state, None, node[len("brilliant_"):], None),
+                      retain=True).wait_for_publish(5)
         if state in ("not_installed", "disabled"):
             c.publish(f"{base}/availability", "offline", retain=True).wait_for_publish(5)
         c.loop_stop()

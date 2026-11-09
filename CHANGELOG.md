@@ -14,8 +14,16 @@ These changes will be part of the next stable release.
 
 ### New
 
+- **Home Assistant: panels are named after their room.** The integration named each panel
+  "Brilliant panel <IP>", so panels could not be told apart. A panel is now "<room> Brilliant
+  kiosk" (Brilliant's own room name, read from the stock message bus), or "Brilliant kiosk <IP>"
+  when no room is set. Existing entries are renamed once at setup unless you named them yourself;
+  entity ids stay. Discovery from MQTT now fills in the panel's address: the kiosk publishes
+  retained `<base>/discovery` (state, LAN address, device id, room) next to `kiosk_state`, which
+  is unchanged. The kiosk side reaches a panel with the next nightly install. Library
+  `pybrilliantkiosk` 0.1.3 (`Panel.identity()`).
 - **Home Assistant integration `brilliant_kiosk`** (custom integration, nightly; library
-  `pybrilliantkiosk` 0.1.2). Health and install state, settings, logs, bus variables and kiosk
+  `pybrilliantkiosk` 0.1.3). Health and install state, settings, logs, bus variables and kiosk
   updates of each panel over SSH, with host key pinning. A panel is identified by Brilliant's own
   device id, read from the stock firmware; a first install from Home Assistant keeps every
   setting of the bundle (including `WEATHER_FX`). See

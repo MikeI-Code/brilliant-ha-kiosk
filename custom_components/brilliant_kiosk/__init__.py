@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.typing import ConfigType
 from pybrilliantkiosk import parse_version
 
@@ -20,9 +23,12 @@ from .const import (
     DOMAIN,
     ISSUE_ENV_DRIFT,
     PROVIDER_BUILTIN,
+    panel_title,
 )
 from .coordinator import BrilliantKioskCoordinator, async_delete_issues
 from .services import async_setup_services
+
+_LOGGER = logging.getLogger(__name__)
 
 type BrilliantKioskConfigEntry = ConfigEntry[BrilliantKioskCoordinator]
 
@@ -52,9 +58,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntr
         await coordinator.releases.async_refresh()
     entry.runtime_data = coordinator
     _default_channel(hass, entry, coordinator.data.health.version)
+    await _async_name_after_room(hass, entry, coordinator)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+def _is_default_title(entry: ConfigEntry, host: str) -> bool:
+    """Whether the title is one this integration made itself (the user has not renamed it)."""
+    return entry.title in (f"Brilliant panel {host}", panel_title(None, host))
+
+
+async def _async_name_after_room(
+    hass: HomeAssistant, entry: BrilliantKioskConfigEntry, coordinator: BrilliantKioskCoordinator
+) -> None:
+    """Name a panel that still has a default title after its room, once, at setup.
+
+    Brilliant's own name for the room is read from the stock message bus (one Python run on the
+    panel, so not on every poll). The title and the device name change; entity ids do not. A
+    name the user chose (entry title or device name) is never touched, and a panel whose room
+    cannot be read keeps its title: this must not stop the setup.
+    """
+    host = str(entry.data.get(CONF_HOST, ""))
+    if not _is_default_title(entry, host):
+        return
+    try:
+        room = (await coordinator.panel.identity()).room
+    except Exception as err:  # the room is cosmetic: never block the setup
+        _LOGGER.debug("Cannot read the room of %s: %s", host, err)
+        return
+    if room is None:
+        return
+    title = panel_title(room, host)
+    hass.config_entries.async_update_entry(entry, title=title)
+    devices = dr.async_get(hass)
+    device = devices.async_get_device(identifiers={(DOMAIN, str(entry.unique_id))})
+    if device is not None and device.name_by_user is None:
+        devices.async_update_device(device.id, name=title)
 
 
 def _default_channel(

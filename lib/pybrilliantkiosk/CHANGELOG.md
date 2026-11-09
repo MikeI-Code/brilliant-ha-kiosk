@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- `Panel.identity()` (new) returns `PanelIdentity(device_id, room)`: the device id and Brilliant's
+  room name (`display_name` of `art_config_peripheral`), read by the same Python run on the stock
+  message bus. The room is stripped of control characters, cut to 64 characters and `None` when
+  empty or unreadable; a failure to read it never fails the device id. `Panel.device_id()` is
+  unchanged (it delegates).
+
 ## 0.1.2
 
 - **Fix:** a command that times out no longer leaves its process running on the panel. `Panel`

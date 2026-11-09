@@ -1786,6 +1786,41 @@ async def test_device_id_is_read_with_brilliants_own_python(net: Net):
     assert "MessageType.HELLO" in command
 
 
+async def test_identity_has_the_room_from_the_same_run(net: Net):
+    from pybrilliantkiosk import PanelIdentity
+
+    net.conn.handler = lambda c, i: out("device 0123456789abcdef0123\nroom  Kitchen \n")
+    assert await Panel("h").identity() == PanelIdentity("0123456789abcdef0123", "Kitchen")
+    assert len(net.conn.calls) == 1
+    assert "art_config_peripheral" in net.conn.calls[0][0]
+
+
+@pytest.mark.parametrize(
+    ("stdout", "room"),
+    [
+        ("device 0123456789abcdef0123\n", None),
+        ("device 0123456789abcdef0123\nroom \n", None),
+        ("device 0123456789abcdef0123\nroom \x07\x1b \n", None),
+        ("device 0123456789abcdef0123\nroom Ki\x07tchen\r\n", "Kitchen"),
+        ("device 0123456789abcdef0123\nroom " + "x" * 100 + "\n", "x" * 64),
+        ("device 0123456789abcdef0123\nroom " + "x" * 63 + "  y\n", "x" * 63),
+    ],
+)
+async def test_identity_room_is_cleaned(net: Net, stdout: str, room: str | None):
+    net.conn.handler = lambda c, i: out(stdout)
+    identity = await Panel("h").identity()
+    assert identity.room == room
+    assert await Panel("h").device_id() == "0123456789abcdef0123"
+
+
+async def test_identity_unavailable(net: Net):
+    from pybrilliantkiosk import DeviceIdUnavailable
+
+    net.conn.handler = lambda c, i: out("room Kitchen\n")
+    with pytest.raises(DeviceIdUnavailable):
+        await Panel("h").identity()
+
+
 @pytest.mark.parametrize(
     ("stdout", "status", "stderr"),
     [
@@ -1815,8 +1850,22 @@ async def test_device_id_error_names_the_last_stderr_line(net: Net):
         await Panel("h").device_id()
 
 
-def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
+@pytest.mark.parametrize(
+    ("variables", "room", "stub_bus_module"),
+    [
+        ({"display_name": {"value": "Kitchen"}}, "Kitchen", True),
+        ({"display_name": {"value": "Two\nLines"}}, "Two Lines", True),
+        ({}, None, True),
+        (None, None, True),
+        ({"display_name": {"value": "Kitchen"}}, None, False),  # no message_bus module
+    ],
+)
+def test_the_identity_script_does_the_hello_of_brilliant_bus(
+    tmp_path: Any, variables: Any, room: str | None, stub_bus_module: bool
+):
     """Run the script itself against stubs of Brilliant's libraries and a fake bus socket."""
+    import base64
+    import json
     import socket as socketlib
     import subprocess
     import sys
@@ -1840,6 +1889,8 @@ def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
         "    def __init__(self, d):\n"
         "        for k, v in d.items():\n"
         "            setattr(self, k, _N(v) if isinstance(v, dict) else v)\n"
+        "    def get(self, key, default=None):\n"
+        "        return getattr(self, key, default)\n"
         "def deserialize(cls, text):\n"
         "    return _N(json.loads(base64.b64decode(text)))\n"
     )
@@ -1850,11 +1901,24 @@ def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
         "class Hello(_Base): pass\n"
         "class Message(_Base): pass\n"
         "class MessageBodyUnion(_Base): pass\n"
+        "class Request(_Base): pass\n"
         "class MessageType:\n"
         "    HELLO = 2\n"
+        "    REQUEST = 3\n"
+        "    RESPONSE = 4\n"
     )
+    if stub_bus_module:
+        mb = tmp_path / "thrift_types" / "message_bus"
+        mb.mkdir()
+        mb.joinpath("__init__.py").write_text("")
+        mb.joinpath("MessageBusService.py").write_text(
+            "class get_peripheral_args:\n"
+            "    def __init__(self, **kw):\n"
+            "        self.__dict__.update(kw)\n"
+            "class get_peripheral_result: pass\n"
+        )
     sock_path = str(tmp_path / "bus.sock")
-    script = bus._DEVICE_ID_SCRIPT.replace(bus.SWITCH_DIR, str(tmp_path)).replace(
+    script = bus._IDENTITY_SCRIPT.replace(bus.SWITCH_DIR, str(tmp_path)).replace(
         bus.BUS_SOCKET, sock_path
     )
     server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
@@ -1862,15 +1926,23 @@ def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
     server.listen(1)
     received: list[bytes] = []
 
+    def encode(obj: Any) -> bytes:
+        return base64.b64encode(json.dumps(obj).encode()) + b"\n"
+
     def serve() -> None:
         conn, _ = server.accept()
         with conn:
-            received.append(conn.makefile("rb").readline())
-            reply = {"body_union": {"hello": {"domain": "deadbeefcafe0123"}}}
-            import base64
-            import json
-
-            conn.sendall(base64.b64encode(json.dumps(reply).encode()) + b"\n")
+            reader = conn.makefile("rb")
+            received.append(reader.readline())
+            conn.sendall(encode({"body_union": {"hello": {"domain": "deadbeefcafe0123"}}}))
+            if not stub_bus_module:
+                return
+            received.append(reader.readline())
+            conn.sendall(encode({"message_type": 9, "body_union": {}}))  # not the response
+            result = {"success": {"variables": variables}}
+            serialized = base64.b64encode(json.dumps(result).encode()).decode()
+            response = {"status": {"status_code": 0}, "result_serialized": serialized}
+            conn.sendall(encode({"message_type": 4, "body_union": {"response": response}}))
 
     thread = threading.Thread(target=serve)
     thread.start()
@@ -1881,9 +1953,17 @@ def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
     server.close()
     assert done.returncode == 0, done.stderr
     assert bus.parse_device_id(done.stdout) == "deadbeefcafe0123"
-    import base64
-    import json
-
+    assert bus.parse_room(done.stdout) == room
     hello = json.loads(base64.b64decode(received[0]))
     assert hello["message_type"] == 2  # HELLO
     assert hello["body_union"]["hello"]["name"] == "ha_kiosk_identity"
+    if stub_bus_module:
+        request = json.loads(base64.b64decode(received[1]))
+        assert request["message_type"] == 3  # REQUEST
+        body = request["body_union"]["request"]
+        assert body["command"] == "get_peripheral"
+        args = json.loads(base64.b64decode(body["args_serialized"]))
+        assert args == {
+            "device_id": "deadbeefcafe0123",
+            "peripheral_name": "art_config_peripheral",
+        }

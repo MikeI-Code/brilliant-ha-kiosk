@@ -43,6 +43,11 @@ def node_of(device_id: str) -> str:
     return f"{NODE_PREFIX}{device_id[:NODE_ID_LENGTH]}"
 
 
+def panel_title(room: str | None, host: str) -> str:
+    """The entry title, and so the device name: Brilliant's room name when it is known."""
+    return f"{room} Brilliant kiosk" if room else f"Brilliant kiosk {host}"
+
+
 def is_fingerprint(unique_id: str | None) -> bool:
     """Whether a unique id is an SSH host key fingerprint, as version 1 entries may have.
 

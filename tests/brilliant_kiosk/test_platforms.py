@@ -408,3 +408,30 @@ async def test_the_coordinator_itself_refuses_to_install_on_a_panel_without_the_
     assert err.value.translation_key == "not_installed"
     releases.download.assert_not_awaited()
     panel.install.assert_not_awaited()
+
+
+async def test_two_panels_added_one_after_the_other_both_have_an_update_state(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    """Each entry's update entity has a state, whichever entry created the shared releases."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    first = make_entry()
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title="Brilliant panel 192.168.1.51",
+        unique_id="brilliant_fedcba987654",
+        version=2,
+        data={**first.data, "host": "192.168.1.51"},
+        options=dict(first.options),
+    )
+    await setup_entry(hass, first)
+    await setup_entry(hass, second)
+    registry = er.async_get(hass)
+    for entry in (first, second):
+        entity = registry.async_get_entity_id("update", DOMAIN, f"{entry.unique_id}_kiosk")
+        assert entity is not None
+        state = hass.states.get(entity)
+        assert state is not None, entity
+        assert state.state != "unavailable"
+        assert state.attributes["friendly_name"]

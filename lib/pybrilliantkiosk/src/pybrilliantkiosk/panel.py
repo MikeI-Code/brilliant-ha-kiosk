@@ -53,6 +53,7 @@ from .models import (
     BusListing,
     BusVariable,
     PanelHealth,
+    PanelIdentity,
     PanelSnapshot,
 )
 from .setup import (
@@ -1063,6 +1064,22 @@ class Panel:
 
     # -- message bus --------------------------------------------------------------------
 
+    async def identity(self) -> PanelIdentity:
+        """The panel's device id and room name, read from the stock firmware's message bus.
+
+        Both come from one Python run with Brilliant's own libraries, so this needs no file of the
+        kiosk. The room is Brilliant's own name for it (``display_name``); it is None when it is
+        not set or cannot be read. Raises :class:`DeviceIdUnavailable` as :meth:`device_id` does.
+        """
+        result = await self._run(bus.identity_command(), check=False)
+        device_id = bus.parse_device_id(result.stdout) if result.exit_status == 0 else None
+        if device_id is None:
+            detail = result.stderr.strip().splitlines()[-1:] or [f"exit {result.exit_status}"]
+            raise DeviceIdUnavailable(
+                f"cannot read the Brilliant device id of {self.host}: {detail[0]}"
+            )
+        return PanelIdentity(device_id, bus.parse_room(result.stdout))
+
     async def device_id(self) -> str:
         """Brilliant's device id of the panel, read from the stock firmware's message bus.
 
@@ -1071,14 +1088,7 @@ class Panel:
         needs no file of the kiosk. Raises :class:`DeviceIdUnavailable` when the bus does not
         answer (it restarts while the kiosk is switched on or off) or gives something else.
         """
-        result = await self._run(bus.device_id_command(), check=False)
-        device_id = bus.parse_device_id(result.stdout) if result.exit_status == 0 else None
-        if device_id is None:
-            detail = result.stderr.strip().splitlines()[-1:] or [f"exit {result.exit_status}"]
-            raise DeviceIdUnavailable(
-                f"cannot read the Brilliant device id of {self.host}: {detail[0]}"
-            )
-        return device_id
+        return (await self.identity()).device_id
 
     async def bus_peripherals(self) -> BusListing:
         """List message-bus peripherals."""

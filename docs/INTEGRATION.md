@@ -567,7 +567,10 @@ In `kiosk` mode the bridge subscribes an explicit list of command topics (no wil
 * With `MQTT_DEVICE_ID` set, the kiosk's `device` block contains only `identifiers`, so entities
   join the integration's device without overwriting its name, model or firmware.
 * The kiosk publishes retained `<base>/kiosk_state` (the status `state`) so the integration sees
-  boot-time changes without SSH.
+  boot-time changes without SSH. It also publishes retained `<base>/discovery`, JSON
+  `{"state", "host", "device_id", "room"}` (`host` is the panel's LAN IPv4 and may be absent,
+  `room` may be null), which the Home Assistant integration is discovered from; `kiosk_state`
+  stays as it is for other integrations.
 
 ### 9.3 Entity ownership in `kiosk` mode
 

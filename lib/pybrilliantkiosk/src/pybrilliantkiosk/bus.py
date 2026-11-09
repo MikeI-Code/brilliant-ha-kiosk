@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+import unicodedata
 from collections.abc import Mapping
 
 from .exceptions import InvalidArgument
@@ -14,26 +15,53 @@ SWITCH_DIR = "/data/switch-embedded"
 BUS_SOCKET = "/var/run/brilliant/server_socket"
 _BASE = f"cd {SWITCH_DIR} && env/bin/python /etc/ha-kiosk/brilliant_bus.py"
 _DEVICE_ID_RE = re.compile(r"^device ([A-Za-z0-9_-]{12,64})$", re.M)
+_ROOM_RE = re.compile(r"^room (.*)$", re.M)
+#: The longest room name kept (Brilliant's own names are a word or two).
+ROOM_MAX_LENGTH = 64
 #: The HELLO of ``tools/brilliant_bus.py``, self-contained: it needs only Brilliant's own Python
 #: and libraries, not one file of the kiosk, so it works on a stock panel (before the kiosk is
 #: installed, and after it was removed). The bus answers a client's HELLO with its own whose
 #: ``domain`` is the panel's device id (docs/hardware-and-services.md, section 6).
-_DEVICE_ID_SCRIPT = f"""import socket, sys
+_IDENTITY_SCRIPT = f"""import socket, sys
 sys.path.insert(0, {SWITCH_DIR!r})
 import lib.serialization as S
 from thrift_types.protocol import ttypes as P
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(10)
 s.connect({BUS_SOCKET!r})
+f = s.makefile("rb")
+def send(number, kind, body):
+    msg = P.Message(message_type=kind, sequence_number=number, body_union=body)
+    s.sendall(S.serialize(msg).encode() + b"\\n")
+def receive():
+    line = f.readline()
+    if not line:
+        raise EOFError("closed")
+    return S.deserialize(P.Message, line.strip().decode())
 hello = P.Hello(name="ha_kiosk_identity", aliases=[])
-msg = P.Message(
-    message_type=P.MessageType.HELLO,
-    sequence_number=1,
-    body_union=P.MessageBodyUnion(hello=hello),
-)
-s.sendall(S.serialize(msg).encode() + b"\\n")
-line = s.makefile("rb").readline()
-print("device", S.deserialize(P.Message, line.strip().decode()).body_union.hello.domain)
+send(1, P.MessageType.HELLO, P.MessageBodyUnion(hello=hello))
+device = receive().body_union.hello.domain
+print("device", device, flush=True)
+try:
+    from thrift_types.message_bus import MessageBusService as M
+    args = M.get_peripheral_args(device_id=device, peripheral_name="art_config_peripheral")
+    request = P.Request(
+        command="get_peripheral", args_serialized=S.serialize(args), is_oneway=False
+    )
+    send(2, P.MessageType.REQUEST, P.MessageBodyUnion(request=request))
+    while True:
+        message = receive()
+        if message.message_type == P.MessageType.RESPONSE:
+            break
+    response = message.body_union.response
+    if response.status.status_code != 0:
+        raise RuntimeError("refused")
+    peripheral = S.deserialize(M.get_peripheral_result, response.result_serialized).success
+    room = (peripheral.variables or {{}}).get("display_name")
+    if room is not None:
+        print("room", " ".join(str(room.value).splitlines()))
+except Exception:
+    pass
 """
 _PERIPHERAL_RE = re.compile(r"^\s+(\S+)\s+\((\d+) variables\)\s*$")
 _VARIABLE_RE = re.compile(r"^(\S+) =(?: (.*?))?(   \[read-only\])?$")
@@ -47,15 +75,27 @@ def validate_name(name: str, what: str = "name") -> str:
     return name
 
 
-def device_id_command() -> str:
-    """Shell command printing ``device <id>``: Brilliant's id of the panel, from the stock bus."""
-    return f"cd {SWITCH_DIR} && env/bin/python -c {shlex.quote(_DEVICE_ID_SCRIPT)}"
+def identity_command() -> str:
+    """Shell command printing ``device <id>`` and, if known, ``room <name>`` (stock bus)."""
+    return f"cd {SWITCH_DIR} && env/bin/python -c {shlex.quote(_IDENTITY_SCRIPT)}"
 
 
 def parse_device_id(output: str) -> str | None:
-    """The device id in the output of :func:`device_id_command` (None if it is not valid)."""
+    """The device id in the output of :func:`identity_command` (None if it is not valid)."""
     match = _DEVICE_ID_RE.search(output)
     return match.group(1) if match else None
+
+
+def parse_room(output: str) -> str | None:
+    """The room name in the output of :func:`identity_command`, cleaned (None if absent or blank).
+
+    Control characters are dropped, the text is stripped and cut to :data:`ROOM_MAX_LENGTH`.
+    """
+    match = _ROOM_RE.search(output)
+    if match is None:
+        return None
+    text = "".join(c for c in match.group(1) if unicodedata.category(c)[0] != "C")
+    return text.strip()[:ROOM_MAX_LENGTH].strip() or None
 
 
 def list_command() -> str:

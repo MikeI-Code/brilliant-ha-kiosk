@@ -96,6 +96,14 @@ class BusListing:
 
 
 @dataclass(frozen=True, slots=True)
+class PanelIdentity:
+    """Who a panel is, from the stock firmware: its device id and the room it is named after."""
+
+    device_id: str
+    room: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class BusVariable:
     """A message-bus variable."""
 

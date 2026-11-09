@@ -29,6 +29,7 @@ from .models import (
     BusPeripheral,
     BusVariable,
     PanelHealth,
+    PanelIdentity,
     PanelSnapshot,
     Release,
 )
@@ -37,7 +38,7 @@ from .releases import Releases
 from .setup import SetupStatus
 from .versions import KioskVersion, is_newer, parse_version
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 __all__ = [
     "OVERRIDE_KEYS",
@@ -61,6 +62,7 @@ __all__ = [
     "Panel",
     "PanelError",
     "PanelHealth",
+    "PanelIdentity",
     "PanelSnapshot",
     "Release",
     "ReleaseError",

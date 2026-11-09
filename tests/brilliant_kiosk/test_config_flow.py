@@ -118,7 +118,7 @@ async def test_user_flow_confirms_host_key_before_using_the_password(
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == f"Brilliant panel {HOST}"
+    assert result["title"] == f"Brilliant kiosk {HOST}"
     assert result["data"] == {
         **USER_INPUT,
         CONF_PORT: 22,
@@ -225,7 +225,7 @@ async def test_the_device_id_is_read_from_the_stock_firmware_not_from_kiosk_file
     result = await connect(hass)
     assert result["step_id"] == "install"
     assert hass.config_entries.flow.async_progress()[0]["context"]["unique_id"] == UNIQUE_ID
-    panel.device_id.assert_awaited()
+    panel.identity.assert_awaited()
     panel.bus_peripherals.assert_not_called()
 
 
