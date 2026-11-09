@@ -145,12 +145,54 @@ def renonce(command: str, result: Any) -> Any:
     return result
 
 
+class FakeProcess:
+    """What ``create_process`` returns: waiting runs the command (see ``FakeConn.run``)."""
+
+    def __init__(self, conn: "FakeConn", command: str, kw: dict[str, Any]) -> None:
+        self.conn = conn
+        self.command = command
+        self.kw = kw
+        self.killed = False
+        self.closed = False
+        #: Set by a test to make the channel hang or fail while it is being closed.
+        self.kill_error: BaseException | None = None
+        self.close_wait: Any = None
+
+    async def wait(self, check: bool = False, timeout: float | None = None) -> Any:  # noqa: ASYNC109
+        return await self.conn.run(self.command, check=check, timeout=timeout, **self.kw)
+
+    def kill(self) -> None:
+        self.killed = True
+        if self.kill_error:
+            raise self.kill_error
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        if self.close_wait:
+            await self.close_wait()
+
+
 class FakeConn:
     def __init__(self, handler: Any) -> None:
         self.handler = handler
         self.calls: list[tuple[str, Any]] = []
         self.closed = False
         self.sftp = FakeSFTP([])
+        self.processes: list[FakeProcess] = []
+        #: Called with each new process (tests make a close hang or kill fail here).
+        self.on_process: Any = None
+        self.create_error: BaseException | None = None
+
+    async def create_process(self, command: str, **kw: Any) -> FakeProcess:
+        if self.create_error:
+            raise self.create_error
+        process = FakeProcess(self, command, kw)
+        self.processes.append(process)
+        if self.on_process:
+            self.on_process(process)
+        return process
 
     async def run(self, command: str, **kw: Any) -> Any:
         assert kw["check"] is False
@@ -379,6 +421,61 @@ async def test_command_timeout(net: Net):
     net.conn.handler = lambda c, i: TimeoutError()
     with pytest.raises(CannotConnect, match="timed out"):
         await Panel("h").stop("ha-kiosk")
+
+
+async def test_a_timed_out_command_is_killed_and_its_channel_closed(net: Net):
+    net.conn.handler = lambda c, i: TimeoutError()
+    panel = Panel("h")
+    with pytest.raises(CannotConnect, match="timed out"):
+        await panel.stop("ha-kiosk")
+    (process,) = net.conn.processes
+    assert process.killed
+    assert process.closed
+    assert not net.conn.closed  # the connection stays usable
+    net.conn.handler = lambda c, i: out()
+    await panel.stop("ha-kiosk")
+    assert net.connects == 1
+
+
+@pytest.mark.parametrize("failure", ["kill_raises", "close_hangs", "close_raises", "no_process"])
+async def test_a_timed_out_command_whose_channel_will_not_close_drops_the_connection(
+    net: Net, monkeypatch: pytest.MonkeyPatch, failure: str
+):
+    import asyncio
+
+    from pybrilliantkiosk import panel as panel_module
+
+    monkeypatch.setattr(panel_module, "_ABANDON_GRACE", 0.01)
+    net.conn.handler = lambda c, i: TimeoutError()
+
+    def sabotage(process: FakeProcess) -> None:
+        if failure == "kill_raises":
+            process.kill_error = OSError("channel closed")  # suppressed; the close is still tried
+        if failure == "close_hangs":
+            process.close_wait = lambda: asyncio.sleep(10)
+        if failure == "close_raises":
+
+            async def broken() -> None:
+                raise OSError("gone")
+
+            process.close_wait = broken
+
+    net.conn.on_process = sabotage
+    if failure == "no_process":
+        net.conn.create_error = TimeoutError()
+    panel = Panel("h")
+    with pytest.raises(CannotConnect, match="timed out"):
+        await panel.stop("ha-kiosk")
+    if failure == "kill_raises":
+        assert not net.conn.closed  # killing failed but the channel did close: connection kept
+    else:
+        assert net.conn.closed
+        assert panel._conn is None
+        net.conn.closed = False
+        net.conn.create_error = None
+        net.conn.handler = lambda c, i: out()
+        await panel.stop("ha-kiosk")
+        assert net.connects == 2  # a new connection replaced the dropped one
 
 
 HEALTH_OUT = """uptime=12345.67

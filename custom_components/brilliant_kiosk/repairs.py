@@ -95,8 +95,9 @@ class ReapplyMqttProviderFlow(_PanelFixFlow):
 class ReconcileEnvFlow(_PanelFixFlow):
     """Write the running settings to both copies of kiosk.env.
 
-    With an unsafe running value this fails with the library's translated error (such a line is
-    never rewritten), which the form shows; the issue names the keys to fix on the panel.
+    Only offered for a drift without unsafe values (those issues are not fixable, see
+    ``BrilliantKioskCoordinator._sync_drift_issue``). Should one appear between the issue and the
+    submit, the library's translated error (such a line is never rewritten) is shown on the form.
     """
 
     error_key = "reconcile_failed"
@@ -106,7 +107,6 @@ class ReconcileEnvFlow(_PanelFixFlow):
         return {
             "host": str(entry.data[CONF_HOST]),
             "keys": ", ".join(data.drift),
-            "unsafe": ", ".join(data.unsafe),
             "error": "",
         }
 

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from custom_components.brilliant_kiosk.const import DOMAIN
+from homeassistant.auth.models import User
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from pybrilliantkiosk import (
@@ -108,36 +109,37 @@ async def test_busy_panel_is_reported_as_a_translated_error(
         await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}})
 
 
-@pytest.mark.parametrize("value", ["0", "off", "OFF", "false", "no", ""])
-async def test_set_env_rejects_mqtt_off(
-    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, value: str
+@pytest.mark.parametrize("key", ["KIOSK_MQTT", "MQTT_DEVICE_ID"])
+@pytest.mark.parametrize("value", ["0", "off", "1", "kiosk", ""])
+async def test_set_env_refuses_the_mqtt_provider_keys(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, key: str, value: str
 ) -> None:
+    """The provider is an option: set_env would leave the options and the panel disagreeing."""
     entry = await loaded(hass, panel, releases)
-    with pytest.raises(ServiceValidationError, match="cannot be switched off"):
-        await call(
-            hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"KIOSK_MQTT": value}}
-        )
+    with pytest.raises(ServiceValidationError, match="Settings > Devices & services") as err:
+        await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {key: value}})
+    assert err.value.translation_key == "mqtt_set_in_options"
     panel.set_env.assert_not_awaited()
 
 
-async def test_set_env_rejects_deleting_mqtt_and_empty(
-    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+@pytest.mark.parametrize("key", ["KIOSK_MQTT", "MQTT_DEVICE_ID"])
+async def test_set_env_refuses_deleting_the_mqtt_provider_keys_and_empty_calls(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, key: str
 ) -> None:
     entry = await loaded(hass, panel, releases)
-    with pytest.raises(ServiceValidationError, match="cannot be switched off"):
-        await call(hass, "set_env", {"config_entry_id": entry.entry_id, "delete": ["KIOSK_MQTT"]})
+    with pytest.raises(ServiceValidationError, match="Configure"):
+        await call(hass, "set_env", {"config_entry_id": entry.entry_id, "delete": [key]})
     with pytest.raises(ServiceValidationError, match="at least one"):
         await call(hass, "set_env", {"config_entry_id": entry.entry_id})
+    panel.set_env.assert_not_awaited()
 
 
-async def test_set_env_allows_mqtt_modes(
+async def test_set_env_still_writes_other_settings_next_to_the_mqtt_ones(
     hass: HomeAssistant, panel: MagicMock, releases: MagicMock
 ) -> None:
     entry = await loaded(hass, panel, releases)
-    await call(
-        hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"KIOSK_MQTT": "kiosk"}}
-    )
-    panel.set_env.assert_awaited_with({"KIOSK_MQTT": "kiosk"}, [], restart=False)
+    await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DIM_LEVEL": 3}})
+    panel.set_env.assert_awaited_with({"DIM_LEVEL": "3"}, [], restart=False)
 
 
 async def test_get_env(hass: HomeAssistant, panel: MagicMock, releases: MagicMock) -> None:
@@ -431,3 +433,125 @@ async def test_diagnostics_scrub_whole_tokens_only(
         "**REDACTED** failed; login425 and mylogin42x are other words; (**REDACTED**), "
         "**REDACTED**."
     )
+
+
+# -- a first install happens only in the config flow ---------------------------------------------
+
+
+async def test_install_version_refuses_a_panel_without_the_kiosk(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    """Without env and token a first install fails slowly and restores the stock UI."""
+    panel.setup_status.return_value = SetupStatus(state="not_installed")
+    entry = await loaded(hass, panel, releases)
+    for tag in (STABLE.tag, "no-such-release"):  # the refusal comes before any lookup
+        with pytest.raises(ServiceValidationError, match="not installed on this panel") as err:
+            await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": tag})
+        assert err.value.translation_key == "not_installed"
+    releases.download.assert_not_awaited()
+    panel.install.assert_not_awaited()
+
+
+async def test_install_version_still_works_once_the_kiosk_is_there(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    panel.setup_status.return_value = SetupStatus(state="not_installed")
+    entry = await loaded(hass, panel, releases)
+    panel.setup_status.return_value = SetupStatus(state="unmanaged")  # installed by hand
+    await entry.runtime_data.async_refresh()
+    await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": STABLE.tag})
+    panel.install.assert_awaited_once()
+
+
+# -- the logs action scrubs what the panel's journal says ----------------------------------------
+
+TOKEN = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJhYmMxMjMifQ.c2lnbmF0dXJlc2lnbmF0dXJl"
+
+
+async def test_logs_are_scrubbed_like_the_diagnostics_and_of_tokens(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    panel.logs.return_value = "\n".join(
+        [
+            f"connecting to {HOST} as {NODE}",  # the panel's own address and node
+            "peer 10.1.2.3 and fe80::1:2:3 seen",  # any address
+            f"Authorization: Bearer {TOKEN}",
+            f"retry with token={TOKEN} now",
+            "mqtt password: hunter2hunter2 rejected",
+            "api_key = abcd1234",
+            "key 0123456789abcdef0123456789abcdef0123456789abcdef used",
+            "token expired, ordinary words stay",
+            "12:30:45 DIM_LEVEL=4 ok",
+        ]
+    )
+    result = await call(
+        hass, "logs", {"config_entry_id": entry.entry_id, "unit": "ha-kiosk.service"}, response=True
+    )
+    text = result["logs"]
+    for secret in (HOST, NODE, "10.1.2.3", "fe80::1:2:3", TOKEN, "hunter2hunter2", "abcd1234"):
+        assert secret not in text
+    assert "0123456789abcdef0123456789abcdef" not in text
+    assert "Authorization: **REDACTED**" in text  # the name stays, the value goes
+    assert "token expired, ordinary words stay" in text
+    assert "12:30:45 DIM_LEVEL=4 ok" in text
+    assert text.count("**REDACTED**") >= 8
+
+
+async def test_logs_scrub_the_identifiers_of_the_panels_own_settings(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    panel.get_settings.return_value = {"MQTT_HOST": "broker.lan", "MQTT_USER": "mqttuser1"}
+    entry = await loaded(hass, panel, releases)
+    panel.logs.return_value = "connect broker.lan as mqttuser1 failed"
+    result = await call(
+        hass, "logs", {"config_entry_id": entry.entry_id, "unit": "ha-kiosk.service"}, response=True
+    )
+    assert result == {"logs": "connect **REDACTED** as **REDACTED** failed"}
+
+
+# -- the actions are for administrators -----------------------------------------------------------
+
+ACTIONS = {
+    "set_env": {"values": {"DAY_LEVEL": 9}},
+    "get_env": {},
+    "bus_get": {"peripheral": "p"},
+    "bus_set": {"peripheral": "p", "values": {"a": 1}},
+    "logs": {"unit": "ha-kiosk.service"},
+    "install_version": {"tag": "v1.5.0"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(ACTIONS))
+async def test_a_user_who_is_not_an_administrator_cannot_call_the_actions(
+    hass: HomeAssistant,
+    panel: MagicMock,
+    releases: MagicMock,
+    hass_read_only_user: User,
+    hass_admin_user: User,
+    name: str,
+) -> None:
+    from homeassistant.core import Context
+    from homeassistant.exceptions import Unauthorized
+
+    entry = await loaded(hass, panel, releases)
+    data = {"config_entry_id": entry.entry_id, **ACTIONS[name]}
+    response = name in {"get_env", "bus_get", "logs"}
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            name,
+            data,
+            blocking=True,
+            context=Context(user_id=hass_read_only_user.id),
+            return_response=response,
+        )
+    panel.set_env.assert_not_awaited()
+    panel.install.assert_not_awaited()
+    panel.bus_set.assert_not_awaited()
+    panel.logs.assert_not_awaited()
+    # An administrator, and an automation (no user), are let through.
+    for context in (Context(user_id=hass_admin_user.id), Context()):
+        await hass.services.async_call(
+            DOMAIN, name, data, blocking=True, context=context, return_response=response
+        )

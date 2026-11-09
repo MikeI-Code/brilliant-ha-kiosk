@@ -1,5 +1,6 @@
 """End-to-end against an in-process asyncssh server on loopback (no panel, no network)."""
 
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -39,8 +40,41 @@ class _Server(asyncssh.SSHServer):
 stored: dict[str, bytes] = {}
 
 
+#: What the loopback "panel" saw of the commands that hang: ``started``, a signal it was sent
+#: (``signal:KILL``) and ``channel closed`` (the client closed the channel).
+hung: list[str] = []
+
+
+async def _hang(process: Any) -> None:
+    """A command that never ends by itself (the stand-in for a stuck ``ha-kiosk-setup`` job)."""
+    hung.append("started")
+    while not process.channel.is_closing():  # noqa: ASYNC110 - asyncssh has no event for it
+        await asyncio.sleep(0.01)
+    hung.append("channel closed")
+
+
+@pytest.fixture
+def signals_seen(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the SSH signals the loopback server receives; ``hang`` dies of one, ``hang-deaf``
+    ignores it (like an sshd that does not implement signal requests)."""
+    hung.clear()
+    original = asyncssh.process.SSHServerProcess.signal_received
+
+    def signal_received(self: Any, signal: str) -> None:
+        hung.append(f"signal:{signal}")
+        original(self, signal)
+        if self.command == "hang":
+            self.exit_with_signal(signal)
+
+    monkeypatch.setattr(asyncssh.process.SSHServerProcess, "signal_received", signal_received)
+    return hung
+
+
 async def _handle(process: Any) -> None:
     cmd = process.command
+    if cmd in ("hang", "hang-deaf"):
+        await _hang(process)
+        return
     stdin = await process.stdin.read()
     if cmd.startswith("cat > "):
         stored[cmd[6:]] = stdin
@@ -160,6 +194,62 @@ async def test_real_stdin_reaches_the_process_intact(port: int, data: str | byte
         result = await panel._run("echo-stdin", stdin=data)
     expected = data.encode() if isinstance(data, str) else data
     assert result.stdout == expected.decode("utf-8", "replace")
+
+
+async def _seen(what: str) -> None:
+    for _ in range(300):
+        if what in hung:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the loopback panel never saw {what!r}: {hung}")
+
+
+async def test_real_timed_out_command_is_killed_and_the_connection_still_works(
+    port: int, signals_seen: list[str]
+):
+    async with Panel("127.0.0.1", port=port, password="pw", timeout=0.3) as panel:
+        await panel.connect()
+        conn = panel._conn
+        with pytest.raises(CannotConnect, match="timed out"):
+            await panel._run("hang")
+        await _seen("signal:KILL")  # the process was told to die, not left running
+        assert hung[0] == "started"
+        assert panel._conn is conn  # the connection was not thrown away
+        assert (await panel._run("echo-stdin", stdin="still usable")).stdout == "still usable"
+
+
+async def test_real_timed_out_command_that_ignores_kill_still_has_its_channel_closed(
+    port: int, signals_seen: list[str]
+):
+    async with Panel("127.0.0.1", port=port, password="pw", timeout=0.3) as panel:
+        await panel.connect()
+        conn = panel._conn
+        with pytest.raises(CannotConnect, match="timed out"):
+            await panel._run("hang-deaf")
+        await _seen("channel closed")  # the channel did not stay open next to the dead command
+        assert "signal:KILL" in hung
+        assert panel._conn is conn
+        assert (await panel._run("echo-stdin", stdin="still usable")).stdout == "still usable"
+
+
+async def test_real_timed_out_command_whose_channel_never_closes_replaces_the_connection(
+    port: int, signals_seen: list[str], monkeypatch: pytest.MonkeyPatch
+):
+
+    async def never(self: Any) -> None:
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(panel_module, "_ABANDON_GRACE", 0.05)
+    async with Panel("127.0.0.1", port=port, password="pw", timeout=0.3) as panel:
+        await panel.connect()
+        conn = panel._conn
+        monkeypatch.setattr(asyncssh.SSHClientProcess, "wait_closed", never)
+        with pytest.raises(CannotConnect, match="timed out"):
+            await panel._run("hang")
+        monkeypatch.undo()
+        assert panel._conn is None  # dropped: the next command connects afresh
+        assert (await panel._run("echo-stdin", stdin="new connection")).stdout == "new connection"
+        assert panel._conn is not conn
 
 
 # -- a password-only panel never offers (or authenticates with) the host's own default keys --------

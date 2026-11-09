@@ -10,11 +10,13 @@
           "host": "Host",
           "username": "Username",
           "password": "Password",
+          "port": "SSH port",
           "expected_fingerprint": "Expected host key fingerprint (optional)",
           "private_key": "Private key (optional)"
         },
         "data_description": {
           "host": "IP address or host name of the panel.",
+          "port": "SSH port of the panel, normally 22.",
           "username": "SSH user, normally root.",
           "password": "SSH password of that user. Optional when you paste a private key.",
           "expected_fingerprint": "Paste the panel's SHA256 host key fingerprint (SHA256:...) to verify it up front (ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub on the panel) and skip the confirmation step. MD5 fingerprints are not accepted.",
@@ -56,10 +58,12 @@
       "reconfigure": {
         "title": "Change the panel address",
         "data": {
-          "host": "Host"
+          "host": "Host",
+          "port": "SSH port"
         },
         "data_description": {
-          "host": "The new address should reach the same panel. A different SSH host key is shown for your confirmation."
+          "host": "The new address should reach the same panel. A different SSH host key is shown for your confirmation.",
+          "port": "SSH port of the panel at the new address, normally 22."
         }
       },
       "host_key": {
@@ -108,7 +112,8 @@
       "already_configured": "Device is already configured",
       "reauth_successful": "Re-authentication was successful",
       "reconfigure_successful": "Re-configuration was successful",
-      "unique_id_mismatch": "That is a different panel than the one in this entry.",
+      "unique_id_mismatch": "The panel at that address is a different panel than expected: its Brilliant device id does not match.",
+      "kiosk_not_active": "The kiosk of this panel is not running (it was removed, switched off or failed to start), so the panel was not offered. Add it by hand under Add integration if you want to install or monitor it.",
       "unknown": "Unexpected error",
       "device_id_unavailable": "Home Assistant could not read this panel's Brilliant device id. It is what identifies the panel (the SSH host key changes when a panel is re-flashed), so the panel was not added. Brilliant's own software must be running: it restarts for a minute or two when the kiosk is switched on or off, and after a reboot. Wait a few minutes and try again."
     },
@@ -266,8 +271,8 @@
     "entry_not_loaded": {
       "message": "The panel {title} is not loaded."
     },
-    "mqtt_cannot_be_disabled": {
-      "message": "KIOSK_MQTT cannot be switched off or removed: the panel must always publish over MQTT."
+    "mqtt_set_in_options": {
+      "message": "KIOSK_MQTT and MQTT_DEVICE_ID belong to the MQTT provider and cannot be set or deleted here. Change them under Settings > Devices & services > Brilliant Kiosk > Configure, so the options and the panel stay in step and MQTT is never switched off."
     },
     "nothing_to_change": {
       "message": "Give at least one value to set or one key to delete."
@@ -303,7 +308,7 @@
       "message": "The update failed and no earlier kiosk version could be started, so the panel shows Brilliant's own screen again: {error} Check the panel, then install the kiosk again."
     },
     "not_installed": {
-      "message": "The kiosk is not installed on this panel with ha-kiosk-setup, so this cannot be done: {error} Install it first."
+      "message": "The kiosk is not installed on this panel with ha-kiosk-setup, so this cannot be done: {error} Install it first: a first install is only offered by the setup dialog, so remove this panel and add it again, then choose to install the kiosk."
     },
     "setup_failed": {
       "message": "ha-kiosk-setup failed on the panel: {error}"
@@ -349,26 +354,13 @@
     },
     "env_drift_unsafe": {
       "title": "Panel settings differ and some cannot be fixed from Home Assistant",
-      "fix_flow": {
-        "step": {
-          "confirm": {
-            "title": "Settings that need a fix on the panel",
-            "description": "The running settings of {host} (/etc/ha-kiosk/kiosk.env) and the saved copy differ in: {keys}. Of these, {unsafe} contain characters that are not allowed (quotes, backslash, $ or a backtick). That file is read by shell scripts running as root, so Home Assistant never rewrites such a line and will not replace it with the saved value either. Edit those lines on the panel (or set the values with the Set settings action). Select Submit to try again."
-          }
-        },
-        "error": {
-          "reconcile_failed": "The panel refused the change: {error}"
-        },
-        "abort": {
-          "not_loaded": "The panel is not loaded. Reload the integration first."
-        }
-      }
+      "description": "The running settings of {host} (/etc/ha-kiosk/kiosk.env) and the saved copy (/var/lib/ha-kiosk/config/kiosk.env) differ in: {keys}. Of these, {unsafe} contain characters that are not allowed (quotes, backslash, $ or a backtick). Those files are read by shell scripts running as root, so Home Assistant never rewrites such a line, and this cannot be fixed from Home Assistant.\n\nFix it on the panel over SSH, in one of two ways. Edit the {unsafe} lines in /etc/ha-kiosk/kiosk.env to remove the characters; this issue then becomes fixable here and can write the values to both copies. Or run `ha-kiosk-setup reapply`, which rebuilds the running copy from the saved one and drops the running values."
     }
   },
   "services": {
     "set_env": {
       "name": "Set settings",
-      "description": "Merges settings into the panel's kiosk.env. KIOSK_MQTT cannot be switched off.",
+      "description": "Merges settings into the panel's kiosk.env. KIOSK_MQTT and MQTT_DEVICE_ID (the MQTT provider) are refused: change them in the integration's options.",
       "fields": {
         "config_entry_id": {
           "name": "Panel",
@@ -432,7 +424,7 @@
     },
     "logs": {
       "name": "Get logs",
-      "description": "Returns the last journal lines of a kiosk service.",
+      "description": "Returns the last journal lines of a kiosk service, with the panel's address, ids, logins, IP addresses and anything that looks like a token or password removed (a best-effort scrub, as in the diagnostics).",
       "fields": {
         "config_entry_id": {
           "name": "Panel",

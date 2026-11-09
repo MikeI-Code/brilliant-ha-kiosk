@@ -54,6 +54,7 @@ def is_fingerprint(unique_id: str | None) -> bool:
 
 
 DEFAULT_USERNAME: Final = "root"
+DEFAULT_PORT: Final = 22
 SCAN_INTERVAL: Final = timedelta(seconds=60)
 RELEASES_INTERVAL: Final = timedelta(hours=6)
 
@@ -79,7 +80,8 @@ CONF_MANAGE_INSTALLS: Final = "manage_installs"
 #: ha-kiosk-setup v1.4.0 accepts 1/0/kiosk (not "full"/"off"); "1" is the built-in full mode.
 PANEL_MQTT_KIOSK: Final = "kiosk"
 PANEL_MQTT_FULL: Final = "1"
-MQTT_DISABLED_VALUES: Final = ("", "0", "off", "false", "no")
+#: kiosk.env keys that belong to the MQTT provider option: set in the options, never with set_env.
+MQTT_PROVIDER_KEYS: Final = ("KIOSK_MQTT", "MQTT_DEVICE_ID")
 
 
 def provider_of(settings: Mapping[str, str]) -> str:
@@ -100,5 +102,14 @@ ISSUE_ENV_DRIFT: Final = "env_drift"
 ISSUE_ENV_DRIFT_UNSAFE: Final = "env_drift_unsafe"
 
 CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
-#: hass.data key of the ReleasesCoordinator shared by all panels (GitHub allows 60 requests/h).
-DATA_RELEASES: Final = "releases"
+
+#: Where the documentation explains how to fix what a repair issue cannot fix from Home Assistant.
+TROUBLESHOOTING_URL: Final = (
+    "https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/docs/"
+    "home-assistant-integration.md#troubleshooting"
+)
+
+#: The retained ``<base>/kiosk_state`` of a kiosk that is running. The kiosk and ha-kiosk-setup
+#: publish ``not_installed``, ``disabled`` and ``failed`` otherwise; only a running kiosk is
+#: offered by MQTT discovery (a stale retained message of an uninstalled panel is not).
+KIOSK_STATE_ACTIVE: Final = "active"

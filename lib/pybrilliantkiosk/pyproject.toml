@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pybrilliantkiosk"
-version = "0.1.1"
+version = "0.1.2"
 description = "Async client for managing Brilliant smart-panel kiosks (ha-kiosk) over SSH"
 readme = "README.md"
 license = { file = "LICENSE" }

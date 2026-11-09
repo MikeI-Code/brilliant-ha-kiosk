@@ -11,6 +11,6 @@
   "loggers": ["pybrilliantkiosk", "asyncssh"],
   "mqtt": ["brilliant_kiosk/+/kiosk_state"],
   "quality_scale": "platinum",
-  "requirements": ["pybrilliantkiosk==0.1.1"],
+  "requirements": ["pybrilliantkiosk==0.1.2"],
   "version": "0.1.0"
 }

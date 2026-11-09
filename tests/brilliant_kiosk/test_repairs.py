@@ -13,10 +13,11 @@ from custom_components.brilliant_kiosk.const import (
     DOMAIN,
     PROVIDER_BRILLIANT_MQTT,
     PROVIDER_BUILTIN,
+    TROUBLESHOOTING_URL,
     provider_of,
 )
 from custom_components.brilliant_kiosk.repairs import async_create_fix_flow
-from homeassistant import config_entries
+from homeassistant import config_entries, data_entry_flow
 from homeassistant.components.repairs.issue_handler import RepairsFlowManager
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -108,7 +109,7 @@ async def test_options_preselect_follows_the_panel_when_no_option_is_stored(
     }
     assert defaults[CONF_MQTT_PROVIDER] == preselected
     assert defaults[CONF_MANAGE_INSTALLS] is (preselected == PROVIDER_BUILTIN)
-    assert entry.runtime_data.mqtt_provider == PROVIDER_BUILTIN  # nothing stored: built-in
+    assert entry.runtime_data.mqtt_provider == preselected  # nothing stored: the panel decides
 
 
 async def test_builtin_provider_without_kiosk_mqtt_writes_nothing(
@@ -309,10 +310,13 @@ async def test_drift_fix_failure_shows_the_error(
     assert "HA_URL" in result["description_placeholders"]["error"]
 
 
-async def test_unsafe_running_values_raise_a_drift_issue_that_says_so(
+async def test_unsafe_running_values_raise_an_issue_that_cannot_be_fixed_here(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
-    """A hand-set unsafe running value: never rewritten, named in the issue and in the fix."""
+    """A hand-set unsafe running value is never rewritten: the issue is not offered as fixable.
+
+    Its fix would always fail, so it says how to fix it on the panel and links to the docs.
+    """
     panel.env_drift.return_value = ("HA_URL", "DAY_LEVEL")
     panel.unsafe = ("HA_URL",)
     entry = make_entry()
@@ -321,31 +325,52 @@ async def test_unsafe_running_values_raise_a_drift_issue_that_says_so(
     issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
     assert issue is not None
     assert issue.translation_key == "env_drift_unsafe"
-    assert issue.is_fixable is True
+    assert issue.is_fixable is False
+    assert issue.learn_more_url == TROUBLESHOOTING_URL
+    assert TROUBLESHOOTING_URL.endswith("/docs/home-assistant-integration.md#troubleshooting")
     assert issue.translation_placeholders["unsafe"] == "HA_URL"
     assert issue.translation_placeholders["keys"] == "HA_URL, DAY_LEVEL"
     assert entry.runtime_data.data.unsafe == ("HA_URL",)
 
-    panel.reconcile_env.side_effect = InvalidArgument(
-        "the running kiosk.env has values that cannot be written safely (HA_URL)"
-    )
-    manager, result = await start_fix(hass, issue_id)
-    assert result["description_placeholders"]["unsafe"] == "HA_URL"
-    result = await manager.async_configure(result["flow_id"], {})
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "reconcile_failed"}
-    assert "cannot be written safely (HA_URL)" in result["description_placeholders"]["error"]
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+    # Home Assistant itself refuses to start a fix for an issue that is not fixable.
+    assert await async_setup_component(hass, "repairs", {})
+    with pytest.raises(data_entry_flow.UnknownStep):
+        await RepairsFlowManager(hass).async_init(DOMAIN, data={"issue_id": issue_id})
+    panel.reconcile_env.assert_not_awaited()
 
-    # Fixed on the panel meanwhile: the next poll turns it into the plain drift issue, then none.
+    # Fixed on the panel meanwhile: the next poll turns it into the plain, fixable drift issue.
     panel.unsafe = ()
     await entry.runtime_data.async_refresh()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
     assert issue is not None
     assert issue.translation_key == "env_drift"
+    assert issue.is_fixable is True
+    assert issue.learn_more_url is None
     panel.env_drift.return_value = ()
     await entry.runtime_data.async_refresh()
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_a_value_that_turns_unsafe_while_the_fix_is_open_is_reported_on_the_form(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    panel.env_drift.return_value = ("DAY_LEVEL",)
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    issue_id = f"env_drift_{entry.entry_id}"
+    manager, result = await start_fix(hass, issue_id)
+    assert result["description_placeholders"] == {
+        "host": HOST,
+        "keys": "DAY_LEVEL",
+        "error": "",
+    }
+    panel.reconcile_env.side_effect = InvalidArgument(
+        "the running kiosk.env has values that cannot be written safely (HA_URL)"
+    )
+    result = await manager.async_configure(result["flow_id"], {})
+    assert result["errors"] == {"base": "reconcile_failed"}
+    assert "cannot be written safely (HA_URL)" in result["description_placeholders"]["error"]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 
 
 async def test_no_drift_means_no_issue_and_a_broken_read_is_not_drift(
@@ -382,10 +407,20 @@ def test_fixable_issues_have_fix_flow_texts(name: str) -> None:
     for key, error in (
         ("mqtt_provider_not_applied", "apply_failed"),
         ("env_drift", "reconcile_failed"),
-        ("env_drift_unsafe", "reconcile_failed"),
     ):
         fix_flow = texts["issues"][key]["fix_flow"]
         assert "description" in fix_flow["step"]["confirm"]
         assert error in fix_flow["error"]
         assert "not_loaded" in fix_flow["abort"]
         assert "save the options again" not in json.dumps(texts["issues"][key]).lower()
+    unsafe = texts["issues"]["env_drift_unsafe"]
+    assert "fix_flow" not in unsafe  # not fixable from Home Assistant: a description instead
+    for needle in (
+        "/etc/ha-kiosk/kiosk.env",
+        "ha-kiosk-setup reapply",
+        "{unsafe}",
+        "{keys}",
+        "{host}",
+    ):
+        assert needle in unsafe["description"]
+    assert "cannot be fixed from Home Assistant" in unsafe["description"]

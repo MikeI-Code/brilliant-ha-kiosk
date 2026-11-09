@@ -17,8 +17,8 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.network import NoURLAvailableError, get_url
 from homeassistant.helpers.selector import (
@@ -64,8 +64,10 @@ from .const import (
     CONF_NODE,
     CONF_PRIVATE_KEY,
     CONF_TOKEN,
+    DEFAULT_PORT,
     DEFAULT_USERNAME,
     DOMAIN,
+    KIOSK_STATE_ACTIVE,
     PANEL_MQTT_FULL,
     PROVIDER_BRILLIANT_MQTT,
     PROVIDER_BUILTIN,
@@ -104,6 +106,7 @@ async def probe_panel(
     private_key: str | None = None,
     *,
     require_node: bool = True,
+    port: int = DEFAULT_PORT,
 ) -> Probe:
     """Connect, read the state of the panel and close again. Raises library errors.
 
@@ -121,6 +124,7 @@ async def probe_panel(
         username=username,
         password=password or None,
         private_key=private_key or None,
+        port=port,
         host_key=host_key,
     )
     try:
@@ -142,6 +146,20 @@ async def probe_panel(
         installed=status.installed,
         settings=settings,
     )
+
+
+def _port_of(data: Mapping[str, Any]) -> int:
+    """The SSH port of a config entry (entries made before the port was asked for use 22)."""
+    return int(data.get(CONF_PORT, DEFAULT_PORT))
+
+
+_PORT = vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))
+
+
+def _kiosk_state(payload: str | bytes | bytearray) -> str:
+    """The retained ``kiosk_state`` text (the MQTT payload may arrive as bytes)."""
+    text = payload if isinstance(payload, str) else bytes(payload).decode("utf-8", "replace")
+    return text.strip()
 
 
 def _error_key(err: Exception) -> str:
@@ -238,16 +256,35 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         self._install_input: dict[str, Any] = {}
         self._install_task: asyncio.Task[None] | None = None
         self._install_error: tuple[str, str] = ("unknown", "")
+        #: The node of the panel this flow was discovered for; the panel found at the address the
+        #: user types must be that one (see :meth:`_async_connect`).
+        self._discovered_node: str | None = None
+
+    @callback
+    def async_remove(self) -> None:
+        """The flow was closed: stop an install that is still running."""
+        task, self._install_task = self._install_task, None
+        if task is not None and not task.done():
+            task.cancel()
 
     # -- discovery ----------------------------------------------------------------------
 
     async def async_step_mqtt(self, discovery_info: MqttServiceInfo) -> ConfigFlowResult:
-        """A panel's retained ``<base>/<node>/kiosk_state`` appeared on the broker."""
+        """A panel's retained ``<base>/<node>/kiosk_state`` appeared on the broker.
+
+        Only a running kiosk (``active``) is offered. ``not_installed``, ``disabled`` and
+        ``failed`` are what ha-kiosk-setup leaves behind on the broker when the kiosk is removed,
+        switched off or fails to start: a stale message must not make a panel pop up as new, and
+        such a panel is added by hand (the flow can install the kiosk on it then).
+        """
         parts = discovery_info.topic.split("/")
         if len(parts) < 3 or not parts[1]:
             return self.async_abort(reason="unknown")
         await self.async_set_unique_id(parts[1])
         self._abort_if_unique_id_configured()
+        if _kiosk_state(discovery_info.payload) != KIOSK_STATE_ACTIVE:
+            return self.async_abort(reason="kiosk_not_active")
+        self._discovered_node = parts[1]
         self.context["title_placeholders"] = {"name": parts[1]}
         return await self.async_step_user()
 
@@ -268,7 +305,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors[CONF_EXPECTED_FINGERPRINT] = "md5_fingerprint"
             else:
                 try:
-                    info = await fetch_host_key(user_input[CONF_HOST])
+                    info = await fetch_host_key(user_input[CONF_HOST], port=user_input[CONF_PORT])
                 except PanelError as err:
                     errors["base"] = _error_key(err)
                 except Exception:
@@ -291,6 +328,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Required(CONF_HOST): str,
+                vol.Required(CONF_PORT, default=DEFAULT_PORT): _PORT,
                 vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): str,
                 **_auth_schema(),
                 vol.Optional(CONF_EXPECTED_FINGERPRINT): str,
@@ -332,6 +370,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 credentials.get(CONF_PASSWORD),
                 self._host_info.sha256,
                 credentials.get(CONF_PRIVATE_KEY),
+                port=user_input[CONF_PORT],
             )
         except DeviceIdUnavailable:
             return self.async_abort(reason="device_id_unavailable")
@@ -341,8 +380,12 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error connecting to %s", user_input[CONF_HOST])
             return self._show_user_form(user_input, {"base": "unknown"})
         assert probe.node is not None  # require_node
+        if self._discovered_node is not None and probe.node != self._discovered_node:
+            return self.async_abort(reason="unique_id_mismatch")
         await self.async_set_unique_id(probe.node)
-        self._abort_if_unique_id_configured(updates={CONF_HOST: user_input[CONF_HOST]})
+        self._abort_if_unique_id_configured(
+            updates={CONF_HOST: user_input[CONF_HOST], CONF_PORT: user_input[CONF_PORT]}
+        )
         # A version 1 entry that is not converted yet has the host key as its unique id.
         for existing in self._async_current_entries(include_ignore=False):
             if is_fingerprint(existing.unique_id) and (
@@ -351,6 +394,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_abort(reason="already_configured")
         self._data = {
             CONF_HOST: user_input[CONF_HOST],
+            CONF_PORT: user_input[CONF_PORT],
             CONF_USERNAME: user_input[CONF_USERNAME],
             **credentials,
             CONF_HOST_KEY: probe.fingerprint,
@@ -384,7 +428,10 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             self._install_input = user_input
             if errors := _install_field_errors(user_input):
                 return self._show_install_form(errors, "")
-            self._install_task = self.hass.async_create_task(self._install(user_input))
+            self._install_task = self.hass.async_create_task(
+                self._install(user_input), "brilliant_kiosk first install"
+            )
+            self._install_task.add_done_callback(self._log_install_end)
             return await self.async_step_installing()
         return self._show_install_form({}, "")
 
@@ -445,6 +492,21 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         """The kiosk is installed with the built-in MQTT mode; add the panel."""
         return self._create_entry({"KIOSK_MQTT": PANEL_MQTT_FULL})
 
+    @callback
+    def _log_install_end(self, task: asyncio.Task[None]) -> None:
+        """Retrieve and log how the install task ended.
+
+        The task's error is shown in the flow when the flow is still open. When it was closed
+        first nobody awaits the task, and an unretrieved exception would be reported by asyncio
+        only when the task is garbage collected. Reading it here prevents that and leaves a line
+        in the log. A cancelled task (the flow was closed, see :meth:`async_remove`) is not an
+        error.
+        """
+        if task.cancelled():
+            _LOGGER.debug("The kiosk install on %s was cancelled", self._data[CONF_HOST])
+        elif (err := task.exception()) is not None:
+            _LOGGER.warning("The kiosk install on %s failed: %s", self._data[CONF_HOST], err)
+
     async def _install(self, user_input: Mapping[str, Any]) -> None:
         """Download the latest stable release, verify it and install it with ha-kiosk-setup.
 
@@ -469,6 +531,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             username=self._data[CONF_USERNAME],
             password=self._data.get(CONF_PASSWORD),
             private_key=self._data.get(CONF_PRIVATE_KEY),
+            port=self._data[CONF_PORT],
             host_key=self._data[CONF_HOST_KEY],
         )
         try:
@@ -521,7 +584,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         entry = self._get_reauth_entry()
         try:
-            info = await fetch_host_key(entry.data[CONF_HOST])
+            info = await fetch_host_key(entry.data[CONF_HOST], port=_port_of(entry.data))
         except PanelError:
             info = None  # unreachable: the next step reports it when the login is tried
         if info is not None and not info.matches(entry.data[CONF_HOST_KEY]):
@@ -562,6 +625,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                         key,
                         credentials.get(CONF_PRIVATE_KEY),
                         require_node=False,
+                        port=_port_of(entry.data),
                     )
                 except PanelError as err:
                     errors["base"] = _error_key(err)
@@ -604,7 +668,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                info = await fetch_host_key(user_input[CONF_HOST])
+                info = await fetch_host_key(user_input[CONF_HOST], port=user_input[CONF_PORT])
             except PanelError as err:
                 errors["base"] = _error_key(err)
             except Exception:
@@ -624,7 +688,12 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema({vol.Required(CONF_HOST, default=entry.data[CONF_HOST]): str}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HOST, default=entry.data[CONF_HOST]): str,
+                    vol.Required(CONF_PORT, default=_port_of(entry.data)): _PORT,
+                }
+            ),
             errors=errors,
         )
 
@@ -646,8 +715,9 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     async def _async_finish_reconfigure(
         self, entry: ConfigEntry[Any], host_key: str
     ) -> ConfigFlowResult:
-        """Log in at the new address with ``host_key`` pinned and store host and key."""
+        """Log in at the new address with ``host_key`` pinned and store host, port and key."""
         host = self._user_input[CONF_HOST]
+        port = self._user_input[CONF_PORT]
         try:
             probe = await probe_panel(
                 host,
@@ -656,6 +726,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 host_key,
                 entry.data.get(CONF_PRIVATE_KEY),
                 require_node=False,
+                port=port,
             )
         except PanelError as err:
             return self._reconfigure_failed(entry, {"base": _error_key(err)})
@@ -665,7 +736,8 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         if self._node_mismatch(entry, probe):
             return self.async_abort(reason="unique_id_mismatch")
         return self.async_update_reload_and_abort(
-            entry, data_updates={CONF_HOST: host, CONF_HOST_KEY: probe.fingerprint}
+            entry,
+            data_updates={CONF_HOST: host, CONF_PORT: port, CONF_HOST_KEY: probe.fingerprint},
         )
 
     def _reconfigure_failed(

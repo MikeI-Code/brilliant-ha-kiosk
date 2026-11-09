@@ -374,3 +374,37 @@ async def test_releases_without_a_usable_version_are_skipped(
     state = hass.states.get(entity_id(hass, "update", "kiosk"))
     assert state.state == STATE_OFF
     assert state.attributes["latest_version"] == "v1.4.0"
+
+
+async def test_update_install_refuses_a_panel_without_the_kiosk(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    """update.install would be a first install without env and token: refused, never tried."""
+    from pybrilliantkiosk import SetupStatus
+
+    panel.setup_status.return_value = SetupStatus(state="not_installed")
+    await setup_entry(hass, make_entry())
+    update = entity_id(hass, "update", "kiosk")
+    for data in ({}, {"version": STABLE.tag}, {"version": "no-such-release"}):
+        with pytest.raises(ServiceValidationError, match="not installed on this panel") as err:
+            await hass.services.async_call(
+                "update", "install", {ATTR_ENTITY_ID: update, **data}, blocking=True
+            )
+        assert err.value.translation_key == "not_installed"
+    releases.download.assert_not_awaited()
+    panel.install.assert_not_awaited()
+
+
+async def test_the_coordinator_itself_refuses_to_install_on_a_panel_without_the_kiosk(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    from pybrilliantkiosk import SetupStatus
+
+    panel.setup_status.return_value = SetupStatus(state="not_installed")
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    with pytest.raises(ServiceValidationError) as err:
+        await entry.runtime_data.async_install(STABLE)
+    assert err.value.translation_key == "not_installed"
+    releases.download.assert_not_awaited()
+    panel.install.assert_not_awaited()

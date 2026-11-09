@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- **Fix:** a command that times out no longer leaves its process running on the panel. `Panel`
+  used asyncssh's `conn.run`, which on a timeout abandons the remote process and its channel; for
+  a `set_env` / `reconcile_env` write that meant the `ha-kiosk-setup` flock stayed held. The
+  process is now created with `create_process`; on a timeout it is sent SIGKILL and its channel
+  is closed, and when the channel does not finish closing within 5 seconds the connection is
+  dropped (the next command opens a new one). The command still raises `CannotConnect`
+  ("command timed out").
+
 ## 0.1.1
 
 Security and correctness fixes found in review; one removal.

@@ -45,8 +45,6 @@ def _version_of(release: Release) -> str | None:
 class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
     """The kiosk software on the panel."""
 
-    _attr_release_url = None
-
     def __init__(self, coordinator: BrilliantKioskCoordinator) -> None:
         """Initialise."""
         super().__init__(coordinator, "kiosk")
@@ -122,7 +120,8 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
         return latest.body if latest and latest.body else None
 
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:
-        """Download and install a release."""
+        """Download and install a release (never a first install: see ``ensure_installed``)."""
+        self.coordinator.ensure_installed()
         releases = self.coordinator.releases.data or ()
         target = (
             next((r for r in releases if version in (r.tag, r.version)), None)

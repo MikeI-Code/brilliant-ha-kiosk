@@ -230,10 +230,10 @@ def test_every_field_of_every_form_is_in_the_strings() -> None:
     flow = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
     texts = _json("strings.json")
     fields = {
-        "user": {"host", "username", "password", "private_key", "expected_fingerprint"},
+        "user": {"host", "port", "username", "password", "private_key", "expected_fingerprint"},
         "install": {"install", "ha_url", "token", "mqtt_host", "mqtt_user", "mqtt_password"},
         "reauth_confirm": {"password", "private_key"},
-        "reconfigure": {"host"},
+        "reconfigure": {"host", "port"},
         "reauth_host_key": {"trust_new_key"},
         "reconfigure_host_key": {"trust_new_key"},
     }
@@ -255,7 +255,7 @@ def test_the_library_version_is_the_one_the_manifest_pins() -> None:
     assert manifest["requirements"] == [f"pybrilliantkiosk=={pybrilliantkiosk.__version__}"]
     pyproject = (ROOT / "lib" / "pybrilliantkiosk" / "pyproject.toml").read_text(encoding="utf-8")
     assert f'version = "{pybrilliantkiosk.__version__}"' in pyproject
-    assert pybrilliantkiosk.__version__ == "0.1.1"
+    assert pybrilliantkiosk.__version__ == "0.1.2"
     assert pybrilliantkiosk.__version__ == metadata.version("pybrilliantkiosk")
 
 

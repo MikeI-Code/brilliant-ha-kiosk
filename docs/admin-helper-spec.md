@@ -1,5 +1,36 @@
 # Brilliant Kiosk admin helper: spec (target: HA Integration Quality Scale **Platinum**)
 
+> **Superseded.** This is the original design draft of 2026-11-09 and is kept for its history. What
+> was built is described in [home-assistant-integration.md](home-assistant-integration.md), which
+> is the document to read and to keep current. Where the two disagree, that one is right. What
+> changed from this draft:
+>
+> * **Transport through `ha-kiosk-setup`.** The library does not edit `/etc/ha-kiosk/kiosk.env`
+>   or run `install-local.sh` by itself. It drives the on-panel `ha-kiosk-setup` tool (install,
+>   reapply, rollback, status, check-env) and writes both copies of `kiosk.env` (running and
+>   saved) together under the tool's lock, guarded by checksums. `Panel.install` takes
+>   the bundle's pinned size, the settings and the token for a first install.
+> * **Administrators only.** The integration's actions run commands as root on a panel, so they
+>   are registered as admin actions (a user who is not an administrator is refused; automations
+>   are not affected). Configuration, options and repair dialogs are administrator dialogs of
+>   Home Assistant itself.
+> * **No add-on yet.** `addon/brilliant_admin` (component 3 below) does not exist, and the
+>   integration manages no `input_*`, counter or timer helpers. Everything is done by the
+>   integration's own entities, actions and dialogs.
+> * **`via_device`, not shared identifiers.** The panel has its own device, identified by
+>   `(brilliant_kiosk, <node>)`, and it points to the MQTT integration's device with `via_device`
+>   once that exists. The integration never claims the MQTT device's identifiers, which the draft
+>   proposed ("reuse the MQTT device via identifiers").
+> * **100 % coverage, not 95 %.** Both suites (the integration's and the library's) are gated at
+>   100 % line coverage in CI, with `ruff`, `mypy --strict` and the Home Assistant tests pinned to
+>   exact versions (`requirements_test.txt`).
+> * **Smaller entity and discovery set, and a self-assessed tier.** There is no wake-screen
+>   button, day-level number or switch entity; discovery is MQTT discovery of a running kiosk
+>   (`kiosk_state` = `active`), not zeroconf/DHCP. The Platinum tier in
+>   `custom_components/brilliant_kiosk/quality_scale.yaml` is the author's own assessment: neither
+>   hassfest's quality-scale validation nor `.strict-typing` applies to a custom integration.
+
+
 Status: draft 2026-11-09, branch `nightly`.
 
 ## Goal

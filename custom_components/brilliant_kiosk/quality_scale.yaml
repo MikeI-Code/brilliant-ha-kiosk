@@ -1,5 +1,10 @@
-# Honest self-assessment against the Home Assistant Integration Quality Scale. Every rule is done
-# or exempt (with the reason), so the manifest declares "quality_scale": "platinum".
+# SELF-ASSESSED. This is the author's own assessment against the Home Assistant Integration
+# Quality Scale, not a tier that anyone else has verified: the platinum tier is claimed here, in
+# manifest.json ("quality_scale": "platinum") and in the docs, and nothing checks it. hassfest's
+# quality-scale validator and Home Assistant core's `.strict-typing` file apply to integrations in
+# Home Assistant core only, not to a custom integration like this one. What does back the claims
+# is CI: ruff, mypy --strict, 100 % coverage of both test suites, hassfest and HACS validation.
+# Every rule below is marked done or exempt (with the reason).
 rules:
   # Bronze
   action-setup:
@@ -29,9 +34,9 @@ rules:
   dependency-transparency:
     status: done
     comment: >-
-      pybrilliantkiosk (Apache-2.0, source in lib/pybrilliantkiosk) is pinned at 0.1.1, which was
+      pybrilliantkiosk (Apache-2.0, source in lib/pybrilliantkiosk) is pinned at 0.1.2, which is
       built and published to PyPI by .github/workflows/publish-lib.yml from the tag
-      pybrilliantkiosk-v0.1.1 with trusted publishing; PyPI's provenance attestation names
+      pybrilliantkiosk-v0.1.2 with trusted publishing; PyPI's provenance attestation names
       that workflow and repository. (0.1.0 was uploaded by hand and is not used.)
   docs-actions:
     status: done
@@ -90,7 +95,7 @@ rules:
   action-exceptions:
     status: done
     comment: >-
-      Actions raise ServiceValidationError for bad input and HomeAssistantError, both with translation keys, for panel errors (errors.py panel_errors).
+      Actions raise ServiceValidationError for bad input (also a first install on a panel without the kiosk, and KIOSK_MQTT or MQTT_DEVICE_ID in set_env) and HomeAssistantError, both with translation keys, for panel errors (errors.py panel_errors).
   config-entry-unloading:
     status: done
     comment: >-
@@ -144,7 +149,7 @@ rules:
   discovery:
     status: done
     comment: |
-      MQTT discovery on the retained brilliant_kiosk/+/kiosk_state topic, which the kiosk publishes in both MQTT modes.
+      MQTT discovery on the retained brilliant_kiosk/+/kiosk_state topic, which the kiosk publishes in both MQTT modes. Only a running kiosk (payload `active`) is offered: `not_installed`, `disabled` and `failed` are stale retained messages and abort with kiosk_not_active. The panel found at the address typed afterwards must have the discovered device id (unique_id_mismatch otherwise).
       Known limitation: manifest.json topics are static, so a panel with a custom MQTT_BASE is not discovered; add it manually.
       manifest.json keeps `dependencies: ["mqtt"]` (not after_dependencies) because the Home Assistant manifest docs require mqtt in `dependencies` for an integration that declares mqtt discovery topics.
   docs-data-update:
@@ -210,7 +215,7 @@ rules:
   repair-issues:
     status: done
     comment: >-
-      Repairs for an MQTT provider change that could not be applied (fixable, re-applies it and shows the real reason) and for settings that differ between the running and the saved copy of kiosk.env (fixable, reconciles them; with a value that cannot be written safely it names the keys and the fix is refused). A changed SSH host key is not a repair issue but a re-authentication that shows the new key. The issues of an entry are deleted when it is removed, and the drift issue when it is unloaded. The earlier voice-satellite repair was dropped because it needed another integration's config entries.
+      Repairs for an MQTT provider that the panel does not run although the options choose it (raised after a failed change and by every poll that finds the panel and the options disagreeing; fixable, re-applies it and shows the real reason; cleared when they agree) and for settings that differ between the running and the saved copy of kiosk.env (fixable, reconciles them; with a value that cannot be written safely the issue is not fixable, because that fix would always be refused: it names the keys, says how to fix them on the panel and links to the troubleshooting section). A changed SSH host key is not a repair issue but a re-authentication that shows the new key. The issues of an entry are deleted when it is removed, and the drift issue when it is unloaded. The earlier voice-satellite repair was dropped because it needed another integration's config entries.
   stale-devices:
     status: exempt
     comment: >-

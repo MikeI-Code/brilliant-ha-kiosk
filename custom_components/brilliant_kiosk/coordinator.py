@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util.hass_dict import HassKey
 from pybrilliantkiosk import (
     AuthFailed,
     HostKeyMismatch,
@@ -37,7 +42,7 @@ from .const import (
     CONF_MQTT_PROVIDER,
     CONF_NODE,
     CONF_PRIVATE_KEY,
-    DATA_RELEASES,
+    DEFAULT_PORT,
     DOMAIN,
     ISSUE_ENV_DRIFT,
     ISSUE_ENV_DRIFT_UNSAFE,
@@ -49,8 +54,10 @@ from .const import (
     PROVIDER_BUILTIN,
     RELEASES_INTERVAL,
     SCAN_INTERVAL,
+    TROUBLESHOOTING_URL,
     is_fingerprint,
     node_of,
+    provider_of,
 )
 from .errors import panel_errors
 from .install import async_fetch_bundle
@@ -109,28 +116,37 @@ class ReleasesCoordinator(DataUpdateCoordinator[tuple[Release, ...]]):
         return tuple(releases)
 
 
+@dataclass(slots=True)
+class SharedReleases:
+    """The one :class:`ReleasesCoordinator` and the config entries that use it."""
+
+    coordinator: ReleasesCoordinator
+    users: set[str] = field(default_factory=set)
+
+
+#: ``hass.data`` key of the releases coordinator shared by all panels (GitHub allows 60
+#: requests per hour per address).
+DATA_RELEASES: HassKey[SharedReleases] = HassKey(DOMAIN)
+
+
 def async_acquire_releases(hass: HomeAssistant, entry_id: str) -> ReleasesCoordinator:
     """The one shared :class:`ReleasesCoordinator` (created on first use) for ``entry_id``."""
-    shared: dict[str, Any] = hass.data.setdefault(DOMAIN, {})
-    if DATA_RELEASES not in shared:
-        shared[DATA_RELEASES] = {"coordinator": ReleasesCoordinator(hass), "users": set()}
-    holder: dict[str, Any] = shared[DATA_RELEASES]
-    holder["users"].add(entry_id)
-    coordinator: ReleasesCoordinator = holder["coordinator"]
-    return coordinator
+    shared = hass.data.get(DATA_RELEASES)
+    if shared is None:
+        shared = hass.data[DATA_RELEASES] = SharedReleases(ReleasesCoordinator(hass))
+    shared.users.add(entry_id)
+    return shared.coordinator
 
 
 async def async_release_releases(hass: HomeAssistant, entry_id: str) -> None:
     """Drop ``entry_id``'s use of the shared coordinator; stop it with the last user."""
-    shared: dict[str, Any] = hass.data.get(DOMAIN, {})
-    holder: dict[str, Any] | None = shared.get(DATA_RELEASES)
-    if holder is None:
+    shared = hass.data.get(DATA_RELEASES)
+    if shared is None:
         return
-    holder["users"].discard(entry_id)
-    if not holder["users"]:
-        del shared[DATA_RELEASES]
-        coordinator: ReleasesCoordinator = holder["coordinator"]
-        await coordinator.async_shutdown()
+    shared.users.discard(entry_id)
+    if not shared.users:
+        del hass.data[DATA_RELEASES]
+        await shared.coordinator.async_shutdown()
 
 
 @callback
@@ -168,6 +184,7 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             username=entry.data[CONF_USERNAME],
             password=entry.data.get(CONF_PASSWORD),
             private_key=entry.data.get(CONF_PRIVATE_KEY),
+            port=entry.data.get(CONF_PORT, DEFAULT_PORT),
             host_key=entry.data[CONF_HOST_KEY],
         )
         self.releases = async_acquire_releases(hass, entry.entry_id)
@@ -208,6 +225,7 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         if self._identity_pending:
             await self._async_migrate_identity(first=self.data is None)
         self._sync_drift_issue(data.drift, data.unsafe)
+        self._sync_mqtt_provider(data.env)
         self._link_mqtt_device(data.env)
         self._sync_device_version(data.health.version)
         return data
@@ -318,27 +336,87 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
 
         ``ha-kiosk-setup`` rebuilds the running copy from the saved one on install and reapply, so
         settings applied only to the running copy would be dropped then. When a running value
-        cannot be written safely the fix is refused (kiosk.env is sourced by root shell scripts),
-        and the issue says which keys to fix on the panel.
+        cannot be written safely the fix would always be refused (kiosk.env is sourced by root
+        shell scripts), so that issue is not fixable from Home Assistant: it says which keys to
+        fix on the panel and links to the troubleshooting section.
         """
         issue_id = f"{ISSUE_ENV_DRIFT}_{self.config_entry.entry_id}"
         if drift:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                issue_id,
-                data={"entry_id": self.config_entry.entry_id},
-                is_fixable=True,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_ENV_DRIFT_UNSAFE if unsafe else ISSUE_ENV_DRIFT,
-                translation_placeholders={
-                    "host": self.config_entry.data[CONF_HOST],
-                    "keys": ", ".join(drift),
-                    "unsafe": ", ".join(unsafe),
-                },
-            )
+            placeholders = {
+                "host": self.config_entry.data[CONF_HOST],
+                "keys": ", ".join(drift),
+                "unsafe": ", ".join(unsafe),
+            }
+            if unsafe:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    is_fixable=False,
+                    learn_more_url=TROUBLESHOOTING_URL,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key=ISSUE_ENV_DRIFT_UNSAFE,
+                    translation_placeholders=placeholders,
+                )
+            else:
+                ir.async_create_issue(
+                    self.hass,
+                    DOMAIN,
+                    issue_id,
+                    data={"entry_id": self.config_entry.entry_id},
+                    is_fixable=True,
+                    severity=ir.IssueSeverity.WARNING,
+                    translation_key=ISSUE_ENV_DRIFT,
+                    translation_placeholders=placeholders,
+                )
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    @callback
+    def _sync_mqtt_provider(self, env: Mapping[str, str]) -> None:
+        """Follow the provider the panel runs, and compare it with the one chosen in the options.
+
+        The effective provider (:attr:`mqtt_provider`, which decides where the panel's MQTT device
+        is looked for) is what the panel's own ``KIOSK_MQTT`` says, so an option the panel did not
+        accept never points the integration at a device that does not exist. When the panel
+        disagrees with the options (a failed apply, or a hand edit on the panel) the repair issue
+        that offers to apply the option again is raised; it is deleted once they agree. Entries
+        without the option (made before it existed) follow the panel and have nothing to compare.
+        """
+        actual = provider_of(env)
+        self.mqtt_provider = actual
+        options = self.config_entry.options
+        wanted = options.get(CONF_MQTT_PROVIDER)
+        if wanted is None:
+            return
+        wanted_id = str(options.get(CONF_MQTT_DEVICE_ID, ""))
+        if actual != wanted:
+            self._raise_mqtt_issue(
+                f"the panel runs the {actual} provider, the options say {wanted}"
+            )
+        elif wanted == PROVIDER_BRILLIANT_MQTT and env.get("MQTT_DEVICE_ID", "") != wanted_id:
+            self._raise_mqtt_issue(
+                f"the panel's MQTT_DEVICE_ID is {env.get('MQTT_DEVICE_ID', '')!r}, "
+                f"the options say {wanted_id!r}"
+            )
+        else:
+            ir.async_delete_issue(
+                self.hass, DOMAIN, f"{ISSUE_MQTT_PROVIDER}_{self.config_entry.entry_id}"
+            )
+
+    @callback
+    def _raise_mqtt_issue(self, error: str) -> None:
+        """The (fixable) repair issue: the chosen MQTT provider is not what the panel runs."""
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"{ISSUE_MQTT_PROVIDER}_{self.config_entry.entry_id}",
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_MQTT_PROVIDER,
+            translation_placeholders={"host": self.config_entry.data[CONF_HOST], "error": error},
+        )
 
     # -- actions ------------------------------------------------------------------------
 
@@ -362,8 +440,29 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         """The user chose the nightly channel (the only way a nightly may be installed)."""
         return str(self.config_entry.options.get(CONF_CHANNEL, CHANNEL_STABLE)) == CHANNEL_NIGHTLY
 
+    def ensure_installed(self) -> None:
+        """Refuse an update or version install on a panel that has no kiosk.
+
+        Such an install would be a first install, which needs the Home Assistant URL, a token and
+        the MQTT settings (``env`` and ``token``): without them it fails slowly and the panel is
+        put back on Brilliant's own screen. First installs happen only in the config flow's
+        install step.
+        """
+        if not self.data.setup.installed:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="not_installed",
+                translation_placeholders={
+                    "error": "an update or a version install needs an installed kiosk."
+                },
+            )
+
     async def async_install(self, release: Release) -> None:
-        """Download a release, verify it (see :mod:`.install`) and install it on the panel."""
+        """Download a release, verify it (see :mod:`.install`) and install it on the panel.
+
+        Only for a panel that has the kiosk (:meth:`ensure_installed`).
+        """
+        self.ensure_installed()
         with panel_errors():
             bundle, sha256, size = await async_fetch_bundle(
                 self.releases.client, release, nightly_allowed=self.nightly_channel
@@ -396,21 +495,13 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                     await self.panel.restart("ha-kiosk-bridge")
         except HomeAssistantError as err:
             _LOGGER.warning("Could not apply the MQTT provider to %s: %s", self.panel.host, err)
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                issue_id,
-                data={"entry_id": self.config_entry.entry_id},
-                is_fixable=True,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_MQTT_PROVIDER,
-                translation_placeholders={
-                    "host": self.config_entry.data[CONF_HOST],
-                    "error": str(err),
-                },
-            )
+            self._raise_mqtt_issue(str(err))
             raise
+        self.mqtt_provider = provider
+        self.mqtt_device_id = device_id
         ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        # The next poll compares the panel with the options: let it see what was just written.
+        await self.async_request_refresh()
 
     async def async_shutdown(self) -> None:
         """Stop timers, close the SSH connection and drop the shared releases coordinator."""

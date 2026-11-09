@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -80,19 +78,26 @@ async def _async_options_updated(hass: HomeAssistant, entry: BrilliantKioskConfi
 
     The options flow only validates and stores; the SSH write to the panel happens here. A
     release channel change needs neither the panel write nor a reload.
+
+    The provider the coordinator uses is the one the panel runs. When the panel does not accept
+    the new one, the old provider stays effective and there is no reload for it: the (fixable)
+    repair issue offers to apply it again, and every poll keeps comparing the panel with the
+    options. A reload for a changed ``manage_installs`` still happens.
     """
     coordinator = entry.runtime_data
     provider = entry.options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN)
     device_id = entry.options.get(CONF_MQTT_DEVICE_ID, "")
     manage = entry.options.get(CONF_MANAGE_INSTALLS, True)
-    if provider != coordinator.mqtt_provider or device_id != coordinator.mqtt_device_id:
+    provider_changed = provider != coordinator.mqtt_provider
+    applied = True
+    if provider_changed or device_id != coordinator.mqtt_device_id:
         # A failure is logged and raises a repair issue that offers to apply it again.
-        with contextlib.suppress(HomeAssistantError):
+        try:
             await coordinator.async_apply_mqtt_provider(provider, device_id)
-    if provider != coordinator.mqtt_provider or manage != coordinator.manage_installs:
+        except HomeAssistantError:
+            applied = False
+    if (provider_changed and applied) or manage != coordinator.manage_installs:
         await hass.config_entries.async_reload(entry.entry_id)
-    else:
-        coordinator.mqtt_device_id = device_id
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> bool:

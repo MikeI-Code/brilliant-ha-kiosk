@@ -86,6 +86,8 @@ _INCOMPLETE_INPUT = 3
 _CHANGED_ON_PANEL = 10
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_LOG_LINES = 5000
+#: Seconds the channel of a timed-out command gets to close after SIGKILL; then the connection goes.
+_ABANDON_GRACE = 5.0
 #: Section markers of the combined read (see :func:`_poll_command`), one full line each:
 #: ``#--kl-<nonce>:<name>[:<arg>...]--``. The nonce is random and new for every command, so no
 #: file content (kiosk.env is user-editable) can contain a marker by accident or on purpose.
@@ -696,6 +698,26 @@ class Panel:
         with contextlib.suppress(OSError, asyncssh.Error):
             await conn.wait_closed()
 
+    async def _abandon(
+        self, conn: asyncssh.SSHClientConnection, process: asyncssh.SSHClientProcess[bytes] | None
+    ) -> None:
+        """Stop the process of a command that timed out, and free its channel.
+
+        The process is sent SIGKILL and its channel is closed. When the channel does not finish
+        closing within ``_ABANDON_GRACE`` seconds (or kill/close fail) the whole connection is
+        dropped instead; the next command opens a new one.
+        """
+        if process is not None:
+            try:
+                with contextlib.suppress(OSError, asyncssh.Error):
+                    process.kill()
+                process.close()
+                await asyncio.wait_for(process.wait_closed(), _ABANDON_GRACE)
+                return
+            except (OSError, asyncssh.Error, TimeoutError):
+                pass
+        await self._drop(conn)
+
     async def _run(
         self,
         command: str,
@@ -716,15 +738,14 @@ class Panel:
             if stdin
             else {"stdin": asyncssh.DEVNULL}
         )
+        process: asyncssh.SSHClientProcess[bytes] | None = None
         try:
-            done = await conn.run(
-                command,
-                check=False,
-                **stdin_args,
-                encoding=None,
-                timeout=time_limit or self._timeout,
-            )
+            # ``conn.run`` would leave the remote process and its channel alive on a timeout (the
+            # setup flock of ``_locked`` stays held), so the process is owned here.
+            process = await conn.create_process(command, **stdin_args, encoding=None)
+            done = await process.wait(check=False, timeout=time_limit or self._timeout)
         except TimeoutError as err:
+            await self._abandon(conn, process)
             raise CannotConnect(f"command timed out on {self.host}") from err
         except (OSError, asyncssh.Error) as err:
             await self._drop(conn)

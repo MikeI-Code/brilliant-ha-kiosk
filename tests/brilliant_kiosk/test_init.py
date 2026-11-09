@@ -13,6 +13,7 @@ from custom_components.brilliant_kiosk.const import (
     PROVIDER_BRILLIANT_MQTT,
     PROVIDER_BUILTIN,
 )
+from custom_components.brilliant_kiosk.coordinator import DATA_RELEASES
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -37,6 +38,7 @@ from .conftest import (
     HOST,
     NIGHTLY,
     NODE,
+    SETTINGS,
     STABLE,
     UNIQUE_ID,
     entity_id,
@@ -398,6 +400,7 @@ async def test_brilliant_mqtt_device_id_from_options_when_env_lacks_it(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
     mqtt_device = _add_mqtt_device(hass, "from_options")
+    panel.get_settings.return_value = {**SETTINGS, "KIOSK_MQTT": "kiosk"}  # no MQTT_DEVICE_ID
     await setup_entry(
         hass,
         make_entry(
@@ -447,11 +450,11 @@ async def test_one_releases_coordinator_serves_all_panels(
 
     assert await hass.config_entries.async_unload(first.entry_id)
     await hass.async_block_till_done()
-    assert "releases" in hass.data[DOMAIN]  # still needed by the remaining panel
+    assert DATA_RELEASES in hass.data  # still needed by the remaining panel
 
     assert await hass.config_entries.async_unload(second.entry_id)
     await hass.async_block_till_done()
-    assert "releases" not in hass.data.get(DOMAIN, {})  # the last panel stopped it
+    assert DATA_RELEASES not in hass.data  # the last panel stopped it
 
 
 async def test_release_helpers_tolerate_unknown_entries(hass) -> None:
@@ -468,6 +471,7 @@ async def test_provider_apply_failure_raises_a_repair_issue_then_clears(
 ) -> None:
     entry = make_entry()
     await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
     issue_id = f"mqtt_provider_not_applied_{entry.entry_id}"
     panel.set_env.side_effect = SetupBusy("job running")
     hass.config_entries.async_update_entry(
@@ -483,13 +487,104 @@ async def test_provider_apply_failure_raises_a_repair_issue_then_clears(
     assert issue is not None
     assert "job running" in issue.translation_placeholders["error"]
     assert entry.state is ConfigEntryState.LOADED  # the options dialog was not blocked either
+    assert entry.runtime_data is coordinator  # and the entry was not reloaded for it
 
     panel.set_env.side_effect = None
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, CONF_MQTT_PROVIDER: PROVIDER_BUILTIN, "mqtt_device_id": ""}
     )
     await hass.async_block_till_done()
+    await coordinator.async_refresh()  # the next poll sees that panel and options agree again
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_a_provider_the_panel_did_not_accept_stays_ineffective(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """After a failed apply the old provider decides where the MQTT device is, even on reload."""
+    builtin_device = _add_mqtt_device(hass, NODE)
+    _add_mqtt_device(hass, "d")  # what the refused brilliant-mqtt provider would have made
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    coordinator = entry.runtime_data
+    panel.set_env.side_effect = SetupBusy("job running")
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT,
+            "mqtt_device_id": "d",
+        },
+    )
+    await hass.async_block_till_done()
+    assert entry.runtime_data is coordinator  # not reloaded for a provider that was refused
+    assert coordinator.mqtt_provider == PROVIDER_BUILTIN  # still the one the panel runs
+    assert coordinator.mqtt_device_ids() == [NODE]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"mqtt_provider_not_applied_{entry.entry_id}")
+
+    # A reload for something else does not make the refused option effective either.
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "manage_installs": False}
+    )
+    await hass.async_block_till_done()
+    assert entry.runtime_data is not coordinator
+    assert entry.runtime_data.mqtt_provider == PROVIDER_BUILTIN  # the first poll follows the panel
+    assert entry.runtime_data.find_mqtt_device().id == builtin_device.id
+    assert _our_device(hass).via_device_id == builtin_device.id
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"mqtt_provider_not_applied_{entry.entry_id}")
+
+
+async def test_every_poll_compares_the_panel_with_the_provider_option(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry(**{CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, "mqtt_device_id": "d"})
+    await setup_entry(hass, entry)  # the panel runs the built-in mode: it disagrees
+    issues = ir.async_get(hass)
+    issue_id = f"mqtt_provider_not_applied_{entry.entry_id}"
+    issue = issues.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.is_fixable
+    assert (
+        "the panel runs the builtin provider, the options say brilliant_mqtt"
+        in (issue.translation_placeholders["error"])
+    )
+
+    coordinator = entry.runtime_data
+    panel.get_settings.return_value = {**SETTINGS, "KIOSK_MQTT": "kiosk", "MQTT_DEVICE_ID": "x"}
+    await coordinator.async_refresh()  # the provider agrees now, the device id does not
+    issue = issues.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert "MQTT_DEVICE_ID is 'x'" in issue.translation_placeholders["error"]
+    assert coordinator.mqtt_provider == PROVIDER_BRILLIANT_MQTT
+
+    panel.get_settings.return_value = {**SETTINGS, "KIOSK_MQTT": "kiosk", "MQTT_DEVICE_ID": "d"}
+    await coordinator.async_refresh()
+    assert issues.async_get_issue(DOMAIN, issue_id) is None  # all three agree
+
+    panel.get_settings.return_value = dict(SETTINGS)  # someone switched it back on the panel
+    await coordinator.async_refresh()
+    assert issues.async_get_issue(DOMAIN, issue_id) is not None
+    assert coordinator.mqtt_provider == PROVIDER_BUILTIN
+
+
+async def test_an_entry_without_the_provider_option_follows_the_panel_without_an_issue(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    template = make_entry()
+    entry = MockConfigEntry(  # an entry made before the provider was an option
+        domain=DOMAIN,
+        title=template.title,
+        unique_id=template.unique_id,
+        version=2,
+        data=template.data,
+    )
+    panel.get_settings.return_value = {**SETTINGS, "KIOSK_MQTT": "kiosk"}
+    await setup_entry(hass, entry)
+    assert entry.runtime_data.mqtt_provider == PROVIDER_BRILLIANT_MQTT
+    assert (
+        ir.async_get(hass).async_get_issue(DOMAIN, f"mqtt_provider_not_applied_{entry.entry_id}")
+        is None
+    )
 
 
 async def test_options_change_reloads_only_for_real_changes(

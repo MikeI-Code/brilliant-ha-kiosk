@@ -66,7 +66,8 @@ state topic). Set MQTT up first and make sure your panels publish to the same br
 
 ### Adding a panel
 
-1. Enter the panel's **host** (name or IP address), the SSH **username** (normally `root`) and a
+1. Enter the panel's **host** (name or IP address), the SSH **port** (22 unless you changed it),
+   the SSH **username** (normally `root`) and a
    **password**, a **private key**, or both.
 2. The integration connects once to read the panel's SSH host key and shows its fingerprint.
    Compare it with the panel (`ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub`), or
@@ -93,6 +94,7 @@ Set when adding a panel (and changed with **Reconfigure** or **Reauthenticate**)
 | Parameter | Description |
 |---|---|
 | Host | Name or IP address of the panel. **Reconfigure** changes it (same panel, same pinned host key). |
+| SSH port | The panel's SSH port, default 22. Stored in the config entry and used for every connection (the host key scan, the login, polling, a first install). **Reconfigure** changes it together with the host. Entries made before this field existed use 22. |
 | Username | SSH user, normally `root`. |
 | Password | SSH password. Optional if you give a private key. |
 | Private key | The whole text of an **unencrypted** OpenSSH or PEM private key; the panel needs the matching public key in `authorized_keys`. Optional if you give a password. |
@@ -108,7 +110,7 @@ presents another key works the same way.
 
 | Option | Description |
 |---|---|
-| MQTT provider | `Built-in kiosk MQTT` (`KIOSK_MQTT=1`, the default) or `brilliant-mqtt` (`KIOSK_MQTT=kiosk`). MQTT is never switched off. Changing it writes `KIOSK_MQTT` on the panel and restarts the bridge; if that fails a repair issue offers to try again. |
+| MQTT provider | `Built-in kiosk MQTT` (`KIOSK_MQTT=1`, the default) or `brilliant-mqtt` (`KIOSK_MQTT=kiosk`). MQTT is never switched off. Changing it writes `KIOSK_MQTT` on the panel and restarts the bridge. If that fails, a repair issue offers to try again, the integration keeps using the provider the panel actually runs (no reload for the refused one), and every poll compares the panel with the option: a disagreement (a failed change, or an edit on the panel) raises the repair, agreement clears it. |
 | brilliant-mqtt device id | Required for `brilliant-mqtt` (`MQTT_DEVICE_ID`); this panel's device is linked to that MQTT device. |
 | Manage installs | Allow installing, updating and rolling back the kiosk from Home Assistant. Off by default when brilliant-mqtt manages the panel. |
 
@@ -160,15 +162,20 @@ values before anything is downloaded. Spaces and `; | & > ( ) #` are fine.
 
 **What gets installed.** Only the latest *stable* release, and only if its SHA-256 and size are in
 the table pinned inside the integration (`custom_components/brilliant_kiosk/pinned.py`). That table
-is independent of GitHub: someone who could replace a release on GitHub could replace its `.sha256`
-file too, but not the table you installed with the integration. If the newest release is not in
+is a trust-on-first-use snapshot: the v1.4.0 entry was taken from GitHub on 2026-11-09 and checked
+three ways (the API's asset digest and size, the `.sha256` asset, and a local `sha256sum` of the
+download). It is not independent of GitHub at that moment, but after it someone who could replace
+a release on GitHub could replace its `.sha256` file too, and still not the table you installed
+with the integration. If the newest release is not in
 the table yet, the install is refused with an explanation: update the integration, or untick
 **Install the kiosk now** and install by hand ([manual](MANUAL.md)). The bundle is also verified
 again on the panel by `ha-kiosk-setup`, with the pinned size.
 
 ## Actions
 
-All actions need the **panel** (`config_entry_id`, picked from a list in the UI). They return
+All actions are **for administrators only**: they run commands as root on a panel, so a call made
+by a user who is not an administrator is refused (automations and scripts are not affected). All
+actions need the **panel** (`config_entry_id`, picked from a list in the UI). They return
 translated errors; a value the panel would refuse raises a validation error and changes nothing.
 
 ### `brilliant_kiosk.set_env`: set settings
@@ -181,7 +188,9 @@ Merges settings into the panel's `kiosk.env`, atomically, and keeps comments and
 | `delete` | List of setting names to remove. |
 | `restart` | Restart `ha-kiosk.service` afterwards (default off). The display service is restarted by the number entities, not here. |
 
-`KIOSK_MQTT` cannot be switched off or removed. Runtime overrides (the switches published by the
+`KIOSK_MQTT` and `MQTT_DEVICE_ID` are refused (set or delete): they belong to the **MQTT provider**
+option, so change them in the panel's options (Configure), which keeps the options and the panel
+in step and never switches MQTT off. Runtime overrides (the switches published by the
 kiosk) win over `kiosk.env`, so every override for a key you set or delete is purged; the change
 is evaluated against what the panel effectively uses. If the panel's running copy of
 `/etc/ha-kiosk/kiosk.env` contains a value that cannot be written safely (for example a hand-edited
@@ -234,7 +243,13 @@ response_variable: bus
 
 ### `brilliant_kiosk.logs`: service logs (response)
 
-Returns `{"logs": "<text>"}`, the last journal lines of one kiosk service.
+Returns `{"logs": "<text>"}`, the last journal lines of one kiosk service, **redacted** before they
+leave Home Assistant: the panel's address, node and device ids and logins (and the values of
+settings that name them) are replaced by `**REDACTED**` exactly as in the diagnostics, and so is
+anything that looks like a secret: values assigned to `password`, `token`, `secret`, `api_key` or
+`Authorization`, `Bearer` tokens, JSON web tokens (a Home Assistant long-lived access token is
+one) and any 32+ character run of key-like characters. This is a best-effort scrub of free text,
+not a guarantee: read a log before you share it.
 
 | Field | Description |
 |---|---|
@@ -252,7 +267,11 @@ response_variable: bridge_log
 
 ### `brilliant_kiosk.install_version`: install a release
 
-Installs a kiosk release with `ha-kiosk-setup`; needs **Manage installs** on.
+Installs a kiosk release with `ha-kiosk-setup`; needs **Manage installs** on and a panel that
+already has the kiosk. On a panel without it (the install state sensor says *Not installed*) the
+action, and `update.install`, are refused with the `not_installed` error: a first install needs the
+Home Assistant URL, a token and the MQTT settings, which only the install step of the setup dialog
+asks for. To install on such a panel, remove it and add it again.
 
 | Field | Description |
 |---|---|
@@ -298,7 +317,8 @@ If the panel cannot be reached its entities become unavailable (one log line, an
 back). A rejected password or a changed host key starts re-authentication.
 
 **Verification of what is installed.** *Stable* releases are verified against the pinned SHA-256
-and size in the integration (independent of GitHub). *Nightly* releases cannot be pinned in
+and size in the integration (a snapshot of GitHub's assets from the day the pin was added,
+checked three ways, that GitHub can no longer change). *Nightly* releases cannot be pinned in
 advance: they are installable only when you choose the nightly channel and are verified against the
 release's own `.sha256` asset. That proves the download is intact, **not who published it**, so it
 is a weaker guarantee; do not use the nightly channel on a panel you cannot afford to break.
@@ -372,7 +392,12 @@ automation:
 
 * **Home Assistant version.** Home Assistant 2026.3.1 or newer is required (it runs on Python
   3.14); older versions neither show the integration's own brand images nor are tested.
-* **Discovery.** MQTT discovery uses the default topic `brilliant_kiosk/<node>/kiosk_state`; a
+* **Discovery.** MQTT discovery uses the default topic `brilliant_kiosk/<node>/kiosk_state` and
+  offers a panel only while that retained state is `active`: `not_installed`, `disabled` and
+  `failed` are what `ha-kiosk-setup` leaves on the broker when the kiosk is removed, switched off
+  or fails to start, and such a stale message does not make a panel appear (add it by hand). The
+  panel found at the address you then type must be the discovered one (same Brilliant device id),
+  otherwise the flow stops. A
   panel with a custom `MQTT_BASE` is not discovered, add it manually.
 * **No voice (Wyoming) check.** The integration does not look at your Wyoming integration, so it
   cannot tell you that a panel running the voice satellite (`KIOSK_VOICE=1`) is missing from it.
@@ -414,7 +439,7 @@ hardware or adapter is needed.
 ## Troubleshooting
 
 * **Cannot connect.** Check the panel's address, that SSH is enabled and that Home Assistant can
-  reach port 22. The integration retries by itself.
+  reach the SSH port (22 by default; Reconfigure changes it). The integration retries by itself.
 * **Invalid authentication.** The password or key was rejected: Home Assistant asks again
   (**Reauthenticate**).
 * **The panel's host key changed.** Home Assistant asks you to sign in again (Devices & services)
@@ -428,9 +453,15 @@ hardware or adapter is needed.
   stock screen restored (no earlier version could start; install the kiosk again).
 * **A repair says the running and saved settings differ.** `ha-kiosk-setup` rebuilds
   `/etc/ha-kiosk/kiosk.env` from the saved copy on reinstall, which would drop the difference.
-  Use the repair's fix to write the running values to both copies. If it names keys that "cannot
-  be fixed from Home Assistant", edit those lines on the panel: they contain a character that is
-  not allowed, and the integration never rewrites them.
+  Use the repair's fix to write the running values to both copies.
+* **A repair says some settings "cannot be fixed from Home Assistant".** The running copy,
+  `/etc/ha-kiosk/kiosk.env`, has a value with a character that is not allowed (a quote, a
+  backslash, `$` or a backtick). Root shell scripts read that file, so the integration never
+  rewrites such a line, and the repair has no fix button. Fix it on the panel over SSH, either way:
+  * edit the named keys in `/etc/ha-kiosk/kiosk.env` to remove the character; the next poll turns
+    the repair into the ordinary drift repair, whose fix writes the values to both copies; or
+  * run `ha-kiosk-setup reapply`, which rebuilds the running copy from the saved one
+    (`/var/lib/ha-kiosk/config/kiosk.env`) and so drops the running values.
 * **An install is refused with "not in this integration's list of verified releases".** Update the
   integration, or install by hand.
 * **An action says the settings changed while it ran.** Another process edited `kiosk.env`;

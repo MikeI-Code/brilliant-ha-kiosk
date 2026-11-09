@@ -26,7 +26,7 @@ from custom_components.brilliant_kiosk.const import (
 )
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.network import NoURLAvailableError
@@ -111,7 +111,7 @@ async def test_user_flow_confirms_host_key_before_using_the_password(
         "fingerprint": FINGERPRINT,  # as ssh-keygen -l prints it, no key type in front
         "key_type": "ED25519",
     }
-    panel.fetch_host_key.assert_awaited_once_with(HOST)
+    panel.fetch_host_key.assert_awaited_once_with(HOST, port=22)
     # Nothing credentialed happened yet: no Panel (which holds the password) was even built.
     panel.flow_panel_cls.assert_not_called()
     panel.connect.assert_not_awaited()
@@ -119,7 +119,12 @@ async def test_user_flow_confirms_host_key_before_using_the_password(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == f"Brilliant panel {HOST}"
-    assert result["data"] == {**USER_INPUT, CONF_HOST_KEY: FINGERPRINT, CONF_NODE: NODE}
+    assert result["data"] == {
+        **USER_INPUT,
+        CONF_PORT: 22,
+        CONF_HOST_KEY: FINGERPRINT,
+        CONF_NODE: NODE,
+    }
     assert result["result"].unique_id == UNIQUE_ID
     assert result["options"] == {
         CONF_MQTT_PROVIDER: PROVIDER_BUILTIN,
@@ -738,6 +743,13 @@ async def test_options_switch_to_brilliant_mqtt(
     entry = make_entry()
     await setup_entry(hass, entry)
     first = entry.runtime_data
+
+    async def written(changes, delete=()):
+        """A panel that keeps what it is given, so the first poll after the reload agrees."""
+        panel.get_settings.return_value = {**panel.get_settings.return_value, **changes}
+        return tuple(changes)
+
+    panel.set_env.side_effect = written
     result = await submit_options(
         hass,
         entry,

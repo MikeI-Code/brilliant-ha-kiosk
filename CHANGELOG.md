@@ -15,7 +15,7 @@ These changes will be part of the next stable release.
 ### New
 
 - **Home Assistant integration `brilliant_kiosk`** (custom integration, nightly; library
-  `pybrilliantkiosk` 0.1.1). Health and install state, settings, logs, bus variables and kiosk
+  `pybrilliantkiosk` 0.1.2). Health and install state, settings, logs, bus variables and kiosk
   updates of each panel over SSH, with host key pinning. A panel is identified by Brilliant's own
   device id, read from the stock firmware; a first install from Home Assistant keeps every
   setting of the bundle (including `WEATHER_FX`). See
@@ -42,6 +42,13 @@ These changes will be part of the next stable release.
 
 ### Fixed
 
+- **Home Assistant integration, review round 5** (library `pybrilliantkiosk` 0.1.2): a timed-out SSH
+  command no longer leaves its process (and the setup lock) running on the panel; updates and
+  `install_version` refuse a panel without the kiosk; the actions are for administrators only and
+  `set_env` refuses `KIOSK_MQTT` and `MQTT_DEVICE_ID`; the `logs` output is redacted; MQTT discovery
+  offers running kiosks only; the SSH port is configurable; the MQTT provider option is compared
+  with the panel on every poll; an unfixable settings-drift repair says how to fix it on the panel;
+  every workflow action is pinned to a commit SHA, with Dependabot updates.
 - `ha-kiosk-setup` now accepts `WEATHER_FX` (it rejected the animated-sky setting the UI reads); the setting is documented in `config/kiosk.env.example`.
 - Restarting the kiosk (for example after an install) no longer fills the screen with
   `ioctl ...: Bad file descriptor` text from Brilliant's boot splash.
