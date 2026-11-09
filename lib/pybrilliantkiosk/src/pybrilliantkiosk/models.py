@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from .setup import SetupStatus
+
 #: systemd units managed by the kiosk (kiosk/install-local.sh UNITS).
 UNITS: tuple[str, ...] = (
     "ha-kiosk.service",
@@ -60,6 +62,21 @@ class PanelHealth:
         """Whether the unit reported ``active`` (name with or without ``.service``)."""
         name = unit if unit.endswith(".service") else f"{unit}.service"
         return self.units.get(name) == "active"
+
+
+@dataclass(frozen=True, slots=True)
+class PanelSnapshot:
+    """Everything a poll needs, read from the panel with ONE SSH command (:meth:`Panel.poll`)."""
+
+    health: PanelHealth
+    #: ``ha-kiosk-setup status``; ``state == "unknown"`` when the tool failed or cannot be run.
+    setup: SetupStatus
+    #: Effective settings: both copies of kiosk.env reconciled, overrides on top, secrets masked.
+    settings: Mapping[str, str]
+    #: Keys whose value differs between the running and the saved copy of kiosk.env.
+    drift: tuple[str, ...] = ()
+    #: Drifted keys whose running value cannot be written safely (see ``Panel.reconcile_env``).
+    unsafe: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

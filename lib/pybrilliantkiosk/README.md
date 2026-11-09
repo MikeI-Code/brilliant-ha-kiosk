@@ -13,22 +13,32 @@ from pybrilliantkiosk import Panel, Releases
 
 async with Panel("192.168.1.50", password="...", host_key=None) as panel:
     print(panel.host_key_fingerprint)  # pin this in the config flow
-    health = await panel.health()
+    snapshot = await panel.poll()  # health, settings, drift and setup status: ONE SSH command
+    health = snapshot.health
     env = await panel.get_env()  # secrets masked
     await panel.set_env({"DAY_LEVEL": "12"}, restart=True)
     print(await panel.logs("ha-kiosk", 100))
 
-releases = await Releases(session).list()
-bundle, sha = await Releases(session).download(releases[0])
-await panel.install(bundle, sha)
+client = Releases(session)
+stable = await client.latest_stable()  # the release GitHub marks "Latest"
+# Verify against a hash and size you keep yourself (streamed, capped at 50 MiB) ...
+bundle, sha = await client.download(stable, sha256=PINNED_SHA256, size=PINNED_SIZE)
+await panel.install(bundle, sha, size=PINNED_SIZE)
+# ... or, weaker, against the release's own .sha256 asset: client.download(release)
 ```
 
+`set_env` and `reconcile_env` hold the panel's setup lock, refuse (`InvalidArgument`, naming the
+keys, nothing written) when the running `kiosk.env` has a value that cannot be written safely
+instead of reverting it, and abort if `kiosk.env` changed on the panel since it was read
+(`ConcurrentModification`, retried once).
+
 Errors: `CannotConnect`, `AuthFailed`, `HostKeyMismatch`, `CommandFailed(exit_status, stderr)`,
-`InvalidArgument`, `ChecksumMismatch`, `ReleaseError`; all derive from `PanelError`.
+`InvalidArgument`, `ChecksumMismatch`, `ConcurrentModification`, `ReleaseError`; all derive from
+`PanelError`.
 
 ## Development
 
 ```
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-ruff check . && mypy --strict src && pytest
+ruff check . && ruff format --check . && mypy --strict src && pytest  # 100 % coverage gate
 ```

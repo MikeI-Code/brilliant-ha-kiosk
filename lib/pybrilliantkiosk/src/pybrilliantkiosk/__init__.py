@@ -2,13 +2,14 @@
 
 from .bundle import kiosk_env_from_bundle
 from .bus import parse_listing, parse_set_result, parse_variables
-from .env import EnvFile, is_secret
+from .env import EnvFile, format_value, is_secret
 from .exceptions import (
     ActivationRolledBack,
     AuthFailed,
     CannotConnect,
     ChecksumMismatch,
     CommandFailed,
+    ConcurrentModification,
     HostKeyMismatch,
     InvalidArgument,
     NotInstalled,
@@ -27,6 +28,7 @@ from .models import (
     BusPeripheral,
     BusVariable,
     PanelHealth,
+    PanelSnapshot,
     Release,
 )
 from .panel import HostKeyInfo, Panel, fetch_host_key
@@ -47,6 +49,7 @@ __all__ = [
     "CannotConnect",
     "ChecksumMismatch",
     "CommandFailed",
+    "ConcurrentModification",
     "EnvFile",
     "HostKeyInfo",
     "HostKeyMismatch",
@@ -56,6 +59,7 @@ __all__ = [
     "Panel",
     "PanelError",
     "PanelHealth",
+    "PanelSnapshot",
     "Release",
     "ReleaseError",
     "Releases",
@@ -67,6 +71,7 @@ __all__ = [
     "VerificationFailed",
     "__version__",
     "fetch_host_key",
+    "format_value",
     "is_newer",
     "is_secret",
     "kiosk_env_from_bundle",

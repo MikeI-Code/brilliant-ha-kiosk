@@ -55,8 +55,9 @@ async def _handle(process: Any) -> None:
         process.stdout.write(b'{"state": "active", "version": "v9"}\n')
     elif cmd.startswith("echo '#--kl:begin--'"):
         process.stdout.write(
-            b"#--kl:begin--\n#--kl:config:present--\nA=1\n\n"
-            b"#--kl:running:absent--\n#--kl:overrides--\n"
+            b"#--kl:begin--\n#--kl:config:present:"
+            + hashlib.sha256(b"A=1\n").hexdigest().encode()
+            + b"--\nA=1\n\n#--kl:running:absent--\n#--kl:overrides--\n"
         )
     elif cmd == "echo-stdin":
         process.stdout.write(stdin)

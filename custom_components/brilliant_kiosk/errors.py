@@ -11,6 +11,7 @@ from pybrilliantkiosk import (
     CannotConnect,
     ChecksumMismatch,
     CommandFailed,
+    ConcurrentModification,
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
@@ -21,8 +22,23 @@ from pybrilliantkiosk import (
 from .const import DOMAIN
 
 
+class InstallRefused(PanelError):
+    """An install this integration will not do; ``key`` is the translation key of the reason."""
+
+    def __init__(self, key: str, message: str, tag: str) -> None:
+        super().__init__(message)
+        self.key = key
+        self.tag = tag
+
+
 def to_ha_error(err: PanelError) -> HomeAssistantError:
     """Map a library error to a translated Home Assistant error."""
+    if isinstance(err, InstallRefused):
+        return ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key=err.key,
+            translation_placeholders={"error": str(err), "tag": err.tag},
+        )
     if isinstance(err, InvalidArgument):
         return ServiceValidationError(
             translation_domain=DOMAIN,
@@ -33,6 +49,7 @@ def to_ha_error(err: PanelError) -> HomeAssistantError:
         (AuthFailed, "invalid_auth"),
         (HostKeyMismatch, "host_key_mismatch"),
         (SetupBusy, "setup_busy"),
+        (ConcurrentModification, "concurrent_modification"),
         (CannotConnect, "cannot_connect"),
         (ChecksumMismatch, "checksum_mismatch"),
         (ReleaseError, "release_error"),

@@ -44,7 +44,15 @@ logs:
       required: true
       example: ha-kiosk.service
       selector:
-        text:
+        select:
+          options:
+            - ha-kiosk.service
+            - ha-kiosk-display.service
+            - ha-kiosk-bridge.service
+            - ha-kiosk-swap.service
+            - ha-kiosk-voice.service
+            - ha-kiosk-intercom.service
+            - ha-kiosk-capture.service
     lines:
       default: 100
       selector:

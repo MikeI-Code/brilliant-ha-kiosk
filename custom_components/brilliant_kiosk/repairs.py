@@ -82,21 +82,33 @@ class ReapplyMqttProviderFlow(_PanelFixFlow):
         }
 
     async def _fix(self, entry: BrilliantKioskConfigEntry) -> str | None:
-        applied = await entry.runtime_data.async_apply_mqtt_provider(
-            entry.options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN),
-            entry.options.get(CONF_MQTT_DEVICE_ID, ""),
-        )
-        return None if applied else "see the log"
+        try:
+            await entry.runtime_data.async_apply_mqtt_provider(
+                entry.options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN),
+                entry.options.get(CONF_MQTT_DEVICE_ID, ""),
+            )
+        except HomeAssistantError as err:
+            return str(err)  # the translated reason, shown on the form
+        return None
 
 
 class ReconcileEnvFlow(_PanelFixFlow):
-    """Write the running settings to both copies of kiosk.env."""
+    """Write the running settings to both copies of kiosk.env.
+
+    With an unsafe running value this fails with the library's translated error (such a line is
+    never rewritten), which the form shows; the issue names the keys to fix on the panel.
+    """
 
     error_key = "reconcile_failed"
 
     def _placeholders(self, entry: BrilliantKioskConfigEntry) -> dict[str, str]:
-        drift = entry.runtime_data.data.drift
-        return {"host": str(entry.data[CONF_HOST]), "keys": ", ".join(drift), "error": ""}
+        data = entry.runtime_data.data
+        return {
+            "host": str(entry.data[CONF_HOST]),
+            "keys": ", ".join(data.drift),
+            "unsafe": ", ".join(data.unsafe),
+            "error": "",
+        }
 
     async def _fix(self, entry: BrilliantKioskConfigEntry) -> str | None:
         try:

@@ -5,43 +5,51 @@
     "step": {
       "user": {
         "title": "Connect to a Brilliant panel",
-        "description": "Enter the panel's address and its SSH login. The password is only sent after you have confirmed the panel's SSH host key (trust on first use).",
+        "description": "Enter the panel's address and its SSH login: a password, a private key, or both. Nothing is sent before you have confirmed the panel's SSH host key (trust on first use).",
         "data": {
           "host": "Host",
           "username": "Username",
           "password": "Password",
-          "expected_fingerprint": "Expected host key fingerprint (optional)"
+          "expected_fingerprint": "Expected host key fingerprint (optional)",
+          "private_key": "Private key (optional)"
         },
         "data_description": {
           "host": "IP address or host name of the panel.",
           "username": "SSH user, normally root.",
-          "password": "SSH password of that user.",
-          "expected_fingerprint": "Paste the panel's SHA256 or MD5 host key fingerprint to verify it up front (ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub on the panel) and skip the confirmation step."
+          "password": "SSH password of that user. Optional when you paste a private key.",
+          "expected_fingerprint": "Paste the panel's SHA256 or MD5 host key fingerprint to verify it up front (ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub on the panel) and skip the confirmation step.",
+          "private_key": "The whole text of an unencrypted OpenSSH or PEM private key (the panel must have the matching public key in authorized_keys). Optional when you enter a password."
         }
       },
       "install": {
         "title": "Install the kiosk",
-        "description": "The kiosk is not installed on this panel. Home Assistant can install the latest stable release with ha-kiosk-setup. Create a long-lived access token (profile page) for the panel and paste it here. {error}",
+        "description": "The kiosk is not installed on this panel. Home Assistant can install the latest stable release with ha-kiosk-setup, but only a release whose checksum is built into this integration. Create a long-lived access token (profile page) for the panel and paste it here, and enter your MQTT broker's address and login (they are not read from Home Assistant's MQTT settings). {error}",
         "data": {
           "install": "Install the kiosk now",
           "ha_url": "Home Assistant URL for the panel",
           "token": "Long-lived access token",
           "mqtt_host": "MQTT broker host",
-          "mqtt_user": "MQTT user",
+          "mqtt_user": "MQTT user (optional)",
           "mqtt_password": "MQTT password (optional)"
         },
         "data_description": {
           "install": "Untick to add the panel for monitoring only.",
-          "ha_url": "An address the panel can reach on your network.",
-          "mqtt_host": "The panel publishes its entities here (built-in kiosk MQTT).",
-          "mqtt_password": "Leave empty to reuse Home Assistant's own MQTT login when the user matches it."
+          "ha_url": "An address the panel can reach on your network, starting with http:// or https://.",
+          "mqtt_host": "Host name or IP address of your MQTT broker. The panel publishes its entities there (built-in kiosk MQTT).",
+          "mqtt_password": "Must not contain ' \" $ ` or \\ : the panel keeps it in a settings file that shell scripts read, so these characters are refused.",
+          "mqtt_user": "Must not contain quotes, backslash, $ or a backtick."
         }
       },
       "reauth_confirm": {
-        "title": "Re-enter the panel password",
-        "description": "The SSH password for {host} was rejected.",
+        "title": "Sign in to the panel again",
+        "description": "Home Assistant cannot log in to {host}. Enter the new SSH password, or paste a private key. They replace the stored credentials.",
         "data": {
-          "password": "Password"
+          "password": "Password",
+          "private_key": "Private key (optional)"
+        },
+        "data_description": {
+          "password": "SSH password. Optional when you paste a private key.",
+          "private_key": "The whole text of an unencrypted OpenSSH or PEM private key."
         }
       },
       "reconfigure": {
@@ -50,13 +58,27 @@
           "host": "Host"
         },
         "data_description": {
-          "host": "The new address must reach the same panel (same SSH host key)."
+          "host": "The new address should reach the same panel. A different SSH host key is shown for your confirmation."
         }
       },
       "host_key": {
         "title": "Confirm the panel host key",
         "description": "The panel at {host} presented this SSH host key fingerprint:\n\n`{fingerprint}`\n\nCompare it with the key on the panel before continuing. Submitting pins this key; the SSH password is only sent to a panel that presents it.",
         "data": {}
+      },
+      "reauth_host_key": {
+        "title": "The panel's host key changed",
+        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}`\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key; your credentials are asked for next and only sent to a panel that presents it.",
+        "data": {
+          "trust_new_key": "I checked the new host key and trust it"
+        }
+      },
+      "reconfigure_host_key": {
+        "title": "The new address has a different host key",
+        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}`\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key and the stored credentials are used to log in.",
+        "data": {
+          "trust_new_key": "I checked the new host key and trust it"
+        }
       }
     },
     "error": {
@@ -66,15 +88,20 @@
       "invalid_value": "A value is not allowed in kiosk.env: {error}",
       "settings_rejected": "The panel rejected the settings: {error}",
       "install_failed": "The installation failed: {error}",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "auth_required": "Enter a password or paste a private key.",
+      "invalid_characters": "This value must not contain quotes, backslash, $ or a backtick.",
+      "invalid_url": "Enter an address starting with http:// or https://.",
+      "host_key_not_confirmed": "Tick the box to trust the new host key, or cancel.",
+      "release_not_pinned": "This integration only installs releases whose checksum it contains, and the latest release is not one of them: {error}. Update the integration, or untick the install and add the panel for monitoring only.",
+      "nightly_not_allowed": "Nightly builds are not installed from here: {error}"
     },
     "abort": {
       "already_configured": "Device is already configured",
       "reauth_successful": "Re-authentication was successful",
       "reconfigure_successful": "Re-configuration was successful",
-      "unique_id_mismatch": "That address belongs to a different panel.",
-      "unknown": "Unexpected error",
-      "host_key_changed": "The panel at the new address presents a different SSH host key than the pinned one. Verify the panel, then remove and add it again to trust the new key."
+      "unique_id_mismatch": "That is a different panel than the one in this entry.",
+      "unknown": "Unexpected error"
     },
     "progress": {
       "installing": "Downloading and installing the kiosk on the panel. This can take a few minutes (the panel restarts its display services)."
@@ -206,7 +233,7 @@
       "message": "Cannot connect to the panel: {error}"
     },
     "host_key_mismatch": {
-      "message": "The panel's SSH host key changed: {error}"
+      "message": "The panel's SSH host key changed. Confirm the new key in the repair that opened: {error}"
     },
     "command_failed": {
       "message": "The panel command failed: {error}"
@@ -243,17 +270,18 @@
     },
     "setup_busy": {
       "message": "The panel is busy running ha-kiosk-setup: {error}"
+    },
+    "concurrent_modification": {
+      "message": "The panel's settings were changed by someone else while this was being saved; nothing was changed, try again: {error}"
+    },
+    "nightly_not_allowed": {
+      "message": "{tag} is a nightly build. Select the nightly channel (Release channel) of this panel first. Nightly builds are checked only against their own checksum file, which is a weaker guarantee than a stable release."
+    },
+    "release_not_pinned": {
+      "message": "{tag} is not in this integration's list of verified releases, so it will not be installed on a panel. Update the integration to a version that includes it."
     }
   },
   "issues": {
-    "voice_not_in_wyoming": {
-      "title": "Voice satellite is not set up in Home Assistant",
-      "description": "The panel at {host} runs the voice satellite (KIOSK_VOICE=1), but Home Assistant has no Wyoming entry for it. Add the Wyoming Protocol integration with this host, or set KIOSK_VOICE=0."
-    },
-    "host_key_changed": {
-      "title": "The panel SSH host key changed",
-      "description": "The panel at {host} now presents the SSH host key {fingerprint}, which does not match the pinned key. Connections are refused until you verify the panel (it may have been reset, or something else answers on that address). If the change is expected, remove the panel and add it again to trust the new key."
-    },
     "mqtt_provider_not_applied": {
       "title": "The MQTT provider could not be applied",
       "fix_flow": {
@@ -264,7 +292,7 @@
           }
         },
         "error": {
-          "apply_failed": "The panel still refused the change. See the log for details, fix the cause and try again."
+          "apply_failed": "The panel still refused the change: {error}"
         },
         "abort": {
           "not_loaded": "The panel is not loaded. Reload the integration first."
@@ -287,6 +315,23 @@
           "not_loaded": "The panel is not loaded. Reload the integration first."
         }
       }
+    },
+    "env_drift_unsafe": {
+      "title": "Panel settings differ and some cannot be fixed from Home Assistant",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Settings that need a fix on the panel",
+            "description": "The running settings of {host} (/etc/ha-kiosk/kiosk.env) and the saved copy differ in: {keys}. Of these, {unsafe} contain characters that are not allowed (quotes, backslash, $ or a backtick). That file is read by shell scripts running as root, so Home Assistant never rewrites such a line and will not replace it with the saved value either. Edit those lines on the panel (or set the values with the Set settings action). Select Submit to try again."
+          }
+        },
+        "error": {
+          "reconcile_failed": "The panel refused the change: {error}"
+        },
+        "abort": {
+          "not_loaded": "The panel is not loaded. Reload the integration first."
+        }
+      }
     }
   },
   "services": {
@@ -300,7 +345,7 @@
         },
         "values": {
           "name": "Values",
-          "description": "Settings to set (KEY: value). Quotes, backslash, $ and backtick are not allowed in values."
+          "description": "Settings to set (KEY: value). Quotes, backslash, $ and a backtick are not allowed in values."
         },
         "delete": {
           "name": "Delete",
@@ -364,7 +409,7 @@
         },
         "unit": {
           "name": "Service",
-          "description": "The systemd unit."
+          "description": "The kiosk service (systemd unit) to read."
         },
         "lines": {
           "name": "Lines",
@@ -374,15 +419,15 @@
     },
     "install_version": {
       "name": "Install version",
-      "description": "Installs a specific kiosk release with ha-kiosk-setup.",
+      "description": "Installs a specific kiosk release with ha-kiosk-setup. A stable release must be one this integration has a checksum for; a nightly needs the nightly channel.",
       "fields": {
         "config_entry_id": {
           "name": "Panel",
           "description": "The panel to update."
         },
         "tag": {
-          "name": "Release tag",
-          "description": "The GitHub release tag, for example v1.4.0."
+          "name": "Release",
+          "description": "The GitHub release tag (v1.4.0, nightly-20261108) or the bundle version."
         }
       }
     }

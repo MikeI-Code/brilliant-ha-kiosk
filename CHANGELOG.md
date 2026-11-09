@@ -40,6 +40,7 @@ These changes will be part of the next stable release.
 - Restarting the kiosk (for example after an install) no longer fills the screen with
   `ioctl ...: Bad file descriptor` text from Brilliant's boot splash.
 - Forecast lookups that fail in the background no longer show a "Couldn't do that" message.
+- `ha-kiosk-mqtt.py` wrote `overrides.env` unquoted, and `ha-kiosk-display.sh` sources that file as root. It now writes `KEY="value"` like `ha-kiosk-setup` does and refuses (and logs) keys and values with a quote, backslash, `$`, backtick or control character; unsafe lines already in the file are dropped on the next write.
 
 ### Project
 

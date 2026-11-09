@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import logging
-import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from pybrilliantkiosk import (
     AuthFailed,
-    CommandFailed,
     HostKeyMismatch,
     Panel,
     PanelError,
@@ -25,19 +23,23 @@ from pybrilliantkiosk import (
     Release,
     ReleaseError,
     Releases,
-    SetupError,
     SetupStatus,
 )
 
 from .const import (
+    CHANNEL_NIGHTLY,
+    CHANNEL_STABLE,
+    CONF_CHANNEL,
     CONF_HOST_KEY,
     CONF_MANAGE_INSTALLS,
     CONF_MQTT_DEVICE_ID,
     CONF_MQTT_PROVIDER,
     CONF_NODE,
+    CONF_PRIVATE_KEY,
     DATA_RELEASES,
     DOMAIN,
     ISSUE_ENV_DRIFT,
+    ISSUE_ENV_DRIFT_UNSAFE,
     ISSUE_MQTT_PROVIDER,
     MQTT_DOMAIN,
     PANEL_MQTT_FULL,
@@ -46,9 +48,9 @@ from .const import (
     PROVIDER_BUILTIN,
     RELEASES_INTERVAL,
     SCAN_INTERVAL,
-    WYOMING_DOMAIN,
 )
 from .errors import panel_errors
+from .install import async_fetch_bundle
 
 if TYPE_CHECKING:
     from . import BrilliantKioskConfigEntry
@@ -65,13 +67,17 @@ class KioskData:
     setup: SetupStatus
     #: Keys that differ between the running and the saved copy of kiosk.env.
     drift: tuple[str, ...] = ()
+    #: Drifted keys whose running value cannot be written safely (never rewritten by us).
+    unsafe: tuple[str, ...] = ()
 
 
 class ReleasesCoordinator(DataUpdateCoordinator[tuple[Release, ...]]):
     """GitHub releases of the kiosk, fetched with Home Assistant's shared session.
 
     One instance serves every panel (see :func:`async_acquire_releases`): GitHub's anonymous API
-    allows 60 requests per hour per address, so one poll per panel would not scale.
+    allows 60 requests per hour per address, so one poll per panel would not scale. A refresh is
+    two requests: the newest 30 releases (mostly nightlies) and the release GitHub marks *Latest*,
+    so the newest stable release is found however many nightlies were published since.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -87,13 +93,17 @@ class ReleasesCoordinator(DataUpdateCoordinator[tuple[Release, ...]]):
 
     async def _async_update_data(self) -> tuple[Release, ...]:
         try:
-            return await self.client.list()
+            releases = list(await self.client.list())
+            latest = await self.client.latest_stable()
         except ReleaseError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="release_error",
                 translation_placeholders={"error": str(err)},
             ) from err
+        if latest is not None and all(release.tag != latest.tag for release in releases):
+            releases.append(latest)
+        return tuple(releases)
 
 
 def async_acquire_releases(hass: HomeAssistant, entry_id: str) -> ReleasesCoordinator:
@@ -120,17 +130,24 @@ async def async_release_releases(hass: HomeAssistant, entry_id: str) -> None:
         await coordinator.async_shutdown()
 
 
-async def _resolve(hass: HomeAssistant, host: str) -> set[str]:
-    """IP addresses of ``host`` (a literal resolves to itself); empty if it does not resolve."""
-    try:
-        infos = await hass.loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except OSError:
-        return set()
-    return {str(info[4][0]) for info in infos}
+@callback
+def async_delete_issues(hass: HomeAssistant, entry_id: str, *, only: tuple[str, ...] = ()) -> None:
+    """Delete the repair issues of one panel (all of them, or those named in ``only``).
+
+    Issue ids are ``<key>_<config entry id>``. Without this, an issue outlives the entry it is
+    about and offers a fix that can never run.
+    """
+    registry = ir.async_get(hass)
+    for domain, issue_id in list(registry.issues):
+        if domain != DOMAIN or not issue_id.endswith(f"_{entry_id}"):
+            continue
+        if only and issue_id.removesuffix(f"_{entry_id}") not in only:
+            continue
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
 
 
 class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
-    """Polls panel health, settings and setup status every 60 s."""
+    """Polls panel health, settings, drift and setup status every 60 s with ONE SSH command."""
 
     config_entry: BrilliantKioskConfigEntry
 
@@ -146,7 +163,8 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         self.panel = Panel(
             entry.data[CONF_HOST],
             username=entry.data[CONF_USERNAME],
-            password=entry.data[CONF_PASSWORD],
+            password=entry.data.get(CONF_PASSWORD),
+            private_key=entry.data.get(CONF_PRIVATE_KEY),
             host_key=entry.data[CONF_HOST_KEY],
         )
         self.releases = async_acquire_releases(hass, entry.entry_id)
@@ -155,50 +173,36 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         self.manage_installs: bool = entry.options.get(CONF_MANAGE_INSTALLS, True)
 
     async def _async_update_data(self) -> KioskData:
-        host_key_issue = f"host_key_changed_{self.config_entry.entry_id}"
         try:
-            health = await self.panel.health()
-            try:
-                env = await self.panel.get_settings()
-            except CommandFailed:
-                env = {}
-            try:
-                setup = await self.panel.setup_status()
-            except SetupError:
-                setup = SetupStatus(state="unknown")
-            try:
-                drift = await self.panel.env_drift()
-            except CommandFailed:
-                drift = ()
+            snapshot = await self.panel.poll()
         except AuthFailed as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN, translation_key="invalid_auth"
             ) from err
-        except PanelError as err:
-            if isinstance(err, HostKeyMismatch):
-                ir.async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    host_key_issue,
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.ERROR,
-                    translation_key="host_key_changed",
-                    translation_placeholders={
-                        "host": self.config_entry.data[CONF_HOST],
-                        "fingerprint": err.fingerprint or "unknown",
-                    },
-                )
-            key = "host_key_mismatch" if isinstance(err, HostKeyMismatch) else "cannot_connect"
-            raise UpdateFailed(
+        except HostKeyMismatch as err:
+            # The reauth flow shows the new key and pins it only after the user confirms it.
+            raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN,
-                translation_key=key,
+                translation_key="host_key_mismatch",
                 translation_placeholders={"error": str(err)},
             ) from err
-        ir.async_delete_issue(self.hass, DOMAIN, host_key_issue)
-        await self._sync_voice_issue(env)
-        self._sync_drift_issue(drift)
-        self._link_mqtt_device(env)
-        return KioskData(health=health, env=env, setup=setup, drift=drift)
+        except PanelError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        data = KioskData(
+            health=snapshot.health,
+            env=snapshot.settings,
+            setup=snapshot.setup,
+            drift=snapshot.drift,
+            unsafe=snapshot.unsafe,
+        )
+        self._sync_drift_issue(data.drift, data.unsafe)
+        self._link_mqtt_device(data.env)
+        self._sync_device_version(data.health.version)
+        return data
 
     # -- device registry ----------------------------------------------------------------
 
@@ -238,46 +242,24 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         if own and mqtt_device and own.via_device_id != mqtt_device.id:
             registry.async_update_device(own.id, via_device_id=mqtt_device.id)
 
+    @callback
+    def _sync_device_version(self, version: str | None) -> None:
+        """Keep the device's software version current (it is set once, when the device is made)."""
+        registry = dr.async_get(self.hass)
+        own = registry.async_get_device(identifiers={(DOMAIN, str(self.config_entry.unique_id))})
+        if own and version and own.sw_version != version:
+            registry.async_update_device(own.id, sw_version=version)
+
     # -- repairs ------------------------------------------------------------------------
 
-    async def _voice_configured(self, host: str) -> bool:
-        """Whether a Wyoming entry points at ``host`` (by name or by resolved address)."""
-        known = {
-            str(entry.data[CONF_HOST])
-            for entry in self.hass.config_entries.async_entries(WYOMING_DOMAIN)
-            if entry.data.get(CONF_HOST)
-        }
-        if host in known:
-            return True
-        addresses = await _resolve(self.hass, host)
-        for other in known:
-            if other in addresses or addresses & await _resolve(self.hass, other):
-                return True
-        return False
-
-    async def _sync_voice_issue(self, env: Mapping[str, str]) -> None:
-        """Repair issue when the panel runs the voice satellite but Wyoming has no entry for it."""
-        issue_id = f"voice_not_in_wyoming_{self.config_entry.entry_id}"
-        host = self.config_entry.data[CONF_HOST]
-        if env.get("KIOSK_VOICE") == "1" and not await self._voice_configured(host):
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                issue_id,
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="voice_not_in_wyoming",
-                translation_placeholders={"host": host},
-            )
-        else:
-            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-
     @callback
-    def _sync_drift_issue(self, drift: tuple[str, ...]) -> None:
+    def _sync_drift_issue(self, drift: tuple[str, ...], unsafe: tuple[str, ...]) -> None:
         """Repair issue while the running and the saved copy of kiosk.env differ.
 
         ``ha-kiosk-setup`` rebuilds the running copy from the saved one on install and reapply, so
-        settings applied only to the running copy would be dropped then.
+        settings applied only to the running copy would be dropped then. When a running value
+        cannot be written safely the fix is refused (kiosk.env is sourced by root shell scripts),
+        and the issue says which keys to fix on the panel.
         """
         issue_id = f"{ISSUE_ENV_DRIFT}_{self.config_entry.entry_id}"
         if drift:
@@ -288,10 +270,11 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                 data={"entry_id": self.config_entry.entry_id},
                 is_fixable=True,
                 severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_ENV_DRIFT,
+                translation_key=ISSUE_ENV_DRIFT_UNSAFE if unsafe else ISSUE_ENV_DRIFT,
                 translation_placeholders={
                     "host": self.config_entry.data[CONF_HOST],
                     "keys": ", ".join(drift),
+                    "unsafe": ", ".join(unsafe),
                 },
             )
         else:
@@ -314,19 +297,27 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                 await self.panel.restart("ha-kiosk-display")
         await self.async_request_refresh()
 
+    @property
+    def nightly_channel(self) -> bool:
+        """The user chose the nightly channel (the only way a nightly may be installed)."""
+        return str(self.config_entry.options.get(CONF_CHANNEL, CHANNEL_STABLE)) == CHANNEL_NIGHTLY
+
     async def async_install(self, release: Release) -> None:
-        """Download a release and install it with ha-kiosk-setup."""
+        """Download a release, verify it (see :mod:`.install`) and install it on the panel."""
         with panel_errors():
-            bundle, sha256 = await self.releases.client.download(release)
-            await self.panel.install(bundle, sha256)
+            bundle, sha256, size = await async_fetch_bundle(
+                self.releases.client, release, nightly_allowed=self.nightly_channel
+            )
+            await self.panel.install(bundle, sha256, size=size)
         await self.async_request_refresh()
 
-    async def async_apply_mqtt_provider(self, provider: str, device_id: str) -> bool:
+    async def async_apply_mqtt_provider(self, provider: str, device_id: str) -> None:
         """Set KIOSK_MQTT (and MQTT_DEVICE_ID) on the panel when it differs; never switch off.
 
         Called from the options update listener, not from the options flow, and by the repair
         flow that re-applies it. A failure raises a (fixable) repair issue instead of blocking the
-        options dialog; returns whether the panel now has the provider.
+        options dialog, and is re-raised as a translated :class:`HomeAssistantError` so the
+        caller can show the reason.
 
         A panel without ``KIOSK_MQTT`` already runs the built-in mode (setup's default), so
         nothing is written for it when the built-in provider is wanted.
@@ -340,9 +331,10 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             changes = {"KIOSK_MQTT": PANEL_MQTT_FULL} if "KIOSK_MQTT" in env else {}
             delete = ("MQTT_DEVICE_ID",) if env.get("MQTT_DEVICE_ID") else ()
         try:
-            if (changes or delete) and await self.panel.set_env(changes, delete):
-                await self.panel.restart("ha-kiosk-bridge")
-        except PanelError as err:
+            with panel_errors():
+                if (changes or delete) and await self.panel.set_env(changes, delete):
+                    await self.panel.restart("ha-kiosk-bridge")
+        except HomeAssistantError as err:
             _LOGGER.warning("Could not apply the MQTT provider to %s: %s", self.panel.host, err)
             ir.async_create_issue(
                 self.hass,
@@ -357,9 +349,8 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                     "error": str(err),
                 },
             )
-            return False
+            raise
         ir.async_delete_issue(self.hass, DOMAIN, issue_id)
-        return True
 
     async def async_shutdown(self) -> None:
         """Stop timers, close the SSH connection and drop the shared releases coordinator."""

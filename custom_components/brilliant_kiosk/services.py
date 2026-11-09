@@ -114,7 +114,8 @@ async def _install_version(call: ServiceCall) -> None:
             translation_domain=DOMAIN, translation_key="installs_not_managed"
         )
     tag = call.data[ATTR_TAG]
-    release = next((r for r in coordinator.releases.data or () if r.tag == tag), None)
+    # The GitHub tag (v1.4.0, nightly-20261108) or the bundle version, as the update entity does.
+    release = next((r for r in coordinator.releases.data or () if tag in (r.tag, r.version)), None)
     if release is None:
         raise ServiceValidationError(
             translation_domain=DOMAIN,

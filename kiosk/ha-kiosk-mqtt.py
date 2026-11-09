@@ -457,8 +457,32 @@ class KioskMqtt:
         self._pub("day_level", cfg.get("DAY_LEVEL", "15"))
 
 
+# overrides.env is sourced by root shell scripts (ha-kiosk-display.sh), so it is written like
+# ha-kiosk-setup renders kiosk.env: KEY="value", and only with values in which a double-quoted
+# shell string is inert. The value rule is the one of BAD_VALUE in ha-kiosk-setup (which also rejects a single quote).
+OVERRIDE_KEY = re.compile(r"[A-Z][A-Z0-9_]*")
+BAD_VALUE = re.compile(r"[\"'`$\\\x00-\x1f\x7f]")
+MAX_VALUE_LEN = 1024
+
+
+def safe_override(var, value):
+    """True if ``var="value"`` is inert when overrides.env is sourced by sh."""
+    return bool(
+        isinstance(var, str) and isinstance(value, str)
+        and OVERRIDE_KEY.fullmatch(var)
+        and not BAD_VALUE.search(value) and len(value) <= MAX_VALUE_LEN
+    )
+
+
 def set_override(var, value):
-    """Persist a runtime setting and restart the display service so it takes effect."""
+    """Persist a runtime setting and restart the display service so it takes effect.
+
+    An unsafe key or value is refused and logged; unsafe entries already in the file (written by
+    hand or by an older version) are dropped on the rewrite instead of being copied over.
+    """
+    if not safe_override(var, value):
+        print(f"mqtt: refusing to write unsafe override {var!r}", flush=True)
+        return
     cur = read_env(OVERRIDES)
     if cur.get(var) == value:
         return
@@ -467,7 +491,10 @@ def set_override(var, value):
     with open(OVERRIDES + ".tmp", "w", encoding="utf-8") as f:
         f.write("# Written by ha-kiosk-bridge (Home Assistant / MQTT). Overrides kiosk.env.\n")
         for k, v in sorted(cur.items()):
-            f.write(f"{k}={v}\n")
+            if safe_override(k, v):
+                f.write(f'{k}="{v}"\n')
+            else:
+                print(f"mqtt: dropped unsafe override {k!r} from {OVERRIDES}", flush=True)
     os.replace(OVERRIDES + ".tmp", OVERRIDES)
     print(f"mqtt: {var}={value}", flush=True)
     subprocess.run(["systemctl", "restart", "ha-kiosk-display"], check=False)

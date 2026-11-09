@@ -127,7 +127,9 @@ async def test_builtin_provider_without_kiosk_mqtt_writes_nothing(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     panel.set_env.assert_not_awaited()
     panel.restart.assert_not_awaited()
-    assert not ir.async_get(hass).async_get_issue(DOMAIN, f"mqtt_provider_not_applied_{entry.entry_id}")
+    assert not ir.async_get(hass).async_get_issue(
+        DOMAIN, f"mqtt_provider_not_applied_{entry.entry_id}"
+    )
 
 
 async def test_builtin_without_kiosk_mqtt_still_removes_a_stale_device_id(
@@ -136,7 +138,7 @@ async def test_builtin_without_kiosk_mqtt_still_removes_a_stale_device_id(
     panel.get_settings.return_value = {"MQTT_DEVICE_ID": "old"}
     entry = make_entry(**{CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, CONF_MQTT_DEVICE_ID: "old"})
     await setup_entry(hass, entry)
-    assert await entry.runtime_data.async_apply_mqtt_provider(PROVIDER_BUILTIN, "") is True
+    await entry.runtime_data.async_apply_mqtt_provider(PROVIDER_BUILTIN, "")
     panel.set_env.assert_awaited_with({}, ("MQTT_DEVICE_ID",))
 
 
@@ -154,7 +156,9 @@ async def test_mqtt_device_of_a_panel_without_kiosk_mqtt_is_the_builtin_one(
 # -- host key text -------------------------------------------------------------------------------
 
 
-async def test_host_key_step_shows_the_key_type(hass, panel: MagicMock, releases: MagicMock) -> None:
+async def test_host_key_step_shows_the_key_type(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
     panel.fetch_host_key.return_value = HostKeyInfo(FINGERPRINT, MD5_FINGERPRINT, "ssh-ed25519")
     result = await start(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
@@ -185,7 +189,11 @@ async def failed_provider_entry(hass: HomeAssistant, panel: MagicMock) -> tuple:
     panel.set_env.side_effect = SetupBusy("job running")
     hass.config_entries.async_update_entry(
         entry,
-        options={**entry.options, CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, "mqtt_device_id": "d"},
+        options={
+            **entry.options,
+            CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT,
+            "mqtt_device_id": "d",
+        },
     )
     await hass.async_block_till_done()
     return entry, issue_id
@@ -223,6 +231,9 @@ async def test_provider_fix_that_fails_again_stays_on_the_form(
     result = await manager.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "apply_failed"}
+    shown = result["description_placeholders"]["error"]
+    assert "job running" in shown  # the real, translated reason ...
+    assert "see the log" not in shown  # ... not a pointer to the log
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 
     panel.set_env.side_effect = None
@@ -261,7 +272,12 @@ async def test_drift_raises_a_fixable_repair_and_the_fix_reconciles(
     issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
     assert issue is not None
     assert issue.is_fixable is True
-    assert issue.translation_placeholders == {"host": HOST, "keys": "HA_ZOOM, WEATHER_FX"}
+    assert issue.translation_placeholders == {
+        "host": HOST,
+        "keys": "HA_ZOOM, WEATHER_FX",
+        "unsafe": "",
+    }
+    assert issue.translation_key == "env_drift"
     assert entry.runtime_data.data.drift == ("HA_ZOOM", "WEATHER_FX")
 
     manager, result = await start_fix(hass, issue_id)
@@ -288,7 +304,47 @@ async def test_drift_fix_failure_shows_the_error(
     result = await manager.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "reconcile_failed"}
-    assert result["description_placeholders"]["error"]
+    # The reason is the library's error, translated, not "see the log".
+    assert "HA_URL" in result["description_placeholders"]["error"]
+
+
+async def test_unsafe_running_values_raise_a_drift_issue_that_says_so(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """A hand-set unsafe running value: never rewritten, named in the issue and in the fix."""
+    panel.env_drift.return_value = ("HA_URL", "DAY_LEVEL")
+    panel.unsafe = ("HA_URL",)
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    issue_id = f"env_drift_{entry.entry_id}"
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.translation_key == "env_drift_unsafe"
+    assert issue.is_fixable is True
+    assert issue.translation_placeholders["unsafe"] == "HA_URL"
+    assert issue.translation_placeholders["keys"] == "HA_URL, DAY_LEVEL"
+    assert entry.runtime_data.data.unsafe == ("HA_URL",)
+
+    panel.reconcile_env.side_effect = InvalidArgument(
+        "the running kiosk.env has values that cannot be written safely (HA_URL)"
+    )
+    manager, result = await start_fix(hass, issue_id)
+    assert result["description_placeholders"]["unsafe"] == "HA_URL"
+    result = await manager.async_configure(result["flow_id"], {})
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "reconcile_failed"}
+    assert "cannot be written safely (HA_URL)" in result["description_placeholders"]["error"]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+    # Fixed on the panel meanwhile: the next poll turns it into the plain drift issue, then none.
+    panel.unsafe = ()
+    await entry.runtime_data.async_refresh()
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.translation_key == "env_drift"
+    panel.env_drift.return_value = ()
+    await entry.runtime_data.async_refresh()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
 
 async def test_no_drift_means_no_issue_and_a_broken_read_is_not_drift(
@@ -298,11 +354,10 @@ async def test_no_drift_means_no_issue_and_a_broken_read_is_not_drift(
     await setup_entry(hass, entry)
     issue_id = f"env_drift_{entry.entry_id}"
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
-    panel.env_drift.side_effect = CommandFailed("read", 1, "no")
+    panel.poll_error = CommandFailed("read", 1, "garbled")
     await entry.runtime_data.async_refresh()
-    assert entry.runtime_data.last_update_success
-    assert entry.runtime_data.data.drift == ()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    assert not entry.runtime_data.last_update_success  # a broken read is a failed update ...
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None  # ... not drift
 
 
 async def test_drift_is_in_the_diagnostics(
@@ -323,7 +378,11 @@ def test_fixable_issues_have_fix_flow_texts(name: str) -> None:
     import custom_components.brilliant_kiosk as package
 
     texts = json.loads((Path(package.__file__).parent / name).read_text(encoding="utf-8"))
-    for key, error in (("mqtt_provider_not_applied", "apply_failed"), ("env_drift", "reconcile_failed")):
+    for key, error in (
+        ("mqtt_provider_not_applied", "apply_failed"),
+        ("env_drift", "reconcile_failed"),
+        ("env_drift_unsafe", "reconcile_failed"),
+    ):
         fix_flow = texts["issues"][key]["fix_flow"]
         assert "description" in fix_flow["step"]["confirm"]
         assert error in fix_flow["error"]

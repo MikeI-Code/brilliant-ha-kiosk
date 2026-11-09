@@ -38,7 +38,11 @@ class InvalidArgument(PanelError, ValueError):
 
 
 class ChecksumMismatch(PanelError):
-    """A bundle's SHA-256 does not match the expected value."""
+    """A bundle's SHA-256 (or size) does not match the expected value."""
+
+
+class ConcurrentModification(PanelError):
+    """``kiosk.env`` changed on the panel between reading it and writing it; nothing was written."""
 
 
 class ReleaseError(PanelError):

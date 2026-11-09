@@ -9,6 +9,8 @@ from typing import Final
 DOMAIN: Final = "brilliant_kiosk"
 
 CONF_HOST_KEY: Final = "host_key"
+CONF_PRIVATE_KEY: Final = "private_key"
+CONF_NEW_HOST_KEY: Final = "trust_new_key"
 CONF_NODE: Final = "node"
 CONF_HA_URL: Final = "ha_url"
 CONF_TOKEN: Final = "token"  # noqa: S105
@@ -34,7 +36,6 @@ SCAN_INTERVAL: Final = timedelta(seconds=60)
 RELEASES_INTERVAL: Final = timedelta(hours=6)
 
 MQTT_DOMAIN: Final = "mqtt"
-WYOMING_DOMAIN: Final = "wyoming"
 
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"
 ATTR_VALUES: Final = "values"
@@ -69,9 +70,12 @@ def provider_of(settings: Mapping[str, str]) -> str:
         return PROVIDER_BRILLIANT_MQTT
     return PROVIDER_BUILTIN
 
+
 #: Repair issue ids are ``<key>_<config entry id>``; the key is also the translation key.
 ISSUE_MQTT_PROVIDER: Final = "mqtt_provider_not_applied"
 ISSUE_ENV_DRIFT: Final = "env_drift"
+#: The drift issue of a panel whose running kiosk.env has values that cannot be written safely.
+ISSUE_ENV_DRIFT_UNSAFE: Final = "env_drift_unsafe"
 
 CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
 #: hass.data key of the ReleasesCoordinator shared by all panels (GitHub allows 60 requests/h).

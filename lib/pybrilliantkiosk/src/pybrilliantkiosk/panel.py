@@ -31,6 +31,7 @@ from .exceptions import (
     CannotConnect,
     ChecksumMismatch,
     CommandFailed,
+    ConcurrentModification,
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
@@ -49,6 +50,7 @@ from .models import (
     BusListing,
     BusVariable,
     PanelHealth,
+    PanelSnapshot,
 )
 from .setup import (
     EXIT_IN_PROGRESS,
@@ -70,21 +72,38 @@ _INSTALL_DIR_RE = re.compile(r"^/tmp/ha-kiosk-install\.[A-Za-z0-9]{6,}$")
 SETUP_LOCK_PATH = "/run/ha-kiosk-setup.lock"
 #: Exit status of the kiosk.env write script when stdin was empty or did not hash as expected.
 _INCOMPLETE_INPUT = 3
+#: Exit status of the write script when kiosk.env changed on the panel after it was read.
+_CHANGED_ON_PANEL = 10
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_LOG_LINES = 5000
-#: Section markers of the combined settings read (see ``_STATE_COMMAND``); one full line each.
+#: Section markers of the combined read (see ``_POLL_COMMAND``), one full line each:
+#: ``#--kl:<name>[:<arg>...]--``. Everything before the begin marker (a login banner, profile
+#: output, ...) is ignored; a file's text is followed by one ``echo`` newline that the parser
+#: removes again, so nothing is added or lost.
 _BEGIN = "#--kl:begin--"
-_SECTION_RE = re.compile(r"^#--kl:(config|running|overrides)(?::(present|absent))?--\n", re.M)
-#: Reads both copies of kiosk.env and the runtime overrides in one round trip. Everything before
-#: the begin marker (a login banner, profile output, ...) is ignored; a file's text is followed
-#: by one ``echo`` newline that the parser removes again, so nothing is added or lost.
+_SECTION_RE = re.compile(r"^#--kl:([a-z]+)((?::[A-Za-z0-9]+)*)--\n", re.M)
+
+
+def _file_section(name: str, path: str) -> str:
+    """Print one kiosk.env copy as a section: ``present:<sha256>`` plus its text, or ``absent``.
+
+    The hash is taken *before* the text is read. If the file changes in between, the hash is of
+    older content than what was parsed, so the write that follows sees a mismatch and aborts
+    (:class:`ConcurrentModification`) instead of building on a stale view.
+    """
+    return (
+        f"if [ -f {path} ]; then "
+        f'echo "#--kl:{name}:present:$(sha256sum {path} | cut -d" " -f1)--"; cat {path}; echo; '
+        f"else echo '#--kl:{name}:absent--'; fi; "
+    )
+
+
+#: Reads both copies of kiosk.env (with their hashes) and the runtime overrides.
 _STATE_COMMAND = (
     f"echo '{_BEGIN}'; "
-    f"if [ -f {CONFIG_ENV_PATH} ]; then echo '#--kl:config:present--'; cat {CONFIG_ENV_PATH}; "
-    "echo; else echo '#--kl:config:absent--'; fi; "
-    f"if [ -f {ENV_PATH} ]; then echo '#--kl:running:present--'; cat {ENV_PATH}; "
-    "echo; else echo '#--kl:running:absent--'; fi; "
-    f"echo '#--kl:overrides--'; cat {OVERRIDES_PATH} 2>/dev/null; true"
+    + _file_section("config", CONFIG_ENV_PATH)
+    + _file_section("running", ENV_PATH)
+    + f"echo '#--kl:overrides--'; cat {OVERRIDES_PATH} 2>/dev/null; echo; true"
 )
 SETUP_COMMANDS = ("reapply", "enable", "disable", "rollback", "uninstall", "purge")
 WAIT_TIMEOUT = 100
@@ -113,11 +132,27 @@ class _Result:
 
 @dataclass(frozen=True, slots=True)
 class _EnvState:
-    """Both copies of kiosk.env (None when a copy does not exist) and the runtime overrides."""
+    """Both copies of kiosk.env (None when a copy does not exist) and the runtime overrides.
+
+    ``config_sha`` / ``running_sha`` are the SHA-256 of each copy as it was read (None when the
+    copy does not exist); the write script refuses to run if the live file no longer has it.
+    """
 
     saved: EnvFile | None
     running: EnvFile | None
     overrides: dict[str, str]
+    config_sha: str | None = None
+    running_sha: str | None = None
+
+    def base(self) -> tuple[EnvFile, tuple[str, ...], tuple[str, ...]]:
+        """The file to edit: both copies reconciled (see :func:`pybrilliantkiosk.env.reconcile`).
+
+        With one copy only, that copy; with none, an empty file. Returns ``(base, adopted,
+        skipped)`` like ``reconcile``.
+        """
+        if self.saved is not None and self.running is not None:
+            return reconcile(self.saved, self.running)
+        return self.saved or self.running or EnvFile(), (), ()
 
     @property
     def drift(self) -> tuple[str, ...]:
@@ -125,24 +160,66 @@ class _EnvState:
             return ()
         return drift_keys(self.saved, self.running)
 
+    @property
+    def unsafe(self) -> tuple[str, ...]:
+        """Running values that cannot be written safely (``reconcile`` would skip them)."""
+        return self.base()[2]
 
-def _parse_state(stdout: str) -> _EnvState:
+    def settings(self, *, mask_secrets: bool) -> dict[str, str]:
+        """Effective settings: the reconciled kiosk.env with the overrides applied on top."""
+        base = self.base()[0]
+        values = base.masked_values() if mask_secrets else base.values()
+        return {**values, **self.overrides}
+
+
+@dataclass(frozen=True, slots=True)
+class _Section:
+    args: tuple[str, ...]
+    body: str
+
+
+def _split_sections(stdout: str) -> dict[str, _Section]:
+    """The marked sections after the begin marker (a missing marker means garbled output)."""
     _, sep, rest = stdout.partition(f"{_BEGIN}\n")
     if not sep:
-        raise CommandFailed("read kiosk.env", None, "unexpected output while reading settings")
-    parts = _SECTION_RE.split(rest)  # [pre, name, state, body, name, state, body, ...]
-    files: dict[str, EnvFile | None] = {}
-    over: dict[str, str] = {}
-    for name, state, body in zip(parts[1::3], parts[2::3], parts[3::3], strict=True):
-        if name == "overrides":
-            over = EnvFile.parse(body).values()
-        else:
-            files[name] = EnvFile.parse(body.removesuffix("\n")) if state == "present" else None
+        raise CommandFailed("read the panel", None, "unexpected output while reading the panel")
+    parts = _SECTION_RE.split(rest)  # [pre, name, args, body, name, args, body, ...]
+    return {
+        name: _Section(tuple(args.split(":")[1:]), body)
+        for name, args, body in zip(parts[1::3], parts[2::3], parts[3::3], strict=True)
+    }
+
+
+def _state_from(sections: Mapping[str, _Section]) -> _EnvState:
+    files: dict[str, tuple[EnvFile | None, str | None]] = {}
+    for name in ("config", "running"):
+        section = sections.get(name)
+        if section is None or section.args[:1] != ("present",):
+            files[name] = (None, None)
+            continue
+        digest = section.args[1] if len(section.args) > 1 else ""
+        if not _SHA256_RE.match(digest):
+            raise CommandFailed("read kiosk.env", None, f"no hash for the {name} copy")
+        files[name] = (EnvFile.parse(section.body.removesuffix("\n")), digest.lower())
+    over = EnvFile.parse(sections["overrides"].body).values() if "overrides" in sections else {}
     return _EnvState(
-        files.get("config"),
-        files.get("running"),
+        files["config"][0],
+        files["running"][0],
         {k: v for k, v in over.items() if k in OVERRIDE_KEYS},
+        files["config"][1],
+        files["running"][1],
     )
+
+
+def _status_from(section: _Section) -> SetupStatus:
+    """The setup status of a poll; ``unknown`` if the tool exited with an error."""
+    if section.args[:1] != ("0",):
+        return SetupStatus(state="unknown")
+    return parse_status(parse_json_object(section.body))
+
+
+def _parse_state(stdout: str) -> _EnvState:
+    return _state_from(_split_sections(stdout))
 
 
 def _health_script() -> str:
@@ -161,11 +238,37 @@ def _health_script() -> str:
     return "\n".join(lines)
 
 
-def _write_env_script(purge: tuple[str, ...], write_base: bool, sha256: str = "") -> str:
+#: ``ha-kiosk-setup status`` as a section whose argument is the tool's exit status. A panel
+#: without the tool reports ``not_installed``.
+_STATUS_SECTION = (
+    f"if [ -f {SETUP_PATH} ]; then s=$({SETUP_PYTHON} {SETUP_PATH} status 2>/dev/null); rc=$?; "
+    'else s=\'{"state": "not_installed"}\'; rc=0; fi; '
+    'echo "#--kl:status:$rc--"; echo "$s"'
+)
+#: Health, both kiosk.env copies, overrides and setup status in ONE SSH command: one exec per
+#: poll instead of four.
+_POLL_COMMAND = (
+    f"echo '{_BEGIN}'; echo '#--kl:health--'\n"
+    + _health_script()
+    + "\n"
+    + _STATE_COMMAND.removeprefix(f"echo '{_BEGIN}'; ")
+    + f"; {_STATUS_SECTION}"
+)
+
+
+def _write_env_script(
+    purge: tuple[str, ...],
+    write_base: bool,
+    sha256: str = "",
+    expected: tuple[str | None, str | None] = (None, None),
+) -> str:
     """Shell script (run under the lock) that installs stdin as kiosk.env and purges overrides.
 
     The new file is installed only when what arrived on stdin hashes to ``sha256``, so a dropped
     or empty stdin can never replace the settings (it once emptied both copies on a panel).
+    ``expected`` is the hash of the saved and the running copy as they were read (None: the copy
+    did not exist); if either live file differs now, someone else changed it and the script
+    exits with status 10 without touching anything.
     """
     script = "set -e\n"
     if write_base:
@@ -180,6 +283,20 @@ def _write_env_script(purge: tuple[str, ...], write_base: bool, sha256: str = ""
             '  rm -f "$t"; echo "kiosk.env: incomplete input, nothing changed" >&2; '
             f"exit {_INCOMPLETE_INPUT}\n"
             "fi\n"
+            "changed() {\n"
+            '  rm -f "$t"; echo "kiosk.env changed on the panel meanwhile, nothing changed" >&2; '
+            f"exit {_CHANGED_ON_PANEL}\n"
+            "}\n"
+        )
+        for path, digest in zip((CONFIG_ENV_PATH, ENV_PATH), expected, strict=True):
+            if digest is None:
+                script += f"[ ! -e {path} ] || changed\n"
+            else:
+                script += (
+                    f'[ -f {path} ] && [ "$(sha256sum {path} | cut -d" " -f1)" = {digest} ] '
+                    "|| changed\n"
+                )
+        script += (
             f"for f in {CONFIG_ENV_PATH} {ENV_PATH}; do\n"
             '  [ -d "$(dirname "$f")" ] || continue\n'
             '  if [ -f "$f" ]; then cp -p "$f" "$f.bak"; chmod 600 "$f.bak"; fi\n'
@@ -536,22 +653,33 @@ class Panel:
         result = await self._run(_health_script())
         return parse_health(result.stdout)
 
-    # -- env ----------------------------------------------------------------------------
+    # -- poll and env -------------------------------------------------------------------
+
+    async def poll(self) -> PanelSnapshot:
+        """Health, settings, drift and setup status of the panel in ONE SSH command.
+
+        This is what a coordinator should call on every update: one exec on the panel instead of
+        one each for :meth:`health`, :meth:`get_settings`, :meth:`env_drift` and
+        :meth:`setup_status`. The setup status is ``unknown`` when the tool fails (a broken tool
+        must not make the whole panel unavailable); a garbled reply raises :class:`CommandFailed`.
+        """
+        sections = _split_sections((await self._run(_POLL_COMMAND)).stdout)
+        health = sections.get("health")
+        status = sections.get("status")
+        if health is None or status is None:
+            raise CommandFailed("poll", None, "unexpected output while reading the panel")
+        state = _state_from(sections)
+        return PanelSnapshot(
+            health=parse_health(health.body),
+            setup=_status_from(status),
+            settings=state.settings(mask_secrets=True),
+            drift=state.drift,
+            unsafe=state.unsafe,
+        )
 
     async def _read_state(self) -> _EnvState:
         """Both copies of kiosk.env and the runtime overrides (one round trip)."""
         return _parse_state((await self._run(_STATE_COMMAND)).stdout)
-
-    @staticmethod
-    def _base(state: _EnvState) -> tuple[EnvFile, tuple[str, ...], tuple[str, ...]]:
-        """The file to edit: both copies reconciled (see :func:`pybrilliantkiosk.env.reconcile`).
-
-        With one copy only, that copy; with none, an empty file. Returns ``(base, adopted,
-        skipped)`` like ``reconcile``.
-        """
-        if state.saved is not None and state.running is not None:
-            return reconcile(state.saved, state.running)
-        return state.saved or state.running or EnvFile(), (), ()
 
     async def get_env(self, *, mask_secrets: bool = True) -> dict[str, str]:
         """Effective ``kiosk.env`` values (last assignment wins); secrets masked by default.
@@ -559,7 +687,7 @@ class Panel:
         Both copies are read; where they differ the running one (``/etc/ha-kiosk/kiosk.env``,
         what the panel uses) wins, as in :meth:`set_env`.
         """
-        env, _, _ = self._base(await self._read_state())
+        env = (await self._read_state()).base()[0]
         return env.masked_values() if mask_secrets else env.values()
 
     async def env_drift(self) -> tuple[str, ...]:
@@ -575,17 +703,12 @@ class Panel:
     async def reconcile_env(self) -> tuple[str, ...]:
         """Write the reconciled settings to both copies; returns the keys that had drifted.
 
-        Raises :class:`InvalidArgument` (nothing written) if a drifted value cannot be written
-        safely, because the copies would still differ afterwards.
+        Raises :class:`InvalidArgument` naming the keys (nothing written) if a drifted running
+        value cannot be written safely: ``kiosk.env`` is sourced by root shell scripts, so an
+        unsafe line is never rewritten and the copies would still differ afterwards.
         """
-        async with self._op_lock:
-            await self._ensure_idle()
-            state = await self._read_state()
-            _, _, skipped = self._base(state)
-            if skipped:
-                raise InvalidArgument(f"cannot reconcile unsafe values for {', '.join(skipped)}")
-            await self._write(state, {}, ())
-            return state.drift
+        state, _ = await self._edit({}, ())
+        return state.drift
 
     async def _allowed_keys(self) -> frozenset[str]:
         """Settings the panel's installed ``ha-kiosk-setup`` accepts (cached per connection).
@@ -643,6 +766,14 @@ class Panel:
         effective values nor the overrides need to change nothing is written. ``restart``
         restarts ``ha-kiosk.service`` after a write.
 
+        Optimistic concurrency: the hash of each copy as it was read is checked by the panel-side
+        script, under the lock, before anything is written. If either file changed meanwhile
+        nothing is written, the edit is redone once on fresh state, and a second conflict raises
+        :class:`ConcurrentModification`. If the running copy holds a value that cannot be written
+        safely (see :func:`pybrilliantkiosk.env.reconcile`) and the caller did not set or delete
+        that key, :class:`InvalidArgument` names the keys and nothing is written: the saved value
+        would otherwise silently replace, say, a hand-set ``HA_URL`` in both copies.
+
         The panel-side script holds the ``ha-kiosk-setup`` flock, so it cannot interleave with a
         setup run (:class:`SetupBusy`); calls on one :class:`Panel` are serialised. KNOWN RACE:
         ``ha-kiosk-mqtt.py`` rewrites ``overrides.env`` (read, modify, ``os.replace``) without
@@ -654,30 +785,62 @@ class Panel:
             validate_key(key)
         for value in changes.values():
             format_value(value)
+        _, changed = await self._edit(changes, delete)
+        if restart and changed:
+            await self.restart("ha-kiosk")
+        return changed
+
+    async def _edit(
+        self, changes: Mapping[str, str], delete: tuple[str, ...]
+    ) -> tuple[_EnvState, tuple[str, ...]]:
+        """Read, edit and write kiosk.env under the op lock; retries once if it changed meanwhile.
+
+        Returns the state the write was based on and the keys whose effective value changed.
+        """
         async with self._op_lock:
             await self._ensure_idle()
-            state = await self._read_state()
-            if changes:
-                allowed = await self._allowed_keys()
-                for key in changes:
-                    validate_setting_key(key, allowed)
-            changed = await self._write(state, changes, delete)
-            if restart and changed:
-                await self.restart("ha-kiosk")
-            return changed
+
+            async def attempt() -> tuple[_EnvState, tuple[str, ...]]:
+                state = await self._read_state()
+                if changes:
+                    allowed = await self._allowed_keys()
+                    for key in changes:
+                        validate_setting_key(key, allowed)
+                return state, await self._write(state, changes, delete)
+
+            try:
+                return await attempt()
+            except ConcurrentModification:
+                _LOGGER.info(
+                    "kiosk.env on %s changed while it was edited; retrying once", self.host
+                )
+            return await attempt()
 
     async def _write(
         self, state: _EnvState, changes: Mapping[str, str], delete: tuple[str, ...]
     ) -> tuple[str, ...]:
-        """Apply the edit to the reconciled base and write it (caller holds ``_op_lock``)."""
-        old, adopted, skipped = self._base(state)
+        """Apply the edit to the reconciled base and write it (caller holds ``_op_lock``).
+
+        Raises :class:`InvalidArgument` when the running copy has an unsafe value that would have
+        to be adopted: the saved value would silently replace it in both copies (reverting, say, a
+        hand-set ``HA_URL``), and an unsafe line must never be rewritten. A key the caller sets or
+        deletes explicitly is not blocked, since its line is replaced on purpose.
+        """
+        old, adopted, skipped = state.base()
+        passed = tuple(dict.fromkeys((*changes, *delete)))
+        blocked = tuple(k for k in skipped if k not in passed)
+        if blocked:
+            raise InvalidArgument(
+                f"the running kiosk.env has values that cannot be written safely "
+                f"({', '.join(blocked)}); nothing was changed. Fix them on the panel."
+            )
         self.last_reconciled = adopted
         if adopted or skipped:
             parts = []
             if adopted:
                 parts.append(f"kept the running value of {', '.join(adopted)}")
             if skipped:
-                parts.append(f"left out unsafe values of {', '.join(skipped)}")
+                parts.append(f"replaced the unsafe running value of {', '.join(skipped)}")
             _LOGGER.warning(
                 "kiosk.env on %s: the running and the saved copy differed; %s",
                 self.host,
@@ -685,7 +848,6 @@ class Panel:
             )
         overrides = state.overrides
         new = old.apply(changes, delete)
-        passed = tuple(dict.fromkeys((*changes, *delete)))
         purge = tuple(k for k in passed if k in overrides)
         # What the panel uses now: the running copy (the saved one when it is the only copy).
         current = state.running if state.running is not None else state.saved
@@ -702,7 +864,8 @@ class Panel:
             return ()
         text = new.serialize()
         digest = sha256_hex(text.encode()) if write_base else ""
-        await self._locked(_write_env_script(purge, write_base, digest), stdin=text)
+        script = _write_env_script(purge, write_base, digest, (state.config_sha, state.running_sha))
+        await self._locked(script, stdin=text)
         return changed
 
     async def get_settings(self, *, mask_secrets: bool = True) -> dict[str, str]:
@@ -710,10 +873,7 @@ class Panel:
 
         Missing files count as empty, so an uninstalled panel returns ``{}``.
         """
-        state = await self._read_state()
-        base, _, _ = self._base(state)
-        values = base.masked_values() if mask_secrets else base.values()
-        return {**values, **state.overrides}
+        return (await self._read_state()).settings(mask_secrets=mask_secrets)
 
     async def _locked(self, script: str, *, stdin: str | None = None) -> _Result:
         """Run a shell script on the panel under ``ha-kiosk-setup``'s flock."""
@@ -721,6 +881,10 @@ class Panel:
         result = await self._run(command, stdin=stdin, check=False)
         if result.exit_status == SetupBusy.code:
             raise SetupBusy("ha-kiosk-setup holds the panel lock; try again when it ends")
+        if result.exit_status == _CHANGED_ON_PANEL:
+            raise ConcurrentModification(
+                "kiosk.env changed on the panel while it was being edited; nothing was changed"
+            )
         if result.exit_status == _INCOMPLETE_INPUT:
             raise ChecksumMismatch(
                 "the new kiosk.env did not arrive intact on the panel; nothing was changed"
@@ -848,6 +1012,7 @@ class Panel:
         bundle: bytes,
         sha256: str,
         *,
+        size: int | None = None,
         env: str | None = None,
         token: str | None = None,
     ) -> SetupStatus:
@@ -856,28 +1021,41 @@ class Panel:
         The bundle is verified here and on the panel, the tool is extracted from it and run with
         ``--detach``; the call polls ``wait`` until the job ends. ``env`` / ``token`` text is only
         needed for a first install (the tool keeps the panel's settings and token otherwise).
-        Raises a :class:`SetupError` subclass for the tool's exit codes.
+        ``size`` is the expected size in bytes, handed to the tool as ``--size``; pass the value
+        from a source independent of the download (a pinned release) when there is one, the
+        length of ``bundle`` is used otherwise. Raises a :class:`SetupError` subclass for the
+        tool's exit codes.
         """
         if not _SHA256_RE.match(sha256):
             raise InvalidArgument("sha256 must be 64 hex characters")
         expected = sha256.lower()
+        if size is not None and size != len(bundle):
+            raise ChecksumMismatch(f"bundle is {len(bundle)} bytes, expected {size}")
         if await asyncio.to_thread(sha256_hex, bundle) != expected:
             raise ChecksumMismatch("bundle does not match the expected sha256")
         async with self._op_lock:
             await self._ensure_idle()
             made = await self._run(
-                f"d=$(mktemp -d {INSTALL_PREFIX}.XXXXXXXX) && chmod 700 \"$d\" && echo \"$d\""
+                f'd=$(mktemp -d {INSTALL_PREFIX}.XXXXXXXX) && chmod 700 "$d" && echo "$d"'
             )
             workdir = made.stdout.strip()
             if not _INSTALL_DIR_RE.match(workdir):
                 raise CommandFailed("mktemp -d", made.exit_status, f"unexpected output {workdir!r}")
             try:
-                return await self._install_in(workdir, bundle, expected, env, token)
+                return await self._install_in(
+                    workdir, bundle, expected, len(bundle) if size is None else size, env, token
+                )
             finally:
                 await self._cleanup_install(workdir)
 
     async def _install_in(
-        self, workdir: str, bundle: bytes, expected: str, env: str | None, token: str | None
+        self,
+        workdir: str,
+        bundle: bytes,
+        expected: str,
+        size: int,
+        env: str | None,
+        token: str | None,
     ) -> SetupStatus:
         remote = f"{workdir}/bundle.tar.gz"
         tool = f"{workdir}/ha-kiosk-setup"
@@ -890,7 +1068,7 @@ class Panel:
             f"cd {workdir} && m=$(tar -tzf bundle.tar.gz | grep -E '^[^/]+/ha-kiosk-setup$'"
             f' | head -n 1) && [ -n "$m" ] && tar -xzOf bundle.tar.gz "$m" > ha-kiosk-setup'
         )
-        args = f"install --bundle {remote} --sha256 {expected} --size {len(bundle)} --detach"
+        args = f"install --bundle {remote} --sha256 {expected} --size {size} --detach"
         for name, text, flag in (("env", env, "--env"), ("token", token, "--token")):
             if text is not None:
                 path = f"{workdir}/{name}"

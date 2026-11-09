@@ -1,92 +1,230 @@
-# Honest self-assessment. The manifest carries no `quality_scale` tier: bronze still has open rules
-# (brand images are done, but dependency-transparency and the four bronze docs rules are todo).
-# The highest tier whose rules are ALL done or exempt is the one to put in manifest.json.
+# Honest self-assessment against the Home Assistant Integration Quality Scale. Every rule is done
+# or exempt (with the reason) EXCEPT dependency-transparency, which stays todo until
+# pybrilliantkiosk is published to PyPI. The manifest therefore carries no `quality_scale` tier yet:
+# once the library is on PyPI, flip that rule to done and set "quality_scale": "platinum".
 rules:
   # Bronze
-  action-setup: done
+  action-setup:
+    status: done
+    comment: >-
+      The actions are registered once in async_setup (services.py), not per config entry, so they exist, and fail with a translated error, even when no entry is loaded.
   appropriate-polling:
     status: done
-    comment: One coordinator polls health, settings and setup status every 60 s over a single SSH connection; releases every 6 h, one shared coordinator for all panels (GitHub allows 60 anonymous requests per hour).
+    comment: |
+      One coordinator per panel polls every 60 s over one persistent SSH connection, with ONE SSH command per poll (Panel.poll) that returns health, both kiosk.env copies with their checksums, the runtime overrides and `ha-kiosk-setup status` in marked sections. Before this it was four commands per poll (health, settings, status, drift); the library test test_poll_is_one_ssh_command_with_everything_in_it asserts exactly one exec, and tests/brilliant_kiosk/test_init.py asserts the coordinator makes one Panel.poll call per update and no other read. Releases are refreshed every 6 h by a single coordinator shared by all panels, with two anonymous GitHub requests (the newest 30 releases and /releases/latest); GitHub allows 60 per hour.
   brands:
     status: done
-    comment: Shipped in custom_components/brilliant_kiosk/brand/ (icon.png, icon@2x.png). Local brand images are supported from Home Assistant 2026.3 (hacs.json requires 2026.3.0); older versions would need a home-assistant/brands PR.
-  common-modules: done
-  config-flow-test-coverage: done
-  config-flow: done
+    comment: >-
+      Shipped locally in custom_components/brilliant_kiosk/brand/ (icon.png, icon@2x.png; the logo is optional). Local brand images are supported from Home Assistant 2026.3 (developers.home-assistant.io, brand images), so hacs.json requires 2026.3.1, the version the tests run against (requirements_test.txt pins pytest-homeassistant-custom-component 0.13.317, which pins homeassistant 2026.3.1).
+  common-modules:
+    status: done
+    comment: >-
+      The coordinator is in coordinator.py, the shared entity base in entity.py, translated error mapping in errors.py.
+  config-flow-test-coverage:
+    status: done
+    comment: >-
+      config_flow.py is at 100 % (tests/brilliant_kiosk/test_config_flow.py and test_config_flow_trust.py): user, host key, reauth (also a changed host key), reconfigure (also a changed host key), install, options, MQTT discovery, every error and recovery.
+  config-flow:
+    status: done
+    comment: >-
+      Every field has a data_description; credentials are in ConfigEntry.data, the MQTT provider, device id, install management and release channel are in ConfigEntry.options.
   dependency-transparency:
     status: todo
-    comment: pybrilliantkiosk==0.1.0 is pinned in manifest.json but not yet published to PyPI (open question 2 of the spec), so its source and build are not yet publicly traceable.
-  docs-actions: todo
-  docs-high-level-description: todo
-  docs-installation-instructions: todo
-  docs-removal-instructions: todo
+    comment: >-
+      pybrilliantkiosk==0.1.0 is pinned in manifest.json but not yet published to PyPI, so its source and build are not yet publicly traceable. Publish it (sdist and wheel built by CI from this repository's tag), then mark this rule done and set quality_scale in the manifest.
+  docs-actions:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Actions (every action with its fields and an example); linked from README.md, which is the manifest's documentation URL.
+  docs-conditions:
+    status: exempt
+    comment: >-
+      The integration provides no conditions.
+  docs-high-level-description:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section High-level description.
+  docs-installation-instructions:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Installation (HACS and manual, adding a panel) and README.md.
+  docs-removal-instructions:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Removal.
+  docs-triggers:
+    status: exempt
+    comment: >-
+      The integration provides no triggers.
   entity-event-setup:
     status: done
-    comment: The update entity subscribes to the shared releases coordinator in async_added_to_hass and unsubscribes with async_on_remove. Other entities are plain CoordinatorEntity subclasses.
-  entity-unique-id: done
-  has-entity-name: done
-  runtime-data: done
-  test-before-configure: done
-  test-before-setup: done
-  unique-config-entry: done
+    comment: >-
+      The update entity subscribes to the shared releases coordinator in async_added_to_hass and unsubscribes with async_on_remove. Other entities are plain CoordinatorEntity subclasses.
+  entity-unique-id:
+    status: done
+    comment: >-
+      Every entity has the unique id <config entry unique id>_<key>.
+  has-entity-name:
+    status: done
+    comment: >-
+      BrilliantKioskEntity sets _attr_has_entity_name and a translation key.
+  runtime-data:
+    status: done
+    comment: >-
+      The coordinator is stored in ConfigEntry.runtime_data (typed BrilliantKioskConfigEntry).
+  test-before-configure:
+    status: done
+    comment: >-
+      The config flow connects to the panel, authenticates and reads its state before creating the entry; the host key is read first, without credentials.
+  test-before-setup:
+    status: done
+    comment: >-
+      async_config_entry_first_refresh raises ConfigEntryNotReady for an unreachable panel and ConfigEntryAuthFailed (reauth) for rejected credentials or a changed host key.
+  unique-config-entry:
+    status: done
+    comment: >-
+      The unique id is the Brilliant device id (or the host key fingerprint when it cannot be read); a duplicate aborts and updates the host.
 
   # Silver
-  action-exceptions: done
-  config-entry-unloading: done
-  docs-configuration-parameters: todo
-  docs-installation-parameters: todo
-  entity-unavailable: done
-  integration-owner: done
+  action-exceptions:
+    status: done
+    comment: >-
+      Actions raise ServiceValidationError for bad input and HomeAssistantError, both with translation keys, for panel errors (errors.py panel_errors).
+  config-entry-unloading:
+    status: done
+    comment: >-
+      Platforms are unloaded, the coordinator shuts down its SSH connection and the shared releases coordinator with the last user; the drift issue is dropped on unload.
+  docs-configuration-parameters:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Configuration parameters (connection parameters, host key pinning, options).
+  docs-installation-parameters:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Installation parameters (including the characters a value may not contain).
+  entity-unavailable:
+    status: done
+    comment: >-
+      Entities are CoordinatorEntity subclasses, unavailable when an update fails.
+  integration-owner:
+    status: done
+    comment: >-
+      codeowners is set in manifest.json.
   log-when-unavailable:
     status: done
-    comment: Handled by DataUpdateCoordinator (logs once when unavailable and once when back).
-  parallel-updates: done
-  reauthentication-flow: done
-  test-coverage: done
+    comment: >-
+      Handled by DataUpdateCoordinator (logs once when unavailable and once when back).
+  parallel-updates:
+    status: done
+    comment: >-
+      PARALLEL_UPDATES is set in every platform (0 for read-only, 1 for platforms that write to the panel).
+  reauthentication-flow:
+    status: done
+    comment: >-
+      Reauth handles a rejected password or key and a changed SSH host key; the new key is shown and pinned only after explicit confirmation, and a different panel behind it is refused.
+  test-coverage:
+    status: done
+    comment: >-
+      Both suites run at 100 % coverage with the gate in pyproject.toml (integration) and lib/pybrilliantkiosk/pyproject.toml (library), enforced by .github/workflows/integration.yml.
 
   # Gold
   devices:
     status: done
-    comment: Each panel is its own device, identified by (brilliant_kiosk, unique_id) and linked with via_device to the panel's MQTT device (built-in MQTT id brilliant_<devid12>, or brilliant-mqtt's MQTT_DEVICE_ID) as soon as that device exists; re-checked on every coordinator update.
-  diagnostics: done
+    comment: >-
+      Each panel is its own device, identified by (brilliant_kiosk, unique_id), with its software version kept current, and linked with via_device to the panel's MQTT device (built-in MQTT id brilliant_<devid12>, or brilliant-mqtt's MQTT_DEVICE_ID) as soon as that device exists; re-checked on every coordinator update.
+  diagnostics:
+    status: done
+    comment: >-
+      Diagnostics remove the panel's address, ids, host key, logins, secrets, MQTT broker details, allow-lists and every IP address, also from free text such as the setup tool's messages; a test asserts none of them appear anywhere in the output.
   discovery-update-info:
     status: exempt
-    comment: The MQTT discovery payload carries only the node id (topic <base>/<node>/kiosk_state), never an address, so there is nothing to update a stored host from. A changed address is handled by the reconfigure flow, which also verifies the pinned SSH host key.
+    comment: >-
+      The MQTT discovery payload carries only the node id (topic <base>/<node>/kiosk_state), never an address, so there is nothing to update a stored host from. A changed address is handled by the reconfigure flow, which also verifies the pinned SSH host key.
   discovery:
     status: done
     comment: |
       MQTT discovery on the retained brilliant_kiosk/+/kiosk_state topic, which the kiosk publishes in both MQTT modes.
       Known limitation: manifest.json topics are static, so a panel with a custom MQTT_BASE is not discovered; add it manually.
       manifest.json keeps `dependencies: ["mqtt"]` (not after_dependencies) because the Home Assistant manifest docs require mqtt in `dependencies` for an integration that declares mqtt discovery topics.
-  docs-data-update: todo
-  docs-examples: todo
-  docs-known-limitations: todo
-  docs-supported-devices: todo
-  docs-supported-functions: todo
-  docs-troubleshooting: todo
-  docs-use-cases: todo
+  docs-data-update:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Data update (what is polled, how often, one SSH command, releases every 6 h).
+  docs-examples:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Examples (automations) and the examples of each action.
+  docs-known-limitations:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Known limitations.
+  docs-supported-devices:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Supported devices.
+  docs-supported-functions:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Supported functions.
+  docs-troubleshooting:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Troubleshooting.
+  docs-use-cases:
+    status: done
+    comment: >-
+      docs/home-assistant-integration.md, section Use cases.
   dynamic-devices:
     status: exempt
-    comment: One device per config entry; a panel never has child devices.
-  entity-category: done
-  entity-device-class: done
-  entity-disabled-by-default: done
-  entity-translations: done
-  exception-translations: done
-  icon-translations: done
-  reconfiguration-flow: done
+    comment: >-
+      One device per config entry; a panel never has child devices.
+  entity-category:
+    status: done
+    comment: >-
+      Diagnostic entities (version, install state, memory, load, service states) and configuration entities (levels, channel, reboot, reapply, rollback) have an entity category.
+  entity-device-class:
+    status: done
+    comment: >-
+      Device classes are set where one fits (running, restart, enum).
+  entity-disabled-by-default:
+    status: done
+    comment: >-
+      Noisy or optional entities (load, voice, intercom, capture and swap services, restart voice, reapply, rollback) are disabled by default.
+  entity-translations:
+    status: done
+    comment: >-
+      Entity names, enum states and the selector options are translated.
+  exception-translations:
+    status: done
+    comment: >-
+      Every raised Home Assistant exception has a translation key and placeholders (strings.json, exceptions).
+  icon-translations:
+    status: done
+    comment: >-
+      icons.json defines entity and action icons.
+  reconfiguration-flow:
+    status: done
+    comment: >-
+      The reconfigure flow changes the address; the pinned host key must match, or a different key must be confirmed explicitly.
   repair-issues:
     status: done
-    comment: Repairs for the voice satellite missing from Wyoming (hostnames are resolved before flagging), a changed SSH host key, an MQTT provider change that could not be applied (fixable: re-applies it) and settings that differ between the running and the saved copy of kiosk.env (fixable: reconciles them). Failed installs surface in the config flow and as action errors.
+    comment: >-
+      Repairs for an MQTT provider change that could not be applied (fixable, re-applies it and shows the real reason) and for settings that differ between the running and the saved copy of kiosk.env (fixable, reconciles them; with a value that cannot be written safely it names the keys and the fix is refused). A changed SSH host key is not a repair issue but a re-authentication that shows the new key. The issues of an entry are deleted when it is removed, and the drift issue when it is unloaded. The earlier voice-satellite repair was dropped because it needed another integration's config entries.
   stale-devices:
     status: exempt
-    comment: One device per config entry; it is removed with the entry.
+    comment: >-
+      One device per config entry; it is removed with the entry.
 
   # Platinum
-  async-dependency: done
+  async-dependency:
+    status: done
+    comment: >-
+      pybrilliantkiosk is fully asynchronous (asyncssh and aiohttp).
   inject-websession:
     status: done
-    comment: Release listing and download use Home Assistant's shared aiohttp session. SSH uses asyncssh's own connection, which has no aiohttp equivalent.
+    comment: >-
+      Release listing and download use Home Assistant's shared aiohttp session. SSH uses asyncssh's own connection, which has no aiohttp equivalent.
   strict-typing:
     status: done
-    comment: mypy --strict passes for the integration and for pybrilliantkiosk and is enforced in .github/workflows/integration.yml. Registration in HA core's .strict-typing file does not apply to a custom integration.
+    comment: >-
+      mypy --strict passes for the integration and for pybrilliantkiosk (py.typed) and is enforced in .github/workflows/integration.yml. Registration in HA core's .strict-typing file does not apply to a custom integration.

@@ -16,6 +16,7 @@ from custom_components.brilliant_kiosk.const import (
     DOMAIN,
     PROVIDER_BUILTIN,
 )
+from custom_components.brilliant_kiosk.pinned import PinnedRelease
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pybrilliantkiosk import (
@@ -25,6 +26,7 @@ from pybrilliantkiosk import (
     BusVariable,
     HostKeyInfo,
     PanelHealth,
+    PanelSnapshot,
     Release,
     SetupStatus,
 )
@@ -84,6 +86,14 @@ OLD = Release(
 )
 
 
+#: The pinned stable releases of the tests (the real table is in ``pinned.py``): the download
+#: double returns ``b"bundle"``, 6 bytes, with this hash for v1.5.0.
+PINNED = {
+    "v1.5.0": PinnedRelease(sha256="a" * 64, size=6),
+    "v1.4.0": PinnedRelease(sha256="b" * 64, size=6),
+}
+
+
 def make_panel() -> MagicMock:
     """A Panel double with sensible defaults."""
     panel = MagicMock(name="Panel")
@@ -104,6 +114,23 @@ def make_panel() -> MagicMock:
     panel.logs = AsyncMock(return_value="line1\nline2")
     panel.install = AsyncMock(return_value=SetupStatus(state="active"))
     panel.setup_command = AsyncMock(return_value=SetupStatus(state="active"))
+    panel.unsafe = ()
+    #: Set to a library error to make the next polls fail with it (reset with ``None``).
+    panel.poll_error = None
+
+    async def poll() -> PanelSnapshot:
+        """The coordinator's one command: assembled from the values the knobs above hold."""
+        if panel.poll_error is not None:
+            raise panel.poll_error
+        return PanelSnapshot(
+            health=panel.health.return_value,
+            setup=panel.setup_status.return_value,
+            settings=panel.get_settings.return_value,
+            drift=panel.env_drift.return_value,
+            unsafe=panel.unsafe,
+        )
+
+    panel.poll = AsyncMock(side_effect=poll)
     return panel
 
 
@@ -113,7 +140,9 @@ def panel() -> Generator[MagicMock]:
     instance = make_panel()
     scan = AsyncMock(return_value=HostKeyInfo(FINGERPRINT, MD5_FINGERPRINT))
     with (
-        patch("custom_components.brilliant_kiosk.coordinator.Panel", return_value=instance),
+        patch(
+            "custom_components.brilliant_kiosk.coordinator.Panel", return_value=instance
+        ) as coordinator_panel,
         patch(
             "custom_components.brilliant_kiosk.config_flow.Panel", return_value=instance
         ) as flow_panel,
@@ -121,6 +150,7 @@ def panel() -> Generator[MagicMock]:
     ):
         instance.fetch_host_key = scan  # the credential-less host key scan of the config flow
         instance.flow_panel_cls = flow_panel  # how the config flow built its (credentialed) Panel
+        instance.coordinator_panel_cls = coordinator_panel  # how the coordinator built its Panel
         yield instance
 
 
@@ -134,10 +164,12 @@ def releases() -> Generator[MagicMock]:
         return tuple(r for r in all_releases if include_prereleases or not r.prerelease)
 
     client.list = AsyncMock(side_effect=_list)
+    client.latest_stable = AsyncMock(return_value=STABLE)
     client.download = AsyncMock(return_value=(b"bundle", "a" * 64))
     with (
         patch("custom_components.brilliant_kiosk.coordinator.Releases", return_value=client),
         patch("custom_components.brilliant_kiosk.config_flow.Releases", return_value=client),
+        patch("custom_components.brilliant_kiosk.install.PINNED_RELEASES", PINNED),
     ):
         yield client
 

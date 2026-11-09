@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from custom_components.brilliant_kiosk.const import (
@@ -24,14 +25,24 @@ from pybrilliantkiosk import (
     HostKeyMismatch,
     ReleaseError,
     SetupBusy,
-    SetupError,
+    SetupStatus,
 )
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )
 
-from .conftest import HOST, NODE, UNIQUE_ID, entity_id, make_entry, setup_entry
+from .conftest import (
+    HEALTH,
+    HOST,
+    NIGHTLY,
+    NODE,
+    STABLE,
+    UNIQUE_ID,
+    entity_id,
+    make_entry,
+    setup_entry,
+)
 
 
 async def test_setup_and_unload(hass, panel: MagicMock, releases: MagicMock) -> None:
@@ -49,15 +60,15 @@ async def test_setup_and_unload(hass, panel: MagicMock, releases: MagicMock) -> 
     ("error", "state"),
     [
         (CannotConnect("down"), ConfigEntryState.SETUP_RETRY),
-        (HostKeyMismatch("changed", "SHA256:x"), ConfigEntryState.SETUP_RETRY),
         (CommandFailed("c", 1, "x"), ConfigEntryState.SETUP_RETRY),
         (AuthFailed("nope"), ConfigEntryState.SETUP_ERROR),
+        (HostKeyMismatch("changed", "SHA256:x"), ConfigEntryState.SETUP_ERROR),
     ],
 )
 async def test_first_refresh_failures(
     hass, panel: MagicMock, releases: MagicMock, error: Exception, state: ConfigEntryState
 ) -> None:
-    panel.health.side_effect = error
+    panel.poll_error = error
     entry = make_entry()
     await setup_entry_no_assert(hass, entry)
     assert entry.state is state
@@ -79,12 +90,12 @@ async def test_entities_unavailable_then_recover(
     eid = entity_id(hass, "sensor", "version")
     assert eid and hass.states.get(eid).state == "v1.4.0"
 
-    panel.health.side_effect = CannotConnect("down")
+    panel.poll_error = CannotConnect("down")
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
     await hass.async_block_till_done()
     assert hass.states.get(eid).state == "unavailable"
 
-    panel.health.side_effect = None
+    panel.poll_error = None
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=130))
     await hass.async_block_till_done()
     assert hass.states.get(eid).state == "v1.4.0"
@@ -93,12 +104,51 @@ async def test_entities_unavailable_then_recover(
 async def test_missing_env_and_setup_tool_are_tolerated(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
-    panel.get_settings.side_effect = CommandFailed("cat", 1, "no file")
-    panel.setup_status.side_effect = SetupError("odd")
+    """A poll whose settings are empty and whose setup tool failed still gives a working panel."""
+    panel.get_settings.return_value = {}
+    panel.setup_status.return_value = SetupStatus(state="unknown")
     entry = make_entry()
     await setup_entry(hass, entry)
     assert entry.runtime_data.data.env == {}
     assert entry.runtime_data.data.setup.state == "unknown"
+
+
+async def test_one_poll_is_one_library_call(hass, panel: MagicMock, releases: MagicMock) -> None:
+    """The coordinator reads everything with Panel.poll() (one SSH exec), not four reads."""
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    for name in ("health", "get_settings", "env_drift", "setup_status"):
+        getattr(panel, name).reset_mock()
+    panel.poll.reset_mock()
+    await entry.runtime_data.async_refresh()
+    assert panel.poll.await_count == 1
+    for name in ("health", "get_settings", "env_drift", "setup_status"):
+        getattr(panel, name).assert_not_called()
+    assert entry.runtime_data.update_interval == timedelta(seconds=60)
+
+
+async def test_the_newest_stable_release_is_found_when_the_first_page_has_none(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """Thirty nightlies push the stable release off the list: /releases/latest still finds it."""
+    releases.list = AsyncMock(return_value=(NIGHTLY,))
+    releases.latest_stable = AsyncMock(return_value=STABLE)
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert [r.tag for r in entry.runtime_data.releases.data] == [NIGHTLY.tag, STABLE.tag]
+
+    # A stable release that is on the list is not added twice; none at all adds nothing.
+    releases.list = AsyncMock(return_value=(NIGHTLY, STABLE))
+    await entry.runtime_data.releases.async_refresh()
+    assert [r.tag for r in entry.runtime_data.releases.data] == [NIGHTLY.tag, STABLE.tag]
+    releases.latest_stable = AsyncMock(return_value=None)
+    await entry.runtime_data.releases.async_refresh()
+    assert [r.tag for r in entry.runtime_data.releases.data] == [NIGHTLY.tag, STABLE.tag]
+
+    # Either request failing is a failed refresh, reported once by the coordinator.
+    releases.latest_stable = AsyncMock(side_effect=ReleaseError("rate limited"))
+    await entry.runtime_data.releases.async_refresh()
+    assert entry.runtime_data.releases.last_update_success is False
 
 
 async def test_release_failure_is_not_fatal(hass, panel: MagicMock, releases: MagicMock) -> None:
@@ -109,83 +159,185 @@ async def test_release_failure_is_not_fatal(hass, panel: MagicMock, releases: Ma
     assert entry.runtime_data.releases.last_update_success is False
 
 
-async def test_voice_issue_created_and_cleared(hass, panel: MagicMock, releases: MagicMock) -> None:
+async def test_other_integrations_config_entries_are_never_read(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """No Wyoming lookup and no voice repair: a panel with the voice satellite on raises nothing."""
     panel.get_settings.return_value = {"KIOSK_MQTT": "1", "KIOSK_VOICE": "1"}
+    wyoming = MockConfigEntry(domain="wyoming", data={"host": "10.9.9.9", "port": 10700})
+    wyoming.add_to_hass(hass)
+    entry = make_entry()
+    asked: list[str | None] = []
+    real = hass.config_entries.async_entries
+
+    def spy(domain: str | None = None, *args, **kwargs):
+        asked.append(domain)
+        return real(domain, *args, **kwargs)
+
+    hass.config_entries.async_entries = spy  # type: ignore[method-assign]
+    await setup_entry(hass, entry)
+    await entry.runtime_data.async_refresh()
+    assert "wyoming" not in asked
+    assert not [
+        issue
+        for (domain, issue_id), issue in ir.async_get(hass).issues.items()
+        if domain == DOMAIN and issue_id.startswith("voice_not_in_wyoming")
+    ]
+
+
+async def test_host_key_change_starts_reauth_not_a_repair_issue(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
     entry = make_entry()
     await setup_entry(hass, entry)
-    issue_id = f"voice_not_in_wyoming_{entry.entry_id}"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
 
-    wyoming = MockConfigEntry(domain="wyoming", data={"host": "192.168.1.50", "port": 10700})
-    wyoming.add_to_hass(hass)
+    panel.poll_error = HostKeyMismatch("changed", "SHA256:newkey")
     await entry.runtime_data.async_refresh()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+    assert not [i for (d, i) in ir.async_get(hass).issues if d == DOMAIN and "host_key" in i]
+    assert not entry.runtime_data.last_update_success
 
 
-async def test_voice_issue_resolves_hostnames_before_flagging(
+async def test_unreachable_panel_does_not_start_reauth(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    panel.poll_error = CannotConnect("down")
+    await entry.runtime_data.async_refresh()
+    assert not hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+
+
+# -- device software version ---------------------------------------------------------------
+
+
+async def test_device_sw_version_follows_the_panel(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    assert _our_device(hass).sw_version == "v1.4.0"
+
+    panel.health.return_value = replace(HEALTH, version="v1.5.0")
+    await entry.runtime_data.async_refresh()
+    assert _our_device(hass).sw_version == "v1.5.0"
+    assert entry.runtime_data is not None  # no reload needed
+
+    # An unreadable version (None) does not wipe what is known.
+    panel.health.return_value = replace(HEALTH, version=None)
+    await entry.runtime_data.async_refresh()
+    assert _our_device(hass).sw_version == "v1.5.0"
+
+
+# -- repair issues are removed with their entry ----------------------------------------------
+
+
+def _issues(hass, entry_id: str) -> set[str]:
+    return {
+        issue_id
+        for (domain, issue_id) in ir.async_get(hass).issues
+        if domain == DOMAIN and issue_id.endswith(entry_id)
+    }
+
+
+def _raise_all_issues(hass, entry) -> set[str]:
+    registry = ir.async_get(hass)
+    ids = {
+        f"{key}_{entry.entry_id}"
+        for key in ("env_drift", "mqtt_provider_not_applied", "host_key_changed", "voice_x")
+    }
+    for issue_id in ids:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="env_drift",
+        )
+    assert registry.async_get_issue(DOMAIN, f"env_drift_{entry.entry_id}")
+    return ids
+
+
+async def test_removing_an_entry_deletes_all_of_its_issues_and_only_its_own(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    first = make_entry()
+    await setup_entry(hass, first)
+    second = MockConfigEntry(
+        domain=DOMAIN,
+        title="Second",
+        unique_id="brilliant_second",
+        data={**first.data, "host": "192.168.1.51", "node": "brilliant_second"},
+        options=dict(first.options),
+    )
+    await setup_entry(hass, second)
+    mine = _raise_all_issues(hass, first)
+    theirs = _raise_all_issues(hass, second)
+    ir.async_create_issue(
+        hass,
+        "other_domain",
+        f"env_drift_{first.entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="x",
+    )
+    assert _issues(hass, first.entry_id) == mine
+
+    await hass.config_entries.async_remove(first.entry_id)
+    await hass.async_block_till_done()
+    assert _issues(hass, first.entry_id) == set()
+    assert _issues(hass, second.entry_id) == theirs
+    # Another integration's issue with a similar id is not ours to delete.
+    assert ir.async_get(hass).async_get_issue("other_domain", f"env_drift_{first.entry_id}")
+
+
+async def test_unloading_drops_the_drift_issue_but_keeps_the_provider_issue(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    panel.env_drift.return_value = ("DAY_LEVEL",)
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    drift = f"env_drift_{entry.entry_id}"
+    provider = f"mqtt_provider_not_applied_{entry.entry_id}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        provider,
+        is_fixable=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="mqtt_provider_not_applied",
+        translation_placeholders={"host": HOST, "error": "x"},
+    )
+    assert {drift, provider} <= _issues(hass, entry.entry_id)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _issues(hass, entry.entry_id) == {provider}  # the options listener raises that one
+
+    # A reload brings the drift issue back, because the copies still differ.
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert drift in _issues(hass, entry.entry_id)
+
+
+async def test_a_failed_unload_keeps_the_issues(
     hass, panel: MagicMock, releases: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A Wyoming entry that names the panel by hostname is the same panel, not a missing one."""
-    addresses = {"192.168.1.50": {"192.168.1.50"}, "kiosk.local": {"192.168.1.50"}}
-
-    async def fake_resolve(hass_, host: str) -> set[str]:
-        return addresses.get(host, set())
-
-    monkeypatch.setattr("custom_components.brilliant_kiosk.coordinator._resolve", fake_resolve)
-    panel.get_settings.return_value = {"KIOSK_MQTT": "1", "KIOSK_VOICE": "1"}
-    MockConfigEntry(domain="wyoming", data={"host": "kiosk.local", "port": 10700}).add_to_hass(hass)
+    panel.env_drift.return_value = ("DAY_LEVEL",)
     entry = make_entry()
     await setup_entry(hass, entry)
-    issue_id = f"voice_not_in_wyoming_{entry.entry_id}"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
-    # A Wyoming entry for another machine does not count.
-    addresses["kiosk.local"] = {"192.168.1.77"}
-    await entry.runtime_data.async_refresh()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+    async def refuse(*args, **kwargs) -> bool:
+        return False
 
+    monkeypatch.setattr(hass.config_entries, "async_unload_platforms", refuse)
+    from custom_components.brilliant_kiosk import async_unload_entry
 
-async def test_resolve_helper(hass) -> None:
-    from custom_components.brilliant_kiosk.coordinator import _resolve
-
-    assert await _resolve(hass, "127.0.0.1") == {"127.0.0.1"}
-    assert await _resolve(hass, "host.invalid.") == set()  # does not resolve: empty, no error
-
-
-async def test_host_key_change_raises_a_repair_issue_until_it_matches_again(
-    hass, panel: MagicMock, releases: MagicMock
-) -> None:
-    entry = make_entry()
-    await setup_entry(hass, entry)
-    issue_id = f"host_key_changed_{entry.entry_id}"
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
-
-    panel.health.side_effect = HostKeyMismatch("changed", "SHA256:newkey")
-    await entry.runtime_data.async_refresh()
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
-    assert issue is not None
-    assert issue.translation_placeholders == {"host": HOST, "fingerprint": "SHA256:newkey"}
-    assert issue.severity is ir.IssueSeverity.ERROR
-
-    panel.health.side_effect = HostKeyMismatch("changed")  # no fingerprint known
-    await entry.runtime_data.async_refresh()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id).translation_placeholders[
-        "fingerprint"
-    ] == "unknown"
-
-    panel.health.side_effect = None
-    await entry.runtime_data.async_refresh()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
-
-
-async def test_unreachable_panel_does_not_raise_the_host_key_issue(
-    hass, panel: MagicMock, releases: MagicMock
-) -> None:
-    entry = make_entry()
-    await setup_entry(hass, entry)
-    panel.health.side_effect = CannotConnect("down")
-    await entry.runtime_data.async_refresh()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, f"host_key_changed_{entry.entry_id}") is None
+    assert await async_unload_entry(hass, entry) is False
+    assert f"env_drift_{entry.entry_id}" in _issues(hass, entry.entry_id)
 
 
 # -- device registry -----------------------------------------------------------------------
@@ -248,7 +400,9 @@ async def test_brilliant_mqtt_device_id_from_options_when_env_lacks_it(
     mqtt_device = _add_mqtt_device(hass, "from_options")
     await setup_entry(
         hass,
-        make_entry(**{CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, "mqtt_device_id": "from_options"}),
+        make_entry(
+            **{CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, "mqtt_device_id": "from_options"}
+        ),
     )
     assert _our_device(hass).via_device_id == mqtt_device.id
 
@@ -318,7 +472,11 @@ async def test_provider_apply_failure_raises_a_repair_issue_then_clears(
     panel.set_env.side_effect = SetupBusy("job running")
     hass.config_entries.async_update_entry(
         entry,
-        options={**entry.options, CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT, "mqtt_device_id": "d"},
+        options={
+            **entry.options,
+            CONF_MQTT_PROVIDER: PROVIDER_BRILLIANT_MQTT,
+            "mqtt_device_id": "d",
+        },
     )
     await hass.async_block_till_done()
     issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)

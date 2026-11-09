@@ -19,4 +19,5 @@ artifacts/
 .coverage
 __pycache__/
 *.egg-info/
-.venv-ha/
+.venv-ha*/
+.venv-ha314/

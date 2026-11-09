@@ -190,10 +190,29 @@ flowchart LR
 
 ---
 
+## Home Assistant integration
+
+The `brilliant_kiosk` custom integration (HACS, Home Assistant **2026.3.1** or newer) manages your
+panels from Home Assistant over SSH: kiosk version and service health, settings, restarts,
+journal logs, Brilliant message-bus variables and kiosk updates with rollback. It adds the
+management side to the entities the kiosk already publishes over MQTT.
+
+1. HACS, **Custom repositories**: add `https://github.com/MikeI-Code/brilliant-ha-kiosk`
+   (category *Integration*), download **Brilliant Kiosk**, restart Home Assistant.
+2. **Settings, Devices & services, Add integration, Brilliant Kiosk**. Enter the panel's address
+   and SSH password or private key, and confirm its SSH host key (nothing is sent before that).
+
+Full documentation: [docs/home-assistant-integration.md](docs/home-assistant-integration.md)
+(installation, removal, configuration and installation parameters, every action with examples,
+polling, automations, known limitations, supported devices, troubleshooting).
+
+---
+
 ## Documentation
 
 | | |
 |---|---|
+| 🏠 [**Home Assistant integration**](docs/home-assistant-integration.md) | The `brilliant_kiosk` custom integration: monitoring, settings, logs, updates; install, actions, polling, limitations, troubleshooting |
 | 📝 [**Changelog**](CHANGELOG.md) | Every release, and what is on the nightly channel |
 | 📘 [**Manual**](docs/MANUAL.md) | Installation, configuration reference, editing screens, gestures, maintenance, troubleshooting |
 | 🔧 [Hardware & services](docs/hardware-and-services.md) | Hardware, kernel interfaces, Brilliant's services, and the message-bus API |

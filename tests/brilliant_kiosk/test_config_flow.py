@@ -273,10 +273,12 @@ async def test_install_step_installs_and_creates_entry(hass, bare_panel, release
     result = await to_install_step(hass)
     result = await install(hass, result["flow_id"], INSTALL_INPUT)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    releases.list.assert_any_await(include_prereleases=False)
-    releases.download.assert_awaited_with(STABLE)
+    releases.latest_stable.assert_awaited()
+    # Verified against the pinned hash and size, not against the release's own .sha256 asset.
+    releases.download.assert_awaited_with(STABLE, sha256="a" * 64, size=6)
     args, kwargs = bare_panel.install.await_args
     assert args == (b"bundle", "a" * 64)
+    assert kwargs["size"] == 6  # the pinned size, passed on to ha-kiosk-setup --size
     assert kwargs["token"] == "t" * 40
     env = kwargs["env"]
     assert 'HA_URL="http://ha.local:8123"\n' in env
@@ -385,26 +387,27 @@ async def test_install_step_minimal_mqtt_credentials(hass, bare_panel, releases)
     assert "MQTT_PASSWORD" not in env
 
 
-async def test_install_form_does_not_prefill_the_mqtt_password(hass, bare_panel, releases) -> None:
-    MockConfigEntry(
-        domain="mqtt",
-        data={"broker": "core-mosquitto", "username": "u", "password": "brokerpw"},
-    ).add_to_hass(hass)
+BROKER_ENTRY = {"broker": "core-mosquitto", "username": "u", "password": "brokerpw"}
+
+
+async def test_install_form_reads_nothing_from_the_mqtt_integration(
+    hass, bare_panel, releases
+) -> None:
+    """Another integration's config entry (and its stored password) is not ours to read."""
+    MockConfigEntry(domain="mqtt", data=BROKER_ENTRY).add_to_hass(hass)
     result = await to_install_step(hass)
     defaults = _defaults(result)
-    assert defaults[CONF_MQTT_HOST] == "core-mosquitto"
-    assert defaults[CONF_MQTT_USER] == "u"
-    assert "brokerpw" not in str(result["data_schema"].schema) + str(defaults) + str(
-        _suggested(result)
-    )
+    assert defaults[CONF_MQTT_HOST] == ""
+    assert defaults[CONF_MQTT_USER] == ""
     assert CONF_MQTT_PASSWORD not in defaults
+    shown = str(result["data_schema"].schema) + str(defaults) + str(_suggested(result))
+    assert "brokerpw" not in shown
+    assert "core-mosquitto" not in shown
 
 
-async def test_install_reuses_the_brokers_password_server_side(hass, bare_panel, releases) -> None:
-    MockConfigEntry(
-        domain="mqtt",
-        data={"broker": "core-mosquitto", "username": "u", "password": "brokerpw"},
-    ).add_to_hass(hass)
+async def test_install_never_reuses_the_brokers_password(hass, bare_panel, releases) -> None:
+    """Same broker and user as Home Assistant's own MQTT entry: the password is still typed."""
+    MockConfigEntry(domain="mqtt", data=BROKER_ENTRY).add_to_hass(hass)
     result = await to_install_step(hass)
     submitted = {
         k: v for k, v in INSTALL_INPUT.items() if k not in (CONF_MQTT_USER, CONF_MQTT_PASSWORD)
@@ -412,27 +415,10 @@ async def test_install_reuses_the_brokers_password_server_side(hass, bare_panel,
     submitted |= {CONF_MQTT_HOST: "core-mosquitto", CONF_MQTT_USER: "u"}
     result = await install(hass, result["flow_id"], submitted)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert 'MQTT_PASSWORD="brokerpw"\n' in bare_panel.install.await_args.kwargs["env"]
-
-
-@pytest.mark.parametrize(
-    ("host", "user"),
-    [("other.broker", "u"), ("core-mosquitto", "someone-else"), ("core-mosquitto", "")],
-)
-async def test_broker_password_is_not_sent_to_a_different_broker_or_user(
-    hass, bare_panel, releases, host: str, user: str
-) -> None:
-    MockConfigEntry(
-        domain="mqtt",
-        data={"broker": "core-mosquitto", "username": "u", "password": "brokerpw"},
-    ).add_to_hass(hass)
-    result = await to_install_step(hass)
-    submitted = {
-        k: v for k, v in INSTALL_INPUT.items() if k not in (CONF_MQTT_USER, CONF_MQTT_PASSWORD)
-    }
-    submitted |= {CONF_MQTT_HOST: host, CONF_MQTT_USER: user}
-    await install(hass, result["flow_id"], submitted)
-    assert "brokerpw" not in bare_panel.install.await_args.kwargs["env"]
+    env = bare_panel.install.await_args.kwargs["env"]
+    assert 'MQTT_USER="u"\n' in env
+    assert "MQTT_PASSWORD" not in env
+    assert "brokerpw" not in env
 
 
 async def test_install_step_skip(hass, bare_panel, releases) -> None:
@@ -470,7 +456,7 @@ async def test_install_step_errors(hass, bare_panel, releases, error: Exception,
 
 async def test_install_step_no_stable_release(hass, bare_panel, releases) -> None:
     result = await to_install_step(hass)
-    releases.list = AsyncMock(return_value=())
+    releases.latest_stable = AsyncMock(return_value=None)
     result = await install(hass, result["flow_id"], INSTALL_INPUT)
     assert result["errors"] == {"base": "install_failed"}
     assert "no stable release" in result["description_placeholders"]["error"]
@@ -564,27 +550,6 @@ async def test_reconfigure_flow(hass, panel: MagicMock, releases: MagicMock) -> 
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_HOST] == "10.0.0.9"
     assert entry.data[CONF_HOST_KEY] == FINGERPRINT
-
-
-async def test_reconfigure_aborts_when_the_host_key_differs(
-    hass, panel: MagicMock, releases: MagicMock
-) -> None:
-    from pybrilliantkiosk import HostKeyInfo
-
-    entry = make_entry()
-    await setup_entry(hass, entry)
-    panel.flow_panel_cls.reset_mock()
-    panel.fetch_host_key.return_value = HostKeyInfo("SHA256:attacker", "MD5:00")
-    result = await entry.start_reconfigure_flow(hass)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_HOST: "10.0.0.9"}
-    )
-    assert result["type"] is FlowResultType.ABORT
-    assert result["reason"] == "host_key_changed"
-    assert entry.data[CONF_HOST] == HOST
-    assert entry.data[CONF_HOST_KEY] == FINGERPRINT
-    # The stored password was never sent to the host presenting the other key.
-    panel.flow_panel_cls.assert_not_called()
 
 
 async def test_reconfigure_rejects_a_different_panel(

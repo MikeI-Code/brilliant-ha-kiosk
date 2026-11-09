@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
@@ -13,9 +16,10 @@ from .const import (
     CONF_MQTT_DEVICE_ID,
     CONF_MQTT_PROVIDER,
     DOMAIN,
+    ISSUE_ENV_DRIFT,
     PROVIDER_BUILTIN,
 )
-from .coordinator import BrilliantKioskCoordinator
+from .coordinator import BrilliantKioskCoordinator, async_delete_issues
 from .services import async_setup_services
 
 type BrilliantKioskConfigEntry = ConfigEntry[BrilliantKioskCoordinator]
@@ -61,7 +65,9 @@ async def _async_options_updated(hass: HomeAssistant, entry: BrilliantKioskConfi
     device_id = entry.options.get(CONF_MQTT_DEVICE_ID, "")
     manage = entry.options.get(CONF_MANAGE_INSTALLS, True)
     if provider != coordinator.mqtt_provider or device_id != coordinator.mqtt_device_id:
-        await coordinator.async_apply_mqtt_provider(provider, device_id)
+        # A failure is logged and raises a repair issue that offers to apply it again.
+        with contextlib.suppress(HomeAssistantError):
+            await coordinator.async_apply_mqtt_provider(provider, device_id)
     if provider != coordinator.mqtt_provider or manage != coordinator.manage_installs:
         await hass.config_entries.async_reload(entry.entry_id)
     else:
@@ -69,5 +75,18 @@ async def _async_options_updated(hass: HomeAssistant, entry: BrilliantKioskConfi
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> bool:
-    """Unload a panel."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a panel.
+
+    The drift issue is dropped with it: its fix needs a loaded entry, and the first poll after a
+    reload raises it again if the copies still differ. The MQTT provider issue stays, because the
+    options listener raises it and then reloads the entry.
+    """
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        async_delete_issues(hass, entry.entry_id, only=(ISSUE_ENV_DRIFT,))
+    return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> None:
+    """Delete everything of this panel's that outlives the entry: its repair issues."""
+    async_delete_issues(hass, entry.entry_id)

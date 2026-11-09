@@ -184,19 +184,36 @@ async def test_update_install_latest_and_specific(
     await setup_entry(hass, make_entry())
     update = entity_id(hass, "update", "kiosk")
     await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: update}, blocking=True)
-    releases.download.assert_awaited_with(STABLE)
-    panel.install.assert_awaited_with(b"bundle", "a" * 64)
+    # A stable release is verified against the table pinned in the integration.
+    releases.download.assert_awaited_with(STABLE, sha256="a" * 64, size=6)
+    panel.install.assert_awaited_with(b"bundle", "a" * 64, size=6)
 
+    # A nightly is refused while the stable channel is selected ...
+    releases.download.reset_mock()
+    with pytest.raises(HomeAssistantError, match="nightly"):
+        await hass.services.async_call(
+            "update", "install", {ATTR_ENTITY_ID: update, "version": NIGHTLY.tag}, blocking=True
+        )
+    releases.download.assert_not_awaited()
+
+    # ... and installed, checked against its own .sha256 asset only, on the nightly channel.
+    await hass.services.async_call(
+        "select",
+        "select_option",
+        {ATTR_ENTITY_ID: entity_id(hass, "select", "channel"), "option": "nightly"},
+        blocking=True,
+    )
     await hass.services.async_call(
         "update", "install", {ATTR_ENTITY_ID: update, "version": NIGHTLY.tag}, blocking=True
     )
     releases.download.assert_awaited_with(NIGHTLY)
+    panel.install.assert_awaited_with(b"bundle", "a" * 64, size=6)  # len(b"bundle")
 
     # The bundle version works as well as the tag.
     await hass.services.async_call(
         "update", "install", {ATTR_ENTITY_ID: update, "version": OLD.version}, blocking=True
     )
-    releases.download.assert_awaited_with(OLD)
+    releases.download.assert_awaited_with(OLD, sha256="b" * 64, size=6)
 
     with pytest.raises(HomeAssistantError, match="No kiosk release"):
         await hass.services.async_call(
@@ -208,6 +225,7 @@ async def test_update_up_to_date_and_no_releases(
     hass: HomeAssistant, panel: MagicMock, releases: MagicMock
 ) -> None:
     releases.list = AsyncMock(return_value=())
+    releases.latest_stable = AsyncMock(return_value=None)
     await setup_entry(hass, make_entry())
     update = entity_id(hass, "update", "kiosk")
     state = hass.states.get(update)
@@ -247,6 +265,7 @@ async def test_release_notes_empty(
     hass: HomeAssistant, panel: MagicMock, releases: MagicMock, hass_ws_client
 ) -> None:
     releases.list = AsyncMock(return_value=())
+    releases.latest_stable = AsyncMock(return_value=None)
     await setup_entry(hass, make_entry())
     update = entity_id(hass, "update", "kiosk")
     client = await hass_ws_client(hass)
@@ -344,6 +363,7 @@ async def test_releases_without_a_usable_version_are_skipped(
     unusable = replace(NIGHTLY, version=None)  # tag nightly-... is not a version either
     plain_tag = replace(STABLE, version=None)  # but a plain vX.Y.Z tag is
     releases.list = AsyncMock(return_value=(unusable, plain_tag, OLD))
+    releases.latest_stable = AsyncMock(return_value=None)
     state = await _update_state(hass, panel, "v1.4.0", channel="nightly")
     assert state.attributes["latest_version"] == "v1.5.0"  # from plain_tag's tag
 

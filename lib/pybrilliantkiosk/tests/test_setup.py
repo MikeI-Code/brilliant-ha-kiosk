@@ -224,10 +224,7 @@ async def test_install_via_setup_tool(net: Net):
     extract = next(c for c in cmds if "tar -xzOf" in c)
     assert "grep -E '^[^/]+/ha-kiosk-setup$'" in extract
     start = next(c for c in cmds if "ha-kiosk-setup install" in c)
-    assert (
-        f"--bundle {WORKDIR}/bundle.tar.gz --sha256 {SHA} --size {len(BUNDLE)} --detach"
-        in start
-    )
+    assert f"--bundle {WORKDIR}/bundle.tar.gz --sha256 {SHA} --size {len(BUNDLE)} --detach" in start
     assert "--env" not in start
     assert "--token" not in start
     assert f"{WORKDIR}/ha-kiosk-setup install" in start

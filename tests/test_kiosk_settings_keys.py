@@ -39,7 +39,10 @@ def _qml_file_keys() -> set[str]:
 
 def _allowed(key: str, keys: set[str]) -> bool:
     """KEYS, or one of ha-kiosk-setup's KEY_PATTERNS (gesture bindings)."""
-    return key in keys or re.fullmatch(r"GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))", key) is not None
+    return (
+        key in keys
+        or re.fullmatch(r"GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))", key) is not None
+    )
 
 
 def test_documented_settings_are_allowed() -> None:

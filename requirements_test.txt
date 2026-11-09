@@ -1,0 +1,14 @@
+# Test and lint tooling for custom_components/brilliant_kiosk, pinned exactly.
+#
+# pytest-homeassistant-custom-component 0.13.317 pins homeassistant==2026.3.1. That is the Home
+# Assistant version the tests run against, and it is "homeassistant" in hacs.json: the first release
+# that can show an integration's own brand/ images (2026.3) for which a matching test package
+# exists. Raise all three together (this file, hacs.json, and the quality_scale.yaml notes).
+# Home Assistant 2026.3 needs Python >= 3.14.2.
+#
+# Installed in ONE pip run with the library so the resolver keeps Home Assistant's own pins
+# (cryptography, asyncssh, ...): installing the library afterwards upgrades them and breaks imports.
+pytest-homeassistant-custom-component==0.13.317
+ruff==0.17.4
+mypy==2.4.1
+-e lib/pybrilliantkiosk

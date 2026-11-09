@@ -118,7 +118,7 @@ def test_value_charset_is_exactly_the_setup_tools_plus_single_quote():
     match = re.search(r"^BAD_VALUE = re\.compile\((.*)\)$", source, re.MULTILINE)
     assert match, "BAD_VALUE not found in ha-kiosk-setup"
     setup_regex = re.compile(ast.literal_eval(match.group(1)))
-    assert "or \"'\" in val" in source  # the tool rejects a single quote separately
+    assert 'or "\'" in val' in source  # the tool rejects a single quote separately
     for code in range(0x100):
         char = chr(code)
         ours = bool(_BAD_VALUE_RE.search(char))

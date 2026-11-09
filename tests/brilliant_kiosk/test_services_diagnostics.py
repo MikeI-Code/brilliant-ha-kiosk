@@ -2,19 +2,38 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from custom_components.brilliant_kiosk.const import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from pybrilliantkiosk import BusVariable, CannotConnect, HostKeyMismatch, SetupBusy
+from pybrilliantkiosk import (
+    BusVariable,
+    CannotConnect,
+    HostKeyMismatch,
+    InvalidArgument,
+    SetupBusy,
+    SetupStatus,
+)
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
 )
 
-from .conftest import STABLE, make_entry, setup_entry
+from .conftest import (
+    FINGERPRINT,
+    HOST,
+    NIGHTLY,
+    NODE,
+    OLD,
+    STABLE,
+    UNIQUE_ID,
+    make_entry,
+    setup_entry,
+)
 
 
 async def call(hass: HomeAssistant, name: str, data: dict, response: bool = False):
@@ -48,6 +67,21 @@ async def test_set_env(hass: HomeAssistant, panel: MagicMock, releases: MagicMoc
     )
 
 
+async def test_set_env_with_an_unsafe_running_value_is_a_translated_error_naming_the_keys(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    """The library refuses to revert a hand-set value; the action says which keys and why."""
+    entry = await loaded(hass, panel, releases)
+    panel.set_env.side_effect = InvalidArgument(
+        "the running kiosk.env has values that cannot be written safely (HA_URL); "
+        "nothing was changed. Fix them on the panel."
+    )
+    with pytest.raises(ServiceValidationError, match=r"cannot be written safely.*HA_URL") as err:
+        await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}})
+    assert err.value.translation_domain == DOMAIN
+    assert err.value.translation_key == "invalid_argument"
+
+
 async def test_set_env_refreshes_only_when_something_changed(
     hass: HomeAssistant, panel: MagicMock, releases: MagicMock
 ) -> None:
@@ -71,9 +105,7 @@ async def test_busy_panel_is_reported_as_a_translated_error(
     entry = await loaded(hass, panel, releases)
     panel.set_env.side_effect = SetupBusy("a job is running")
     with pytest.raises(HomeAssistantError, match="busy running ha-kiosk-setup: a job is running"):
-        await call(
-            hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}}
-        )
+        await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}})
 
 
 @pytest.mark.parametrize("value", ["0", "off", "OFF", "false", "no", ""])
@@ -155,10 +187,62 @@ async def test_logs(hass: HomeAssistant, panel: MagicMock, releases: MagicMock) 
 async def test_install_version(hass: HomeAssistant, panel: MagicMock, releases: MagicMock) -> None:
     entry = await loaded(hass, panel, releases)
     await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": STABLE.tag})
-    releases.download.assert_awaited_with(STABLE)
-    panel.install.assert_awaited_with(b"bundle", "a" * 64)
+    releases.download.assert_awaited_with(STABLE, sha256="a" * 64, size=6)
+    panel.install.assert_awaited_with(b"bundle", "a" * 64, size=6)
     with pytest.raises(ServiceValidationError, match="No kiosk release"):
         await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": "nope"})
+
+
+async def test_install_version_accepts_the_tag_or_the_bundle_version(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    for name in (OLD.tag, OLD.version):
+        releases.download.reset_mock()
+        await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": name})
+        releases.download.assert_awaited_once_with(OLD, sha256="b" * 64, size=6)
+
+
+async def test_install_version_refuses_a_stable_release_it_cannot_verify(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("custom_components.brilliant_kiosk.install.PINNED_RELEASES", {})
+    entry = await loaded(hass, panel, releases)
+    with pytest.raises(ServiceValidationError, match="list of verified releases") as err:
+        await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": STABLE.tag})
+    assert err.value.translation_key == "release_not_pinned"
+    releases.download.assert_not_awaited()  # nothing was even downloaded
+    panel.install.assert_not_awaited()
+
+
+async def test_install_version_nightly_needs_the_nightly_channel(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    with pytest.raises(ServiceValidationError, match="nightly") as err:
+        await call(hass, "install_version", {"config_entry_id": entry.entry_id, "tag": NIGHTLY.tag})
+    assert err.value.translation_key == "nightly_not_allowed"
+    releases.download.assert_not_awaited()
+
+    await hass.config_entries.async_remove(entry.entry_id)  # same panel: one entry at a time
+    nightly_entry = await loaded(hass, panel, releases, channel="nightly")
+    await call(
+        hass, "install_version", {"config_entry_id": nightly_entry.entry_id, "tag": NIGHTLY.tag}
+    )
+    releases.download.assert_awaited_once_with(NIGHTLY)  # its own .sha256 only: no pinned hash
+    panel.install.assert_awaited_with(b"bundle", "a" * 64, size=6)
+
+
+def test_logs_service_offers_exactly_the_panel_units() -> None:
+    """The unit field is a select of the allow-listed units (no free text to get wrong)."""
+    import yaml
+    from custom_components import brilliant_kiosk
+    from pybrilliantkiosk import UNITS
+
+    path = Path(brilliant_kiosk.__file__).parent / "services.yaml"
+    services = yaml.safe_load(path.read_text(encoding="utf-8"))
+    selector = services["logs"]["fields"]["unit"]["selector"]
+    assert selector == {"select": {"options": list(UNITS)}}
 
 
 async def test_install_version_requires_managed_installs(
@@ -228,3 +312,86 @@ async def test_diagnostics_are_redacted(
     assert diag["setup"]["state"] == "active"
     assert diag["releases"] == ["nightly-20261108", "v1.5.0", "v1.4.0"]
     assert "hunter2" not in str(diag)
+
+
+BROKER = "mqtt-broker.example.net"
+BROKER_USER = "broker-login"
+
+
+async def test_diagnostics_contain_nothing_that_identifies_the_panel_or_its_broker(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, hass_client
+) -> None:
+    panel.get_settings.return_value = {
+        "KIOSK_MQTT": "1",
+        "MQTT_HOST": BROKER,
+        "MQTT_USER": BROKER_USER,
+        "MQTT_PASSWORD": "********",
+        "MQTT_BASE": "brilliant_kiosk",
+        "MQTT_DEVICE_ID": "secretdev1",
+        "HA_URL": "http://10.1.2.3:8123",
+        "VOICE_ALLOW": "10.1.2.4,10.1.2.5",
+        "CAPTURE_ALLOW": "10.1.2.6",
+        "VOICE_BIND": "0.0.0.0",  # noqa: S104
+        "ROOM_LIGHTS": "light.kitchen_ceiling",
+        "DIM_LEVEL": "4",
+        "SLEEP_START": "21:00",
+    }
+    panel.setup_status.return_value = SetupStatus(
+        state="failed",
+        version="v1.4.0",
+        mqtt_mode="1",
+        mqtt_base=f"{NODE}/base",
+        last_result={
+            "message": f"cannot reach {BROKER} from {HOST} (node {NODE}) as {BROKER_USER}",
+            "ok": False,
+        },
+    )
+    entry = await loaded(hass, panel, releases)
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    text = json.dumps(diag)
+    for private in (
+        HOST,
+        NODE,
+        UNIQUE_ID,
+        FINGERPRINT,
+        BROKER,
+        BROKER_USER,
+        "secretdev1",
+        "10.1.2.3",
+        "10.1.2.4",
+        "10.1.2.6",
+        "light.kitchen_ceiling",
+        "root",
+        "pw",
+    ):
+        assert private not in text, private
+    # What is useful for support stays.
+    settings = diag["settings"]
+    assert settings["DIM_LEVEL"] == "4"
+    assert settings["SLEEP_START"] == "21:00"
+    assert settings["KIOSK_MQTT"] == "1"
+    for key in ("MQTT_HOST", "MQTT_USER", "MQTT_BASE", "VOICE_ALLOW", "CAPTURE_ALLOW", "HA_URL"):
+        assert settings[key] == "**REDACTED**"
+    assert diag["setup"]["state"] == "failed"
+    assert diag["setup"]["mqtt_base"] == "**REDACTED**"
+    assert diag["setup"]["last_result"]["message"] == "**REDACTED**"
+    assert diag["setup"]["last_result"]["ok"] is False
+
+
+async def test_diagnostics_scrub_identifiers_out_of_free_text(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, hass_client
+) -> None:
+    """A message in a field that is not redacted by name is scrubbed by value."""
+    panel.setup_status.return_value = SetupStatus(
+        state="failed",
+        firmware=f"fw for {HOST} and 172.16.5.9 or fe80::1:2:3:4 or 2001:db8:0:0:0:0:0:1 at 12:30:45",
+    )
+    entry = await loaded(hass, panel, releases)
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    firmware = diag["setup"]["firmware"]
+    assert HOST not in firmware
+    assert "172.16.5.9" not in firmware
+    assert "fe80" not in firmware
+    assert "2001:db8" not in firmware
+    assert firmware.endswith(" at 12:30:45")  # a time of day is not an address
+    assert firmware.startswith("fw for ")
