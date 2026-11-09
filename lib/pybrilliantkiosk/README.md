@@ -1,18 +1,32 @@
 # pybrilliantkiosk
 
-Typed, fully asynchronous Python client for managing [Brilliant](https://www.brilliant.tech/)
-smart-home panels that run the [brilliant-ha-kiosk](https://github.com/MikeI-Code/brilliant-ha-kiosk)
-Home Assistant kiosk. It is the only code that talks to a panel; the
-[Brilliant Kiosk Home Assistant integration](https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/docs/home-assistant-integration.md)
-is built on it.
+Typed, fully async Python library for managing [Brilliant](https://www.brilliant.tech/) smart
+panels that run the `brilliant-ha-kiosk` firmware add-on. It is the only code that talks to a
+panel; the Home Assistant integration builds on it.
 
-* Python 3.13 or newer. Dependencies: `asyncssh` (SSH with password or private key, host key
-  pinning) and `aiohttp` (GitHub releases; you inject the `ClientSession`).
-* No blocking I/O. `mypy --strict` clean, ships `py.typed`.
-* Published to PyPI by CI with trusted publishing from the tag `pybrilliantkiosk-v<version>`.
+* `asyncssh` for SSH (password or private key, host-key pinning), no blocking I/O
+* `aiohttp` for GitHub releases; you inject the `ClientSession`
+* `mypy --strict` clean, ships `py.typed`
+* Python 3.13 or newer; published to PyPI by CI with trusted publishing from the tag
+  `pybrilliantkiosk-v<version>` (`pip install pybrilliantkiosk`)
 
-```
-pip install pybrilliantkiosk
+```python
+from pybrilliantkiosk import Panel, Releases
+
+async with Panel("192.168.1.50", password="...", host_key=None) as panel:
+    print(panel.host_key_fingerprint)  # pin this in the config flow
+    snapshot = await panel.poll()  # health, settings, drift and setup status: ONE SSH command
+    health = snapshot.health
+    env = await panel.get_env()  # secrets masked
+    await panel.set_env({"DAY_LEVEL": "12"}, restart=True)
+    print(await panel.logs("ha-kiosk", 100))
+
+client = Releases(session)
+stable = await client.latest_stable()  # the release GitHub marks "Latest"
+# Verify against a hash and size you keep yourself (streamed, capped at 50 MiB) ...
+bundle, sha = await client.download(stable, sha256=PINNED_SHA256, size=PINNED_SIZE)
+await panel.install(bundle, sha, size=PINNED_SIZE)
+# ... or, weaker, against the release's own .sha256 asset: client.download(release)
 ```
 
 ## What it does
@@ -29,43 +43,28 @@ pip install pybrilliantkiosk
 | Releases | `Releases(session)`: `list()`, `latest_stable()`, `download(release, sha256=None, size=None)` (streamed, capped at 50 MiB). `parse_version()` / `is_newer()` order stable and nightly bundle versions. |
 | Bundles | `kiosk_env_from_bundle(bundle, overrides)` renders a first-install `kiosk.env` from the bundle's own example, validated against the bundle's `ha-kiosk-setup`. |
 
-## Example
+Pin the host key before any credentials are sent, and read the panel's identity (works with or
+without the kiosk installed):
 
 ```python
-import aiohttp
-from pybrilliantkiosk import Panel, Releases, fetch_host_key
+from pybrilliantkiosk import fetch_host_key
 
 info = await fetch_host_key("192.168.1.50")
 print(info.sha256)  # show this to the user, pin it once confirmed
 
 async with Panel("192.168.1.50", password="...", host_key=info.sha256) as panel:
-    snapshot = await panel.poll()  # health, settings, drift and setup status: one SSH command
-    print(snapshot.health.version, snapshot.setup.state, snapshot.drift)
-
-    env = await panel.get_env()  # effective settings, secrets masked
-    await panel.set_env({"DAY_LEVEL": "12", "WEATHER_FX": "sky"}, restart=True)
-    print(await panel.logs("ha-kiosk", 100))
-
     who = await panel.identity()  # PanelIdentity(device_id=..., room="Kitchen")
-
-    async with aiohttp.ClientSession() as session:
-        releases = Releases(session)
-        stable = await releases.latest_stable()  # the release GitHub marks "Latest"
-        # Strong: verify against a hash and size you keep yourself (for example a pinned table).
-        bundle, sha = await releases.download(stable, sha256=PINNED_SHA256, size=PINNED_SIZE)
-        status = await panel.install(bundle, sha, size=PINNED_SIZE)
-        # Weaker: verify against the release's own .sha256 asset only:
-        # bundle, sha = await releases.download(stable)
 ```
 
-`set_env` and `reconcile_env` hold the panel's setup lock, refuse with `InvalidArgument` (naming
-the keys, nothing written) when the running `kiosk.env` has a value that cannot be written
-safely, and raise `ConcurrentModification` if `kiosk.env` changed on the panel since it was read.
-A command that times out is killed on the panel and raises `CannotConnect`.
+`set_env` and `reconcile_env` hold the panel's setup lock, refuse (`InvalidArgument`, naming the
+keys, nothing written) when the running `kiosk.env` has a value that cannot be written safely
+instead of reverting it, and abort if `kiosk.env` changed on the panel since it was read
+(`ConcurrentModification`, retried once). A command that times out is killed on the panel and
+raises `CannotConnect`.
 
-## Errors
-
-All derive from `PanelError`:
+Errors: `CannotConnect`, `AuthFailed`, `HostKeyMismatch`, `CommandFailed(exit_status, stderr)`,
+`InvalidArgument`, `ChecksumMismatch`, `ConcurrentModification`, `ReleaseError`; all derive from
+`PanelError`:
 
 | Exception | Meaning |
 |---|---|
@@ -88,7 +87,7 @@ explain why an MD5 pin is refused.
 ```
 cd lib/pybrilliantkiosk
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-ruff check . && ruff format --check . && mypy --strict src && pytest   # 100 % coverage gate
+ruff check . && ruff format --check . && mypy --strict src && pytest  # 100 % coverage gate
 ```
 
 Source, issues and changelog:

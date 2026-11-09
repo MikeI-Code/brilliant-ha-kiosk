@@ -1,29 +1,103 @@
 # Integration contract for external installers
 
-*Rewritten 2026-11-09 against the code on `nightly` (bundle v1.4.0 and later; `kiosk/ha-kiosk-setup`,
-`kiosk/ha-kiosk-mqtt.py`, `kiosk/ha-kiosk-bridge.py`, `kiosk/install-local.sh`, `systemd/*`,
-`scripts/build-bundle.sh`).*
+**Contract version:** 1 · **Status:** draft for review (revision 2) · **First release:** `v2.0.0`
+(contract 1 is a breaking change, so it starts a new MAJOR)
 
-This document is the interface between the HA kiosk and tools that install and manage it on
-Brilliant panels: the `brilliant_kiosk` Home Assistant integration and its library
-`pybrilliantkiosk` ([home-assistant-integration.md](home-assistant-integration.md),
-[admin-helper-spec.md](admin-helper-spec.md)), fleet scripts, or an operator over SSH. Anything
+This document defines the interface between the HA kiosk and tools that install and manage it on
+Brilliant panels, such as a Home Assistant integration that deploys components over SSH. Anything
 not written here is internal and may change without notice.
 
-It has two parts:
+Markers:
 
-* **Section 0, Implemented today.** What the code does. Everything in section 0 can be relied on.
-  Where section 0 and the rest of the document disagree, section 0 describes the code.
-* **Sections 1 to 16, Planned (contract 1).** A design for a later MAJOR release (`v2.0.0`).
-  Nothing in those sections exists unless section 0 says so. Each planned section ends with a
-  *Current state* note that points back to section 0 where the code already covers the ground.
+* **Current state:** what the code in this repository does today.
+* **Planned:** what contract 1 requires. Nothing marked Planned exists yet.
+* **TO VERIFY:** an assumption the single-panel pilot must confirm (section 15).
 
-Hand-operated installation, the `install-local.sh` options and the settings reference are in
-[MANUAL.md](MANUAL.md). MUST, SHOULD and MAY are used as in RFC 2119.
+MUST, SHOULD and MAY are used as in RFC 2119.
+
+Section 0 is the description of the code. Its summary below is followed by subsections 0.1 to 0.15,
+which give the implemented behaviour in full (revised 2026-11-09 against `kiosk/ha-kiosk-setup`,
+`kiosk/ha-kiosk-mqtt.py`, `kiosk/ha-kiosk-bridge.py`, `kiosk/install-local.sh`, `systemd/*` and
+`scripts/build-bundle.sh`). Hand-operated installation, the `install-local.sh` options and the
+settings reference are in [MANUAL.md](MANUAL.md). The Home Assistant side is described in
+[home-assistant-integration.md](home-assistant-integration.md) and
+[admin-helper-spec.md](admin-helper-spec.md).
 
 ---
 
-## 0. Implemented today
+## 0. Implemented in v1.4.0 (pilot)
+
+v1.4.0 ships a first `ha-kiosk-setup` for the single-panel pilot. **Where this section and the
+rest of the document differ, this section describes the code; the rest is the contract-1 design.**
+The biggest differences: no minisign signature (the integration pins SHA-256 and size), simpler
+exit codes, no `--json` flag (output is always JSON), and no `version`/`display` commands yet.
+
+**Artifacts.** Each GitHub release has `brilliant-ha-kiosk-<tag>.tar.gz` and its `.sha256`.
+Builds are reproducible (fixed file order, owner and time), and `scripts/build-bundle.sh` also
+writes `<name>.release.json` = `{name, version, sha256, size}`. Root of trust: the integration's
+own pinned SHA-256 and size, as for its voice payload.
+
+**Running it.** The bundle carries `ha-kiosk-setup` at its root. For a first install, check the
+bundle's hash, extract that one file and run it with the panel's Python:
+
+```
+echo "<sha256>  bundle.tar.gz" | sha256sum -c
+tar -xzOf bundle.tar.gz <name>/ha-kiosk-setup > setup.py
+/data/switch-embedded/env/bin/python setup.py install --bundle bundle.tar.gz --sha256 <sha256> \
+    [--size N] [--env FILE] [--token FILE | --token-stdin] [--layout FILE] [--allow-offline] [--detach]
+```
+
+Afterwards use the installed copy, `/var/lib/ha-kiosk/ha-kiosk-setup`, which survives firmware
+updates:
+
+```
+ha-kiosk-setup reapply | enable | disable | rollback | uninstall | purge   [--detach]
+ha-kiosk-setup wait [--timeout SECS]        default 100 s
+ha-kiosk-setup status | diagnostics | check-env FILE
+```
+
+**Detach and wait.** Enabling or disabling restarts Brilliant's `message_bus` (60–90 s by
+itself), so a caller with a per-command SSH limit (e.g. 120 s) runs changing commands with
+`--detach` (they return at once as the transient unit `ha-kiosk-setup-job`) and then repeats
+`wait --timeout 100` until it exits with something other than 9. `--detach` cannot read stdin:
+pass `--env FILE` / `--token FILE`.
+
+**Exit codes**
+
+| Code | Meaning |
+|---|---|
+| 0 | OK |
+| 1 | Internal error |
+| 2 | Usage error (also: not root, `--detach` with stdin) |
+| 3 | Verification failed (SHA-256, size, the bundle's own `MANIFEST.sha256`) |
+| 4 | Settings or token rejected |
+| 5 | Activation failed; rolled back to the previous version |
+| 6 | Activation failed; Brilliant's stock UI restored |
+| 7 | Not installed |
+| 8 | Busy (another run or a detached job) |
+| 9 | `wait`: the job is still running |
+
+**Health check.** The UI posts a heartbeat every 10 s (`/run/ha-kiosk/heartbeat.json`, with its HA
+connection state). After `install-local.sh` returns, the tool waits up to 60 s for a fresh
+heartbeat, `ha-kiosk.service` active and Home Assistant connected (or `--allow-offline`).
+
+**Layout on the panel.** `/var/lib/ha-kiosk/`: `releases/<version>` (current + previous),
+`config/` (0700; settings, token and layout, 0600), `current`, `previous`, `state`, `setup.log`,
+`ha-kiosk-setup`. `/etc/ha-kiosk` is the running copy, rebuilt by `reapply`. `uninstall` keeps
+non-secret preferences and photos in `/var/lib/ha-kiosk-keep` (removed by `purge`) and leaves
+`status.secrets_present` empty.
+
+**Settings.** `kiosk.env` is parsed, not sourced: keys must be on an allowlist, values may not
+contain quotes, backslashes, `$`, backticks or control characters, and the tool writes a normalised `KEY="value"` file.
+`check-env FILE` validates without installing.
+
+**MQTT.** `KIOSK_MQTT=kiosk` publishes only kiosk-owned entities, withdraws its retained discovery
+for panel entities (load, power, motion, diagnostics) and, with `MQTT_DEVICE_ID`, joins that HA
+device (identifiers only). Retained `<base>/kiosk_state` is `active` while running and
+`disabled` / `not_installed` / `failed` otherwise.
+
+The subsections below describe the implemented behaviour in detail, in the same order as the
+summary above. They are the reference for tools that drive `ha-kiosk-setup` today.
 
 ### 0.1 Release artifacts
 
@@ -479,31 +553,27 @@ Everything in sections 1 to 16 that is not listed above, in particular: signatur
 `release.json` assets; `version`/`display` commands; `--json`, `--config-merge`, `--mqtt`,
 `--health-timeout`, `--no-activate`, `--require-tested-firmware`, `--allow-downgrade`; preflight
 checks; `txn.json` and boot recovery units; a `rendered` flag in the heartbeat; narrowed MQTT
-subscriptions in kiosk mode; discovery withdrawal on uninstall; `<base>/display/...` topics and
-screen power; the `schema/` directory and per-key validators; a `run.env` and the end of shell
+subscriptions in kiosk mode; `<base>/display/...` topics and screen power; the `schema/` directory and per-key validators; a `run.env` and the end of shell
 sourcing; redaction of URLs and IPs in diagnostics.
 
 ---
-
-# Planned: contract 1
-
-**Contract version:** 1 · **Status:** design draft (revision 3, 2026-11-09) · **Target:** `v2.0.0`
-(a breaking change, so a new MAJOR). Items marked **TO VERIFY** are assumptions a single-panel
-pilot must confirm (section 15).
 
 ## 1. Scope and roles
 
 | Role | Responsibility |
 |---|---|
 | **Kiosk** (this repo) | Signed release bundles, the on-panel `ha-kiosk-setup` tool, the UI and its services, the health check, rollback, stock-UI restoration, kiosk-owned MQTT entities. |
-| **Integration** | The pinned release table and trusted keys (the root of trust), download and verification, copying the bundle over SSH, running `ha-kiosk-setup`, providing config and token, an opt-in setting in its own UI, diagnostics collection, OTA re-apply, and the panel's non-kiosk MQTT entities. |
+| **Integration** | The pinned release table and trusted keys (the root of trust), download and verification, copying the bundle over SSH, running `ha-kiosk-setup`, providing config and token, an opt-in (default-off) setting in its own UI, diagnostics collection, OTA re-apply, and the panel's non-kiosk MQTT entities (load, power, motion, temperatures, Brilliant diagnostics). |
 | **Operator** | Creates a dedicated non-admin HA user and its token, and per-panel MQTT credentials; opts each panel in; revokes credentials after uninstall. |
 
 Out of scope for contract 1: auto-provisioning HA users, fleet scheduling, and `KIOSK_MODE=web`.
-Contract-1 units drop the `web` branch and every `QTWEBENGINE_*` variable from `ha-kiosk.service`.
+Contract-1 units drop the `web` branch and every `QTWEBENGINE_*` variable from `ha-kiosk.service`,
+so no config value can start an unsandboxed root browser.
 
 * **Current state:** the integration side exists (0.14) with a pinned table but no keys.
   `KIOSK_MODE=web` is still accepted and `ha-kiosk.service` still carries the QtWebEngine variables.
+
+---
 
 ## 2. Release artifacts and trust
 
@@ -515,7 +585,10 @@ Contract-1 units drop the `web` branch and every `QTWEBENGINE_*` variable from `
 | Release manifest | `release.json` + `release.json.minisig` |
 | Digest (convenience only) | `brilliant-ha-kiosk-<version>.tar.gz.sha256` |
 
-The tarball adds `CONTRACT` and `schema/` (`config.v1.json`, `status.v1.json`) to the layout of 0.1.
+`<version>` is `vMAJOR.MINOR.PATCH`. Pre-releases are used only when pinned explicitly. The tarball
+has one top-level directory `brilliant-ha-kiosk-<version>/` with `ha-kiosk-setup`,
+`install-local.sh`, `VERSION`, `CONTRACT`, `MANIFEST.sha256`, `ha-kiosk/`, `systemd/`,
+`schema/` (`config.v1.json`, `status.v1.json`), `kiosk.env.example`, `LICENSE`.
 
 ```json
 { "name": "brilliant-ha-kiosk", "version": "v2.0.0", "contract": 1,
@@ -524,10 +597,13 @@ The tarball adds `CONTRACT` and `schema/` (`config.v1.json`, `status.v1.json`) t
   "firmware": { "min": "<tbd>", "tested": ["<tbd>"] }, "arch": ["armv7l"] }
 ```
 
-CI builds twice and fails if the digests differ.
+Builds are reproducible: `tar --sort=name --mtime=<commit date> --owner=0 --group=0
+--numeric-owner | gzip -n`. CI builds twice and fails if the digests differ. Release assets are
+never replaced: the workflow fails if an asset already exists.
 
 * **Current state:** reproducible build and no-clobber upload are done (0.1). `release.json` is
   produced locally with four fields and not uploaded; no signature, `CONTRACT` or `schema/`.
+* **Planned:** all of 2.1.
 
 ### 2.2 Root of trust and keys
 
@@ -536,14 +612,13 @@ signature never admits a version that is not in the table; installing one requir
 operator override in the integration UI.
 
 `release.json` is signed with **minisign** (Ed25519). The integration ships its trusted public
-key(s); `keys/` in this repo is informational. Rotation and revocation happen by an integration
-release that changes its vendored keys and table. The signing job runs only on tags from protected
-branches, in a GitHub environment with required reviewers, and passes the secret key to minisign on
-stdin.
+key(s) in its own release; `keys/` in this repo is informational. Rotation and revocation happen by
+an integration release that changes its vendored keys and table. The signing job runs only on tags
+from protected branches, in a GitHub environment with required reviewers, and passes the secret key
+to minisign on stdin, never in argv or logs.
 
 * **Current state:** the pinned table exists (`pinned.py`, v1.4.0). Nightlies are verified against
   the `.sha256` asset only and only when the nightly channel is chosen. No keys.
-
 ### 2.3 Verification
 
 Integration side, before anything is copied:
@@ -552,7 +627,8 @@ Integration side, before anything is copied:
 2. Require `name == "brilliant-ha-kiosk"`, `version ==` the pinned version, and `contract` supported.
 3. Stream-hash the bundle; require `sha256 == pinned == release.json.sha256` and `size` equal.
 
-Panel side, `ha-kiosk-setup install --bundle-tar FILE --sha256 HEX`:
+Panel side, `ha-kiosk-setup install --bundle-tar FILE --sha256 HEX` (the digest is not secret, so
+argv is fine):
 
 4. Copy `FILE` into a fresh `mktemp -d` under `/var/lib/ha-kiosk/incoming/` (0700), hash that copy,
    compare with `HEX`; exit 4 on mismatch.
@@ -560,14 +636,20 @@ Panel side, `ha-kiosk-setup install --bundle-tar FILE --sha256 HEX`:
    paths, `..`, symlinks, hardlinks, device and FIFO members, and any member outside
    `brilliant-ha-kiosk-<ver>/`. Then check `MANIFEST.sha256`.
 
+The tool that runs `install` is the copy at `/etc/ha-kiosk/ha-kiosk-setup` if present, else the one
+just extracted from the verified tarball. There is no `--bundle DIR`.
+
 * **Current state:** steps 3 to 5 exist in simpler form (0.8: hash and size check, member filter
   for absolute paths, `..` and non-file members, `MANIFEST.sha256`). No `incoming/`, no symlink
   or hardlink filter, no `release.json`.
+---
 
 ## 3. `ha-kiosk-setup` CLI
 
-Runs on the panel as root. A small `sh` shim that execs `/data/switch-embedded/env/bin/python -I`,
-exits 3 if that Python is missing, and sets `umask 077` first.
+Runs on the panel as root. A small `sh` shim that execs `/data/switch-embedded/env/bin/python -I`
+(the interpreter the bridge already needs), so locking, atomic renames, `fsync` and JSON do not
+depend on BusyBox. If that Python is missing, the shim exits 3 using `sh` only. It sets `umask 077`
+first.
 
 ```
 ha-kiosk-setup install   --bundle-tar FILE --sha256 HEX
@@ -587,6 +669,16 @@ ha-kiosk-setup version   --json                   {"tool_version": "...", "contr
 internal (not contract): recover, verify
 ```
 
+| Command | Effect |
+|---|---|
+| `install` | Preflight, verify, stage, switch, activate, health-check; on failure roll back or restore the stock UI (4.3). Same version: re-applies config and units, never rotates `previous`. |
+| `reapply` | Re-installs units, drop-in and config for `current` and activates it. Used after OTA. |
+| `enable` | Activate `current` and health-check it. |
+| `disable` | Withdraw kiosk discovery, stop and disable kiosk units, restore stock UI. Keeps releases, config, token. |
+| `rollback` | `current` ← `previous`, activate, health-check. Afterwards `previous` is `null` and the rolled-from release is marked `bad`. |
+| `uninstall` | `disable`, then remove code, units and every secret (6). Keeps non-secret user data. |
+| `purge` | `uninstall`, then remove everything the kiosk created. |
+
 Rules:
 
 * **Version negotiation.** The integration first runs `/etc/ha-kiosk/ha-kiosk-setup version --json`.
@@ -594,7 +686,8 @@ Rules:
   only `install` (a newer bundle) or a manual purge.
 * **No secrets in argv or environment.** The token comes from `--token-stdin` (preferred) or
   `--token-file` located in a `mktemp -d` under `/var/lib/ha-kiosk/incoming/`. `--config -` and
-  `--token-stdin` together exit 2. The tool deletes `incoming/` on success, failure and in `recover`.
+  `--token-stdin` together exit 2; use `--token-file` with `--config -`. The tool deletes
+  `incoming/` on success, failure and in `recover`, so an interrupted run leaves no copy.
 * **Config ownership.** `--config` replaces `kiosk.env` and clears `overrides.env` entries for keys it
   sets. `--config-merge` replaces only the keys present. Precedence: `overrides.env` > `kiosk.env`.
 * **SSH drops.** Every state-changing command re-execs itself under
@@ -610,9 +703,6 @@ Rules:
 
 ### 3.1 Exit codes
 
-These differ from the implemented codes in 0.4 (notably 6 and 8); a caller MUST check the
-contract version before interpreting them.
-
 | Code | Meaning | State after | Integration action |
 |---|---|---|---|
 | 0 | Success | as requested | — |
@@ -624,10 +714,15 @@ contract version before interpreting them.
 | 6 | Lock held | unchanged | `wait`, then retry |
 | 7 | Nothing to roll back to | unchanged | — |
 | 8 | Not installed (`enable`/`disable`/`rollback`/`reapply`) | unchanged | offer install |
-| 10 | Activation failed; rolled back to `previous`, healthy | `rolled-back` | report |
+| 10 | Activation failed; rolled back to `previous`, healthy | `rolled-back` | republish nothing; report |
 | 11 | Activation failed; stock UI restored | `failed` | republish own display entities (9.4) |
 | 12 | Stock-UI restoration failed | `failed` | repair issue; recommend reboot |
 | 13 | Stock UI restored by boot recovery; `reason` = `integrity\|crash-loop\|firmware` | `failed` | republish own display entities; report |
+
+These differ from the implemented codes in 0.4 (notably 6 and 8); a caller MUST check the
+contract version before interpreting them.
+
+`status` exits 0 with `state: not-installed` on a bare panel.
 
 ### 3.2 Status JSON
 
@@ -648,6 +743,11 @@ discovery_prefix, device_id, connected}`, `discovery_topics[]`, `discovery_clean
 * **Current state:** the commands, options, exit codes and status object of section 0 (0.3 to
   0.6). JSON is always printed (no `--json`). `install-local.sh` remains the file installer
   underneath and keeps its own options (MANUAL.md, section 8).
+* **Planned:** `ha-kiosk-setup` as above. `install-local.sh` stays as a wrapper for one MAJOR
+  (`--uninstall` → `disable`, `--uninstall --purge` → `purge`, `--no-mqtt` → `--mqtt off`,
+  `--no-restart` → `--no-activate`).
+
+---
 
 ## 4. On-panel layout and transactions
 
@@ -667,15 +767,22 @@ discovery_prefix, device_id, connected}`, `discovery_topics[]`, `discovery_clean
 | `/etc/systemd/system/…` | Units and `message_bus.service.d/ha-kiosk-display.conf`, copied from the target release | — |
 
 State lives under `/etc` so that a full `/var` (photos) cannot break transactions or boot recovery.
-All units get `ProtectSystem=strict` with explicit `ReadWritePaths=`. Running `qmlscene` as an
+All units get `ProtectSystem=strict` with explicit `ReadWritePaths=`; release trees are therefore
+read-only to every kiosk service even though they run as root. Running `qmlscene` as an
 unprivileged user is desirable but needs framebuffer, GPU and input access (TO VERIFY).
 
 * **Current state:** the layout of 0.7: releases and saved config under `/var/lib/ha-kiosk`, the
   running copy flat in `/etc/ha-kiosk` with code, config and `photos/` mixed, paths hardcoded in
   the services and units, units without `ProtectSystem`. Two releases are kept.
-* **Migration:** the first contract-1 install moves user data out, deletes the flat code, and keeps
-  **no** `previous` (the legacy tree is unsigned and shell-sources config). A failed first install
-  exits 11.
+  Paths are hardcoded in `ha-kiosk-bridge.py` (`sys.path`, `ha-kiosk-mqtt.py`,
+  `ha-kiosk-photos.py`), `ha-kiosk-voice.py` and `ha-kiosk-intercom.py` (`sys.path`),
+  `ha-kiosk-display.sh` (`ha-kiosk-ambient.py`), every unit (`ExecStart`, voice `ExecStopPost`,
+  swap `ConditionPathExists`), and `main.qml` (`Qt.resolvedUrl("layout.json")`).
+* **Planned (Phase 1 code change):** code resolves sibling files from its own directory; units use
+  `/etc/ha-kiosk/current/`; user data moves to `/var/lib/ha-kiosk/`. **Migration:** the first
+  contract-1 install moves user data out, deletes the flat code, and keeps **no** `previous`: the
+  legacy tree is unsigned and shell-sources config, so it is never a rollback target. A failed first
+  install exits 11.
 
 ### 4.2 States
 
@@ -688,7 +795,8 @@ unprivileged user is desirable but needs framebuffer, GPU and input access (TO V
 | `rolled-back` | Behaves like `active`; `last_error` explains. Cleared by the next successful `install`/`enable`. |
 
 **Invariant**, enforced by `recover` at every boot before `message_bus` starts: drop-in present ⇔
-`ha-kiosk.service` enabled ⇔ `switch_ui_app` disabled.
+`ha-kiosk.service` enabled ⇔ `switch_ui_app` disabled. Otherwise Brilliant's backlight writes go to
+the shadow directory while the stock UI runs, or both UIs race for the screen.
 
 * **Current state:** the states of 0.5 (`not_installed`, `unmanaged`, `active`, `disabled`,
   `failed`, `in_progress`), spelled with underscores; `rolled_back` is an exit code, not a state.
@@ -738,9 +846,10 @@ still exists, or `message_bus` was not restarted after the drop-in was removed.
   on switches back to `previous` and `*.prev` (or marks stock UI); an unreadable `txn.json` falls back
   to the last committed `state.json`, and if that is unreadable too, to stock UI. Re-installs units
   from the target release and enforces the 4.2 invariant.
-* `ha-kiosk-verify.service` (`After=ha-kiosk.service`) runs the health check with `rendered` only.
-  Boot guard: if `rendered` is not seen within 180 s on two consecutive boots, it restores the stock
-  UI with code 13 `crash-loop`.
+* `ha-kiosk-verify.service` (`After=ha-kiosk.service`, ordered before nothing) runs the health check
+  with `rendered` only (never `ha_connected`, since HA or Wi-Fi is often still down after a power
+  cut). Boot guard: if `rendered` is not seen within 180 s on two consecutive boots, it restores the
+  stock UI with code 13 `crash-loop`.
 
 Re-running `install` after any interruption is always safe.
 
@@ -748,6 +857,9 @@ Re-running `install` after any interruption is always safe.
   (temp file + rename, no `fsync`), 7, 8 (through `install-local.sh`), 9 (heartbeat health check),
   10 (prune only), and the failure path (rollback to `previous`, else stock UI) exist as described
   in 0.8. No `txn.json`, preflight, `min_version`, boot recovery or exit 12 check.
+* **Planned:** all of 4.3.
+
+---
 
 ## 5. Health check
 
@@ -760,20 +872,27 @@ Within `--health-timeout` (default 60 s, max 180 s) of step 8:
 3. its `ts` is later than both the activation time and `ExecMainStartTimestamp` of `ha-kiosk`, and
    no older than 15 s. A JSON parse error means "retry next poll".
 
-**How the heartbeat is written.** A `Timer` in `main.qml` POSTs `{rendered, ha_connected,
-layout_source}` every 10 s to the bridge's localhost HTTP server. `rendered` becomes true on the
-first `Window.frameSwapped` after the layout is set (TO VERIFY that the Qt version on the image
-supports `frameSwapped` from QML). The bridge adds `version` and `ts` and writes the file
-atomically. The layout cache moves to the bridge as well, and `QML_XHR_ALLOW_FILE_WRITE` is dropped.
+**How the heartbeat is written.** QML cannot get its PID and can write files only through XHR with
+`QML_XHR_ALLOW_FILE_WRITE=1`, which is not atomic. So the UI does not write the file: a `Timer` in
+`main.qml` POSTs `{rendered, ha_connected, layout_source}` every 10 s to the bridge's existing
+localhost HTTP server (`BRIDGE_PORT`, default 8765). `rendered` becomes true on the first
+`Window.frameSwapped` after the layout is set; `ha_connected` is `Ha.connected`. The bridge adds
+`version` and `ts` and writes the file atomically. The layout cache moves to the bridge as well, and
+`QML_XHR_ALLOW_FILE_WRITE` is dropped (TO VERIFY that the Qt version on the image supports
+`frameSwapped` from QML).
 
 Outside an operator-initiated install/enable, `ha_connected: false` never triggers rollback or
-stock-UI restore; it is reported in `status`.
+stock-UI restore; it is reported in `status`. After commit, only the boot guard (4.3) acts on its
+own.
 
 * **Current state:** the heartbeat of 0.8: `main.qml` POSTs `{"ha": <status>}` every 10 s, the
   bridge writes `/run/ha-kiosk/heartbeat.json` = `{"time", "ha"}`; the check is heartbeat newer
   than activation, `ha-kiosk.service` active, `ha == "connected"` unless `--allow-offline`; fixed
   60 s. No `rendered`, `version` or `NRestarts`. `ha-kiosk.service` still sets
   `QML_XHR_ALLOW_FILE_WRITE=1` for the layout cache.
+* **Planned:** as above.
+
+---
 
 ## 6. Disable, rollback, uninstall, purge
 
@@ -792,19 +911,25 @@ stock-UI restore; it is reported in `status`.
 | Synced HA photos, layout cache, swap | kept | kept | deleted | deleted |
 | `state/`, `/etc/ha-kiosk/ha-kiosk-setup` | kept | kept | deleted last | deleted |
 
-Deletion is best effort on eMMC, so the integration MUST prompt the operator to revoke the HA
-token and the panel's MQTT credentials after uninstall. The `uninstall`/`purge` JSON output includes
-`discovery_cleanup_pending[]`, which the integration MUST act on.
+Deletion is best effort: on eMMC with wear-levelling, removed data may persist in flash. The real
+remedy is revocation, so the integration MUST prompt the operator to revoke the HA token and the
+panel's MQTT credentials after uninstall. `status` reports `secret_files[]`, which the pilot asserts
+is empty after uninstall. The `uninstall`/`purge` JSON output includes
+`discovery_cleanup_pending[]`; since the tool deletes itself, that output is the only record and the
+integration MUST act on it.
 
-Turning the kiosk off in an integration maps to `uninstall`. `disable` is for temporary hand-back.
+Turning the kiosk off in an integration maps to `uninstall`. `disable` is for temporary hand-back (for
+example troubleshooting) and keeps credentials on the panel.
 
 * **Current state (0.3, 0.11):** `disable` keeps releases, settings and token, publishes
   `kiosk_state=disabled` + `availability=offline` and withdraws the retained discovery configs; `rollback` swaps `current` and `previous`
   (`previous` is not nulled); `uninstall` deletes every secret and verifies that, keeps
   `overrides.env` and own photos in `/var/lib/ha-kiosk-keep` but **not** `layout.json`; `purge`
   removes the keep directory too; `install-local.sh --uninstall --purge` removes units, drop-in,
-  tmpfiles conf, swap and `/run/ha-kiosk-shadow`. Retained discovery is never withdrawn and
-  voice/capture firewall rules are removed by the units' `ExecStopPost`.
+  tmpfiles conf, swap and `/run/ha-kiosk-shadow`. Voice and capture firewall rules are removed by the units' `ExecStopPost`.
+* **Planned:** the table above.
+
+---
 
 ## 7. Configuration
 
@@ -813,18 +938,23 @@ lines allowed, max 16 KB.
 
 * Key matches `^[A-Z][A-Z0-9_]{0,63}$` and is in `schema/config.v1.json`, which MUST list every key
   the code reads (a CI test greps `env.get`, `ENV.get`, `os.environ` and `${VAR` against it).
+  Unknown keys are an error, except during legacy migration where they are warnings for one MAJOR.
 * Value: everything after the first `=`, literally. Forbidden anywhere in a value: bytes outside
-  0x20–0x7E, `\`, `"`, `'`, backtick, `$`. No quote stripping.
+  0x20–0x7E, `\`, `"`, `'`, backtick, `$`. `#` mid-value is data, not a comment. No quote stripping.
 * Duplicate keys are an error.
 * Validators are anchored full matches.
 
-**Invariant:** no value is ever interpolated into a shell command line. Values reach programs only
-as argv elements, environment variables, or JSON. The file is **never shell-sourced**.
-`ha-kiosk-setup` renders the validated config to `run.env`; shell services read values through a
-Python helper that prints single-quote-escaped assignments. QML reads `run.env` with the same rules.
+**Invariant:** no value is ever interpolated into a shell command line or a command string. Values
+reach programs only as argv elements, environment variables, or JSON. The file is **never
+shell-sourced**. `ha-kiosk-setup` renders the validated config to `run.env`; because of the
+forbidden characters, systemd's `EnvironmentFile=` reads it literally. Shell services read values
+through a Python helper that prints single-quote-escaped assignments. QML reads `run.env` with the
+same literal rules.
 
-`overrides.env` accepts only `SCREENSAVER`, `NIGHT_MODE`, `MOTION_WAKE`, `SMART_DIM`, `DAY_LEVEL`,
-with the same validators, and is rate-limited to one write per second.
+`overrides.env` (written by the bridge from MQTT and `display set`) accepts only `SCREENSAVER`,
+`NIGHT_MODE`, `MOTION_WAKE`, `SMART_DIM`, `DAY_LEVEL`, with the same validators, and is rate-limited
+to one write per second. It can never set `HA_URL`, `MQTT_*`, `VOICE_*`, `INTERCOM_*`,
+`PHOTO_DIRS`, `GESTURE_*` or `TOUCH_DEVICE`.
 
 Validators (excerpt; `config.v1.json` is the authority and also marks each key `diag: safe` or not):
 
@@ -862,17 +992,22 @@ rejected (exit 5), not cleaned. The MQTT password stays in `kiosk.env` in contra
   systemd `EnvironmentFile=`; the rendering makes that safe. Token rule `{20,4096}`. No per-key
   validators, no `run.env`, no 16 KB cap, duplicates allowed, no `diag: safe` marking,
   `overrides.env` not rate-limited.
+  `Ha.qml` strips invalid token characters (`/[^A-Za-z0-9._-]/`).
+* **Planned:** schema, validators, `run.env`, helper, no sourcing.
+
+---
 
 ## 8. Home Assistant token
 
 Contract 1 uses an operator-created long-lived token for a **dedicated, non-admin, local-only** HA
-user. HA tokens have no scopes: a non-admin token can still read every entity and call any service.
-Panel compromise equals that user's power. `GESTURE_*` service calls also run with it.
+user. HA tokens have no scopes. A non-admin token only removes admin-API exposure: it can still read
+every entity and call any service (locks, alarms, scripts, `shell_command`). Panel compromise equals
+that user's power. `GESTURE_*` service calls also run with it.
 
 | API | Where | Non-admin |
 |---|---|---|
-| WS `auth`, `get_states`, `subscribe_events` `state_changed` | `Ha.qml` | Expected yes; TO VERIFY |
-| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | TO VERIFY |
+| WS `auth`, `get_states`, `subscribe_events` `state_changed` | `Ha.qml` | Expected yes (`state_changed` is in HA's non-admin subscribe allowlist); TO VERIFY |
+| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | **TO VERIFY.** Believed to be in the same allowlist (`homeassistant/auth/permissions/events.py`). The current "must be an admin" log is an assumption, not a test result. |
 | WS `lovelace/config` | `main.qml` | TO VERIFY; dashboards with `require_admin` will fail |
 | WS `call_service` (tiles, gestures, `weather.get_forecasts`) | QML | Expected yes; TO VERIFY |
 | WS `media_player/browse_media` | `MusicPage.qml` | TO VERIFY |
@@ -881,11 +1016,20 @@ Panel compromise equals that user's power. `GESTURE_*` service calls also run wi
 | TTS / media fetch | `ha-kiosk-voice.py` | TO VERIFY |
 
 If `lovelace/config` is denied, the UI uses the cached or file layout: `rendered` stays true,
-`layout_source: cache`, `layout_error: forbidden`. Polling fallback: re-read `lovelace/config` on
-reconnect, every `LAYOUT_POLL_SECS` (default 300) comparing a hash, and on `…/layout/reload`.
+`layout_source: cache`, `layout_error: forbidden`. Polling fallback (only if `lovelace_updated`
+turns out to need admin): re-read `lovelace/config` on reconnect, every `LAYOUT_POLL_SECS` (default
+300) comparing a hash, and on `…/layout/reload`.
+
+The token is attached only when the parsed scheme, host and port of a URL equal those of `HA_URL`.
 
 * **Current state:** the token type is not enforced; the table is unverified. `ha-kiosk-voice.py`
   attaches the token only when scheme, host and port all match `HA_URL`.
+  `docs/MANUAL.md` asks for an admin token; `scripts/publish_layout.py` creates an admin-only
+  dashboard.
+* **Planned:** non-admin user documented, `publish_layout.py` creates a non-admin dashboard,
+  table verified in the pilot.
+
+---
 
 ## 9. MQTT and network
 
@@ -895,7 +1039,7 @@ reconnect, every `LAYOUT_POLL_SECS` (default 300) comparing a hash, and on `…/
 |---|---|
 | `off` | Nothing. |
 | `kiosk` | Only kiosk-owned entities (9.3). **Required for the integration.** |
-| `full` | The built-in device, for standalone use. |
+| `full` | Today's behaviour, for standalone use. |
 
 In `kiosk` mode the bridge subscribes an explicit list of command topics (no wildcard, no
 `load/set`).
@@ -903,6 +1047,9 @@ In `kiosk` mode the bridge subscribes an explicit list of command topics (no wil
 * **Current state (0.11):** the three modes exist, spelled `0`/`1`/`kiosk` (`full` and `off` are
   not accepted by the validator). The subscription is `<base>/+/set` in every mode. The
   `brilliant_kiosk` integration works with either provider (its `mqtt_provider` option).
+  MQTT runs inside `ha-kiosk-bridge.py` (it loads `ha-kiosk-mqtt.py`). Voice publishes its own
+  discovery and availability.
+* **Planned:** the `full`/`off` spellings (`kiosk` mode exists, see above).
 
 ### 9.2 Namespace and device
 
@@ -911,9 +1058,13 @@ In `kiosk` mode the bridge subscribes an explicit list of command topics (no wil
 * Discovery `<prefix>/<component>/<node>/<key>/config`, retained, `unique_id = <node>_<key>`. The
   integration MUST NOT use the `brilliant_<12>_` prefix, and the kiosk publishes nothing outside its
   node.
-* With `MQTT_DEVICE_ID` set, the kiosk's `device` block contains only `identifiers`.
-* The kiosk publishes retained `<base>/kiosk_state` (the status `state`) and retained
-  `<base>/discovery` JSON `{"state", "host", "device_id", "room"}`.
+* With `MQTT_DEVICE_ID` set, the kiosk's `device` block contains only `identifiers`, so entities
+  join the integration's device without overwriting its name, model or firmware.
+* The kiosk publishes retained `<base>/kiosk_state` (the status `state`) so the integration sees
+  boot-time changes without SSH. It also publishes retained `<base>/discovery`, JSON
+  `{"state", "host", "device_id", "room"}` (`host` is the panel's LAN IPv4 and may be absent,
+  `room` may be null), which the Home Assistant integration is discovered from; `kiosk_state`
+  stays as it is for other integrations.
 
 * **Current state:** implemented as written (0.11); `status.mqtt` has `mode` and `base` only.
 
@@ -939,25 +1090,28 @@ after every command result and on changes of `<base>/kiosk_state` or `<base>/ava
 2. On start in `kiosk` mode, the kiosk clears any retained `full`-mode topics under its node.
 3. `disable`/`uninstall`/`purge` run `ha-kiosk-mqtt.py --withdraw` before stopping units: empty
    retained payloads for every topic in `discovery_topics` (including voice and intercom) and
-   `offline` availability, with a timeout. Topics not cleared go to `discovery_cleanup_pending`.
+   `offline` availability, with a timeout. Topics not cleared go to `discovery_cleanup_pending`,
+   which the integration clears with its own credentials.
 4. After exit 11, 12 or 13, or a stock-UI state at boot, the integration republishes its display
    discovery.
 
-* **Current state:** step 2 exists. The `brilliant_kiosk` integration publishes no MQTT entities
-  of its own. No `--withdraw`.
+* **Current state:** step 2 exists. Step 3 exists in another form: `ha-kiosk-setup` withdraws every
+  recorded discovery config, including voice, intercom and capture, on `disable`, `uninstall` and
+  `purge` (0.11); there is no `ha-kiosk-mqtt.py --withdraw` and no `discovery_cleanup_pending`. The
+  `brilliant_kiosk` integration publishes no MQTT entities of its own.
 
 ### 9.5 Network listeners and broker ACL
 
 | Listener | Bind | Firewall | Allowed | Auth |
 |---|---|---|---|---|
 | Bridge HTTP `BRIDGE_PORT` (8765) | 127.0.0.1 | none needed | local processes | none (root-only box) |
-| Voice Wyoming TCP `VOICE_PORT` (10700) | `VOICE_BIND` (default: LAN address toward HA) | runtime `nft insert rule inet firewall filter-input`, removed on stop (`--close-firewall`) | `VOICE_ALLOW` (default: HA host) | none |
+| Voice Wyoming TCP `VOICE_PORT` (10700) | `VOICE_BIND` (default: LAN address toward HA) | runtime `nft` accept rule in `inet firewall filter-input`, removed on stop (`--close-firewall`) | `VOICE_ALLOW` (default: HA host) | none |
 | Capture clip server TCP `CAPTURE_PORT` (10720) | `CAPTURE_BIND` (default: LAN address toward HA) | runtime `nft` rule as above | `CAPTURE_ALLOW` (default: HA host) | per-clip token in the URL |
-| Capture local control TCP `CAPTURE_PORT+1` | 127.0.0.1 | — | local | none |
-| Intercom UDP `INTERCOM_PORT` (10710) | `INTERCOM_BIND` (default: LAN address toward the broker) | TO VERIFY whether Brilliant's ruleset admits it | source IPs in retained `<base>/intercom/peers/#` | **none; LAN trust only** |
+| Capture local control TCP `CAPTURE_PORT+1` | 127.0.0.1 | none | local | none |
+| Intercom UDP `INTERCOM_PORT` (10710) | `INTERCOM_BIND` (default: LAN address toward broker) | TO VERIFY whether Brilliant's ruleset admits it | source IPs in retained `<base>/intercom/peers/#` | **none; LAN trust only**, spoofable |
 | Intercom control TCP `INTERCOM_PORT+1` | 127.0.0.1 | — | local | none |
 
-Required broker ACL (template to ship in the docs): each panel's user reads and writes only
+Required broker ACL (template to ship in the docs; none is shipped yet): each panel's user reads and writes only
 `<base>/<node>/#`, `<base>/intercom/peers/<node>`, and its own discovery topics, and reads
 `<base>/intercom/peers/#`; the integration's user may write `<base>/<node>/display/+/set`. Without
 per-panel credentials, any broker client can register an intercom peer or blank screens.
@@ -966,6 +1120,8 @@ per-panel credentials, any broker client can register an intercom peer or blank 
 * **Current state:** the listeners are as in the table (defaults from `kiosk/ha-kiosk-*.py`).
   `status` does not report them. MANUAL's "nothing new is exposed" holds only with voice,
   intercom and capture off.
+
+---
 
 ## 10. Display control for the integration
 
@@ -979,22 +1135,25 @@ command produces a state echo within 2 s, or `display/error` with `{"cmd", "reas
 | Function | Command (payload) | State |
 |---|---|---|
 | Screen power | `power/set` `ON`/`OFF` (OFF = asleep until touch, allowed motion, or ON) | `power` |
-| Brightness | `brightness/set` 1–15 | `brightness` 0–15 |
+| Brightness | `brightness/set` 1–15 (HA `number`, min 1, max 15, step 1) | `brightness` 0–15 |
 | Motion wake | `motion_wake/set` `day`/`always`/`off` | `motion_wake` |
 | Screensaver | `screensaver/set` `ON`/`OFF`; `screensaver/start` | `screensaver` |
 | Wake | `wake` | — |
 | Display state | — | `state` (`awake`/`photos`/`dim`/`asleep`) |
 
 **SSH:** `ha-kiosk-setup display get --json` and `display set <function> <value>`, which call the
-bridge's localhost HTTP server (`POST /display`).
+bridge's localhost HTTP server (`POST /display`); no separate socket.
 
-Settings persist in `overrides.env` (7); `power`, `wake`, `screensaver/start` are transient. The
-display loop is rewritten so every wait is ≤ 2 s and it applies commands from
-`/run/ha-kiosk-display/cmd`, or moved to Python with `select` on touch input and a control pipe.
-Old topics stay as aliases in contract 1.
+Settings persist in `overrides.env` (7); `power`, `wake`, `screensaver/start` are transient.
 
 * **Current state:** the topics of 0.12 with restart semantics; no screen power, no SSH display
   command, no error topic.
+* **Planned:** the display loop is rewritten so every wait is ≤ 2 s and it applies commands from
+  `/run/ha-kiosk-display/cmd` (atomic rename), or moved to Python with `select` on touch input and a
+  control pipe. Until then the topics keep restart semantics. Old topics stay as aliases in
+  contract 1.
+
+---
 
 ## 11. OTA
 
@@ -1007,10 +1166,13 @@ Old topics stay as aliases in contract 1.
     (below → stock UI, code 13 `firmware`). If state is `active` but units, drop-in or the
     `switch_ui_app` state are wrong, it runs `reapply`.
   * The integration keeps the desired state (enabled, pinned version) and cached verified bundle.
-    After a firmware change or reboot it runs `status`; exit 127 or a missing tool with kiosk
-    desired → `install` from the cached bundle.
+    After a firmware change or reboot it first runs its own OTA re-apply (which also touches
+    `message_bus`), then `/etc/ha-kiosk/ha-kiosk-setup status --json`. Exit 127 or missing tool
+    with kiosk desired → `install` from the cached bundle.
   * Pilot: one OTA with the kiosk active, recording surviving paths and `systemctl cat
     message_bus` before and after.
+
+---
 
 ## 12. Diagnostics
 
@@ -1019,10 +1181,10 @@ Old topics stay as aliases in contract 1.
 * `status`; `VERSION`/`CONTRACT` of each release; `txn.json` step names only;
 * config by **allowlist**: keys marked `diag: safe` with values, others as `{"set": true, "len": n}`;
   entity ids hashed with a per-panel salt;
-* `journalctl -u 'ha-kiosk*'` last 200 lines, with every output field scrubbed by: JWT
-  `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`, `Bearer \S+`, `authSig=[^&\s]+`, literal
-  search-and-replace of the token, MQTT password and the values of `HA_URL`, `MQTT_HOST`,
-  `VOICE_BIND`, `VOICE_ALLOW`, `INTERCOM_BIND`, then IP literals;
+* `journalctl -u 'ha-kiosk*'` last 200 lines (`message_bus` only lines tagged `ha-kiosk`), with
+  every output field scrubbed by: JWT `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`,
+  `Bearer \S+`, `authSig=[^&\s]+`, literal search-and-replace of the token, MQTT password and the
+  values of `HA_URL`, `MQTT_HOST`, `VOICE_BIND`, `VOICE_ALLOW`, `INTERCOM_BIND`, then IP literals;
 * health, display state, firmware, uptime, memory, disk, listeners, `switch_ui_app` state.
 
 Excluded: photos, layout content, entity lists.
@@ -1034,6 +1196,9 @@ Logging rule for all services: never log full URLs with query strings; strip `au
   logs `base=<HA_URL>`, MQTT logs the broker host, voice and photos log fetched URLs that can carry
   signed `authSig` links. `scripts/logs.sh` is unredacted; the integration's `logs` action is
   redacted on the HA side.
+* **Planned:** as above.
+
+---
 
 ## 13. Compatibility
 
@@ -1041,20 +1206,21 @@ Logging rule for all services: never log full URLs with query strings; strip `au
   flags, exit codes, JSON fields, config keys and topics are only added.
 * A MAJOR release accompanies a contract bump; each release supports one contract.
 * Downgrades within a contract need `--allow-downgrade` and are always refused below the
-  `min_version` floor recorded on the panel.
+  `min_version` floor recorded on the panel (raised monotonically from signed `release.json`).
 * Deprecated aliases (`install-local.sh`, old topics, `KIOSK_MQTT=1/0`) stay for one MAJOR.
 
 * **Current state:** the status object carries `schema: 1`; nothing else of this section. The
   integration refuses downgrades on its own side (`pybrilliantkiosk.versions.is_newer`); the tool
   accepts any `VERSION`.
 
+---
+
 ## 14. Phasing
 
-1. **Installer, security, rollback:** sections 2–8 (signing, `ha-kiosk-setup` shim and `--json`,
-   release layout and path refactor, transactions, boot recovery, `rendered` heartbeat, config
-   schema, uninstall table, non-admin token).
-2. **MQTT and display:** sections 9–10 (`full`/`off` spellings, narrowed subscriptions, withdraw,
-   display loop rewrite).
+1. **Installer, security, rollback:** sections 2–8 (signing, reproducible builds, `ha-kiosk-setup`,
+   release layout and path refactor, transactions, boot recovery, heartbeat, config parser,
+   uninstall, non-admin token).
+2. **MQTT and display:** sections 9–10 (`kiosk` mode, withdraw, display loop rewrite).
 3. **Single-panel pilot.**
 
 ## 15. Pilot checklist
