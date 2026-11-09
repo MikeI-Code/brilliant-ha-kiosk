@@ -52,12 +52,14 @@ def test_the_workflow_uses_the_requirements_file_and_checks_formatting() -> None
     assert 'python-version: "3.14"' in workflow  # Home Assistant 2026.3 needs Python >= 3.14.2
 
 
-def test_manifest_links_and_no_premature_quality_scale() -> None:
+def test_manifest_links_and_quality_scale() -> None:
     manifest = _json("manifest.json")
     base = "https://github.com/MikeI-Code/brilliant-ha-kiosk"
     assert manifest["documentation"].startswith(base)
     assert manifest["issue_tracker"] == f"{base}/issues"
-    assert "quality_scale" not in manifest  # until dependency-transparency is done (PyPI)
+    assert (
+        manifest["quality_scale"] == "platinum"
+    )  # every rule in quality_scale.yaml is done/exempt
 
 
 def test_the_readme_the_manifest_points_at_links_the_integration_docs() -> None:
@@ -69,12 +71,10 @@ def test_the_readme_the_manifest_points_at_links_the_integration_docs() -> None:
 # -- quality_scale.yaml -------------------------------------------------------------------------
 
 
-def test_every_quality_rule_is_done_or_exempt_with_a_reason_except_dependency_transparency() -> (
-    None
-):
+def test_every_quality_rule_is_done_or_exempt_with_a_reason() -> None:
     rules = yaml.safe_load((COMPONENT / "quality_scale.yaml").read_text(encoding="utf-8"))["rules"]
     todo = {name for name, rule in rules.items() if rule["status"] == "todo"}
-    assert todo == {"dependency-transparency"}
+    assert todo == set()
     for name, rule in rules.items():
         assert rule["status"] in {"done", "exempt", "todo"}, name
         if rule["status"] == "exempt":

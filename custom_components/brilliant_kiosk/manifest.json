@@ -10,6 +10,7 @@
   "issue_tracker": "https://github.com/MikeI-Code/brilliant-ha-kiosk/issues",
   "loggers": ["pybrilliantkiosk", "asyncssh"],
   "mqtt": ["brilliant_kiosk/+/kiosk_state"],
+  "quality_scale": "platinum",
   "requirements": ["pybrilliantkiosk==0.1.1"],
   "version": "0.1.0"
 }
