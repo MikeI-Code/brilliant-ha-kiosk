@@ -23,6 +23,17 @@ jobs:
           tag="${GITHUB_REF_NAME#pybrilliantkiosk-v}"
           version="$(grep -m1 '^version = ' lib/pybrilliantkiosk/pyproject.toml | cut -d'"' -f2)"
           test "$tag" = "$version" || { echo "tag $tag != pyproject version $version"; exit 1; }
+      # The same checks as the Integration workflow, with the same pins as requirements_test.txt:
+      # nothing is built or published from a tag that would not pass them.
+      - name: Ruff
+        working-directory: lib/pybrilliantkiosk
+        run: uvx ruff@0.17.4 check .
+      - name: Ruff format
+        working-directory: lib/pybrilliantkiosk
+        run: uvx ruff@0.17.4 format --check .
+      - name: Mypy --strict
+        working-directory: lib/pybrilliantkiosk
+        run: uv run --python 3.14 --with-editable '.[dev]' --with mypy==2.4.1 mypy --strict src
       - name: Test
         working-directory: lib/pybrilliantkiosk
         run: uv run --python 3.14 --with-editable '.[dev]' pytest -q
