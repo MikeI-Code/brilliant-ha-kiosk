@@ -53,11 +53,19 @@ async def _handle(process: Any) -> None:
         process.stdout.write(b'{"state": "in_progress"}\n')
     elif "ha-kiosk-setup wait" in cmd:
         process.stdout.write(b'{"state": "active", "version": "v9"}\n')
-    elif cmd.startswith("echo '#--kl:begin--'"):
+    elif cmd.startswith("echo '#--kl-"):
+        mark = b"#--kl-" + cmd.split("kl-")[1].split(":")[0].encode()
         process.stdout.write(
-            b"#--kl:begin--\n#--kl:config:present:"
+            mark
+            + b":begin--\n"
+            + mark
+            + b":config:present:"
             + hashlib.sha256(b"A=1\n").hexdigest().encode()
-            + b"--\nA=1\n\n#--kl:running:absent--\n#--kl:overrides--\n"
+            + b"--\nA=1\n\n"
+            + mark
+            + b":running:absent--\n"
+            + mark
+            + b":overrides--\n"
         )
     elif cmd == "echo-stdin":
         process.stdout.write(stdin)
@@ -152,3 +160,124 @@ async def test_real_stdin_reaches_the_process_intact(port: int, data: str | byte
         result = await panel._run("echo-stdin", stdin=data)
     expected = data.encode() if isinstance(data, str) else data
     assert result.stdout == expected.decode("utf-8", "replace")
+
+
+# -- a password-only panel never offers (or authenticates with) the host's own default keys --------
+
+DEFAULT_KEY = asyncssh.generate_private_key("ssh-ed25519")  # ~/.ssh/id_ed25519 of the fake home
+CONFIGURED_KEY = asyncssh.generate_private_key("ssh-ed25519")  # the key a user pastes in
+DEFAULT_FP = DEFAULT_KEY.get_fingerprint()
+CONFIGURED_FP = CONFIGURED_KEY.get_fingerprint()
+#: Fingerprints of the public keys offered to the server since the test began.
+offered: list[str] = []
+
+
+class _KeyServer(_Server):
+    """Accepts the password ``pw`` and the public keys of the default and the configured key."""
+
+    def public_key_auth_supported(self) -> bool:
+        return True
+
+    def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
+        offered.append(key.get_fingerprint())
+        return key.get_fingerprint() in (DEFAULT_FP, CONFIGURED_FP)
+
+
+class _KeyOnlyServer(_KeyServer):
+    """Like :class:`_KeyServer` but no password is ever valid: only a key can log in."""
+
+    def validate_password(self, username: str, password: str) -> bool:
+        return False
+
+
+async def _serve(server_class: type[asyncssh.SSHServer]) -> Any:
+    return await asyncssh.create_server(
+        server_class,
+        "127.0.0.1",
+        0,
+        server_host_keys=[SERVER_KEY],
+        process_factory=_handle,
+        encoding=None,
+        config=[],
+    )
+
+
+@pytest.fixture
+def home_with_a_default_key(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
+    """A HOME whose ~/.ssh/id_ed25519 the loopback server would accept."""
+    ssh = tmp_path / ".ssh"
+    ssh.mkdir()
+    key_file = ssh / "id_ed25519"
+    DEFAULT_KEY.write_private_key(str(key_file))
+    key_file.chmod(0o600)
+    for name in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(name, str(tmp_path))
+    offered.clear()
+    yield tmp_path
+    offered.clear()
+
+
+@pytest.fixture
+async def key_port(home_with_a_default_key: Any) -> AsyncIterator[int]:
+    server = await _serve(_KeyServer)
+    yield server.sockets[0].getsockname()[1]
+    server.close()
+    await server.wait_closed()
+
+
+@pytest.fixture
+async def key_only_port(home_with_a_default_key: Any) -> AsyncIterator[int]:
+    server = await _serve(_KeyOnlyServer)
+    yield server.sockets[0].getsockname()[1]
+    server.close()
+    await server.wait_closed()
+
+
+async def test_the_harness_does_see_default_keys_when_asyncssh_is_told_to_load_them(key_port: int):
+    """Control: ``client_keys=[]`` (the old code) makes asyncssh offer ~/.ssh/id_ed25519."""
+    conn = await asyncssh.connect(
+        "127.0.0.1",
+        port=key_port,
+        username="root",
+        known_hosts=None,
+        client_keys=[],
+        agent_path=None,
+        config=[],
+    )
+    conn.close()
+    assert set(offered) == {DEFAULT_FP}
+
+
+async def test_password_only_panel_never_offers_the_hosts_default_key(key_port: int):
+    async with Panel("127.0.0.1", port=key_port, password="pw") as panel:
+        assert (await panel._run("echo-stdin", stdin="x")).stdout == "x"
+    assert offered == []  # not even offered, let alone accepted
+
+
+async def test_a_wrong_password_is_not_rescued_by_the_default_key(key_port: int):
+    with pytest.raises(AuthFailed):
+        await Panel("127.0.0.1", port=key_port, password="wrong").connect()
+    assert offered == []
+
+
+async def test_a_panel_without_credentials_does_not_authenticate_with_the_default_key(
+    key_only_port: int,
+):
+    with pytest.raises(AuthFailed):
+        await Panel("127.0.0.1", port=key_only_port).connect()
+    assert offered == []
+
+
+async def test_scanning_the_host_key_offers_no_key(key_port: int):
+    info = await fetch_host_key("127.0.0.1", port=key_port)
+    assert info.sha256 == FP
+    assert offered == []
+
+
+async def test_only_the_configured_key_is_offered_even_with_a_default_key_present(
+    key_only_port: int,
+):
+    pem = CONFIGURED_KEY.export_private_key().decode()
+    async with Panel("127.0.0.1", port=key_only_port, private_key=pem) as panel:
+        assert (await panel._run("echo-stdin", stdin="k")).stdout == "k"
+    assert set(offered) == {CONFIGURED_FP}  # asked, then signed

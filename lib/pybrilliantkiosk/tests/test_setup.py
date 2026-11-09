@@ -343,16 +343,22 @@ EXAMPLE = b"""# comment
 KIOSK_MODE=native
 HA_URL=http://192.168.1.10:8123/x
 DAY_LEVEL=15
-BAD_KEY=1
 GESTURE_2_TAP=load.toggle
-EVIL=$(rm)
-DIM_LEVEL=it's
+WEATHER_FX=sky
 KIOSK_MQTT=1
+"""
+#: What the ha-kiosk-setup of a bundle looks like to the parser: a ``KEYS`` set of words.
+SETUP = b"""#!/data/switch-embedded/env/bin/python
+KEYS = set(\"\"\"
+KIOSK_MODE HA_URL DAY_LEVEL KIOSK_MQTT MQTT_HOST WEATHER_FX NEW_SETTING
+\"\"\".split())
 """
 
 
 def test_kiosk_env_from_bundle():
-    bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE, "rel/other": b"x"})
+    bundle = make_bundle(
+        {"rel/kiosk.env.example": EXAMPLE, "rel/ha-kiosk-setup": SETUP, "rel/other": b"x"}
+    )
     text = kiosk_env_from_bundle(bundle, {"HA_URL": "http://ha:8123", "MQTT_HOST": "broker"})
     lines = text.splitlines()
     # Rendered like ha-kiosk-setup's render_env: the panel sources this file as root.
@@ -362,8 +368,51 @@ def test_kiosk_env_from_bundle():
     assert 'GESTURE_2_TAP="load.toggle"' in lines
     assert 'KIOSK_MQTT="1"' in lines
     assert not any("=" in line and not line.split("=", 1)[1].startswith('"') for line in lines)
-    assert not any(line.startswith(("BAD_KEY", "EVIL", "DIM_LEVEL")) for line in lines)
     assert text.endswith("\n")
+
+
+def test_a_setting_only_the_bundles_tool_knows_is_kept():
+    """WEATHER_FX was missing from the library's list and silently dropped: the first install
+    from Home Assistant then ran with the heavy default. The bundle's own tool decides."""
+    from pybrilliantkiosk.env import KNOWN_KEYS
+
+    assert "NEW_SETTING" not in KNOWN_KEYS
+    example = b"WEATHER_FX=sky\nNEW_SETTING=on\n"
+    bundle = make_bundle({"rel/kiosk.env.example": example, "rel/ha-kiosk-setup": SETUP})
+    lines = kiosk_env_from_bundle(bundle, {"NEW_SETTING": "off"}).splitlines()
+    assert lines == ['WEATHER_FX="sky"', 'NEW_SETTING="off"']
+
+
+def test_a_setting_the_bundles_tool_does_not_know_is_refused_by_name():
+    tool = b'KEYS = set("KIOSK_MODE".split())\n'
+    bundle = make_bundle(
+        {"rel/kiosk.env.example": b"KIOSK_MODE=native\nBAD_KEY=1\n", "rel/ha-kiosk-setup": tool}
+    )
+    with pytest.raises(InvalidArgument, match="BAD_KEY"):
+        kiosk_env_from_bundle(bundle, {})
+    ok = make_bundle({"rel/kiosk.env.example": b"KIOSK_MODE=native\n", "rel/ha-kiosk-setup": tool})
+    with pytest.raises(InvalidArgument, match="WEATHER_FX"):
+        kiosk_env_from_bundle(ok, {"WEATHER_FX": "sky"})  # an override is checked the same way
+
+
+@pytest.mark.parametrize("value", ["$(rm)", "it's", "a`b", 'a"b', "a\\b", "x" * 1025])
+def test_a_value_the_bundles_tool_would_refuse_is_refused_by_name(value: str):
+    example = f"KIOSK_MODE={value}\n".encode()
+    bundle = make_bundle({"rel/kiosk.env.example": example, "rel/ha-kiosk-setup": SETUP})
+    with pytest.raises(InvalidArgument, match="KIOSK_MODE"):
+        kiosk_env_from_bundle(bundle, {})
+
+
+def test_the_top_level_tool_is_the_one_whose_keys_count():
+    nested = b'KEYS = set("ONLY_NESTED".split())\n'
+    bundle = make_bundle(
+        {
+            "rel/ha-kiosk/ha-kiosk-setup": nested,
+            "rel/ha-kiosk-setup": SETUP,
+            "rel/kiosk.env.example": b"WEATHER_FX=sky\n",
+        }
+    )
+    assert kiosk_env_from_bundle(bundle, {}) == 'WEATHER_FX="sky"\n'
 
 
 def test_kiosk_env_from_bundle_errors():
@@ -371,7 +420,13 @@ def test_kiosk_env_from_bundle_errors():
         kiosk_env_from_bundle(make_bundle({"rel/x": b"1"}), {})
     with pytest.raises(ReleaseError, match="unreadable"):
         kiosk_env_from_bundle(b"not a tarball", {})
-    bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE})
+    no_tool = make_bundle({"rel/kiosk.env.example": EXAMPLE})
+    with pytest.raises(ReleaseError, match=r"no ha-kiosk-setup"):
+        kiosk_env_from_bundle(no_tool, {})
+    no_keys = make_bundle({"rel/kiosk.env.example": EXAMPLE, "rel/ha-kiosk-setup": b"X = 1\n"})
+    with pytest.raises(ReleaseError, match="list of settings"):
+        kiosk_env_from_bundle(no_keys, {})
+    bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE, "rel/ha-kiosk-setup": SETUP})
     with pytest.raises(InvalidArgument):
         kiosk_env_from_bundle(bundle, {"UNKNOWN": "1"})
     with pytest.raises(InvalidArgument):
@@ -379,16 +434,41 @@ def test_kiosk_env_from_bundle_errors():
 
 
 def test_kiosk_env_from_bundle_member_without_data(monkeypatch: pytest.MonkeyPatch):
-    bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE})
+    bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE, "rel/ha-kiosk-setup": SETUP})
     monkeypatch.setattr(tarfile.TarFile, "extractfile", lambda self, member: None)
     with pytest.raises(ReleaseError, match=r"no kiosk.env.example"):
         kiosk_env_from_bundle(bundle, {})
 
 
+def test_the_real_example_and_tool_of_the_repository_install_unchanged():
+    """The files the build puts into a bundle: every setting of the example survives, in order."""
+    from pathlib import Path
+
+    from pybrilliantkiosk import EnvFile
+
+    root = Path(__file__).resolve().parents[3]
+    tool, example = root / "kiosk" / "ha-kiosk-setup", root / "config" / "kiosk.env.example"
+    if not (tool.is_file() and example.is_file()):
+        pytest.skip("the repository's kiosk files are not next to the library (an sdist)")
+    members = {
+        "rel/ha-kiosk-setup": tool.read_bytes(),
+        "rel/kiosk.env.example": example.read_bytes(),
+    }
+    text = kiosk_env_from_bundle(make_bundle(members), {"MQTT_HOST": "broker"})
+    wanted = EnvFile.parse(example.read_text(encoding="utf-8")).values()
+    got = EnvFile.parse(text).values()
+    assert {k: v for k, v in got.items() if k != "MQTT_HOST"} == {
+        k: v for k, v in wanted.items() if k != "MQTT_HOST"
+    }
+    assert got["MQTT_HOST"] == "broker"
+
+
 def test_kiosk_env_from_bundle_values_with_shell_metacharacters_stay_inert(tmp_path: Any):
     import subprocess
 
-    bundle = make_bundle({"rel/kiosk.env.example": b"KIOSK_MODE=native\n"})
+    bundle = make_bundle(
+        {"rel/kiosk.env.example": b"KIOSK_MODE=native\n", "rel/ha-kiosk-setup": SETUP}
+    )
     text = kiosk_env_from_bundle(bundle, {"HA_URL": "http://h/;touch pwned|id&x>y (z)"})
     env_file = tmp_path / "kiosk.env"
     env_file.write_text(text)
@@ -498,3 +578,118 @@ async def test_concurrent_operations_on_one_panel_are_serialised(net: Net):
     panel = Panel("h")
     await asyncio.gather(panel.setup_command("reapply"), panel.setup_command("reapply"))
     assert peak == 1
+
+
+# -- the wait for a detached job, and the directory it works from ----------------------------
+
+
+def test_the_wait_covers_the_worst_case_of_a_failed_install_and_its_rollback():
+    from pybrilliantkiosk import panel as panel_module
+
+    budget = panel_module.WAIT_ROUNDS * panel_module.WAIT_TIMEOUT
+    assert budget >= 6.5 * 60  # the contract's figure (docs/INTEGRATION.md section 3)
+    # new release up (<= 400 s + 60 s), rollback to the previous one (the same), stock UI restore
+    assert budget >= 2 * (400 + 60) + 400 + panel_module.SETUP_JOB_MARGIN_SECS
+    assert budget - panel_module.WAIT_TIMEOUT < panel_module.SETUP_JOB_WORST_CASE_SECS + 180
+
+
+def test_the_worst_case_is_derived_from_the_timeouts_in_the_setup_tool():
+    import re
+    from pathlib import Path
+
+    from pybrilliantkiosk.panel import SETUP_JOB_WORST_CASE_SECS
+
+    tool = Path(__file__).resolve().parents[3] / "kiosk" / "ha-kiosk-setup"
+    if not tool.is_file():
+        pytest.skip("kiosk/ha-kiosk-setup is not next to the library (running from an sdist)")
+    text = tool.read_text(encoding="utf-8")
+    script_timeouts = {int(n) for n in re.findall(r"timeout=(\d+)\)", text)} - {110}
+    check = int(re.search(r"^CHECK_SECS = (\d+)", text, re.M)[1])  # type: ignore[index]
+    longest = max(script_timeouts)
+    assert 2 * (longest + check) + longest == SETUP_JOB_WORST_CASE_SECS
+
+
+async def test_install_keeps_its_directory_when_the_wait_runs_out(
+    net: Net, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The job may still be running (and reading the bundle, the tool, the settings from there)."""
+    monkeypatch.setattr("pybrilliantkiosk.panel.WAIT_ROUNDS", 2)
+    cmds: list[str] = []
+    net.conn.handler = install_handler(wait=9, calls=cmds)
+    with caplog.at_level("WARNING"), pytest.raises(SetupError, match="still running"):
+        await Panel("h").install(BUNDLE, SHA)
+    assert not any(c.startswith("rm -rf") for c in cmds)
+    assert WORKDIR in caplog.text
+
+
+async def test_install_keeps_its_directory_when_the_connection_drops_during_the_wait(net: Net):
+    cmds: list[str] = []
+    base = install_handler(calls=cmds)
+
+    def handler(cmd: str, stdin: Any) -> Any:
+        if "ha-kiosk-setup wait" in cmd:
+            return asyncssh.ConnectionLost(1, "gone")
+        return base(cmd, stdin)
+
+    net.conn.handler = handler
+    with pytest.raises(CannotConnect):
+        await Panel("h").install(BUNDLE, SHA)
+    assert not any(c.startswith("rm -rf") for c in cmds)
+
+
+async def test_install_keeps_its_directory_when_it_is_cancelled_during_the_wait(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+):
+    import asyncio
+
+    cmds: list[str] = []
+    net.conn.handler = install_handler(calls=cmds)
+
+    async def cancelled(self: Panel, tool: str, job: Any = None) -> Any:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(Panel, "_setup_wait", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await Panel("h").install(BUNDLE, SHA)
+    assert not any(c.startswith("rm -rf") for c in cmds)
+
+
+@pytest.mark.parametrize("start", [3, 4])
+async def test_install_removes_its_directory_when_the_job_never_started(net: Net, start: int):
+    cmds: list[str] = []
+    net.conn.handler = install_handler(start=start, calls=cmds)
+    with pytest.raises(SetupError):
+        await Panel("h").install(BUNDLE, SHA)
+    assert cmds[-1] == f"rm -rf {WORKDIR}"
+
+
+@pytest.mark.parametrize("wait", [3, 4, 5, 6])
+async def test_install_removes_its_directory_once_the_job_reported_a_final_state(
+    net: Net, wait: int
+):
+    cmds: list[str] = []
+    net.conn.handler = install_handler(wait=wait, calls=cmds)
+    with pytest.raises(SetupError):
+        await Panel("h").install(BUNDLE, SHA)
+    assert cmds[-1] == f"rm -rf {WORKDIR}"
+
+
+async def test_install_waits_through_the_rounds_a_rollback_needs(net: Net):
+    """A failing install runs for many minutes before the tool reports: the wait must outlast it."""
+    from pybrilliantkiosk.panel import WAIT_ROUNDS
+
+    rounds = WAIT_ROUNDS - 1
+    waits = iter([9] * rounds + [5])
+    cmds: list[str] = []
+    base = install_handler(calls=cmds)
+
+    def handler(cmd: str, stdin: Any) -> Any:
+        if "ha-kiosk-setup wait" in cmd:
+            cmds.append(cmd)
+            return out(json.dumps({"last_result": {"message": "rolled back"}}), next(waits))
+        return base(cmd, stdin)
+
+    net.conn.handler = handler
+    with pytest.raises(ActivationRolledBack):
+        await Panel("h").install(BUNDLE, SHA)
+    assert cmds[-1] == f"rm -rf {WORKDIR}"

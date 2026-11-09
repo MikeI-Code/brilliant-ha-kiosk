@@ -85,13 +85,41 @@ def read(path, default=""):
         return default
 
 
+# The value rule is the one of BAD_VALUE in ha-kiosk-setup (which also rejects a single quote).
+BAD_VALUE = re.compile(r"[\"'`$\\\x00-\x1f\x7f]")
+MAX_VALUE_LEN = 1024
+
+
+def parse_env(text):
+    """kiosk.env / overrides.env text -> ({KEY: value}, [keys of rejected lines]).
+
+    The rules of parse_env in ha-kiosk-setup, line by line, so both read a file the same way: a
+    line is ``KEY=value`` (no spaces around the ``=``), one pair of matching quotes around the value
+    is removed, and ``#`` is an ordinary character inside a value (it only starts a comment at the
+    beginning of a line, as in the shell that sources these files). A value the setup tool would
+    reject (quotes, backtick, ``$``, backslash, control characters, over 1024 characters) rejects
+    its line; the last good assignment of a key wins. Unlike the tool this does not check key names.
+    """
+    out, rejected = {}, []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if not m:
+            continue
+        key, val = m.group(1), m.group(2).strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        if BAD_VALUE.search(val) or len(val) > MAX_VALUE_LEN:
+            rejected.append(key)
+            continue
+        out[key] = val
+    return out, rejected
+
+
 def read_env(path):
-    out = {}
-    for line in read(path).splitlines():
-        m = re.match(r'\s*([A-Z_][A-Z0-9_]*)\s*=\s*"?([^"\n#]*)"?', line)
-        if m:
-            out[m.group(1)] = m.group(2).strip()
-    return out
+    return parse_env(read(path))[0]
 
 
 class KioskMqtt:
@@ -461,8 +489,6 @@ class KioskMqtt:
 # ha-kiosk-setup renders kiosk.env: KEY="value", and only with values in which a double-quoted
 # shell string is inert. The value rule is the one of BAD_VALUE in ha-kiosk-setup (which also rejects a single quote).
 OVERRIDE_KEY = re.compile(r"[A-Z][A-Z0-9_]*")
-BAD_VALUE = re.compile(r"[\"'`$\\\x00-\x1f\x7f]")
-MAX_VALUE_LEN = 1024
 
 
 def safe_override(var, value):
@@ -483,18 +509,17 @@ def set_override(var, value):
     if not safe_override(var, value):
         print(f"mqtt: refusing to write unsafe override {var!r}", flush=True)
         return
-    cur = read_env(OVERRIDES)
-    if cur.get(var) == value:
+    cur, rejected = parse_env(read(OVERRIDES))
+    for k in rejected:
+        print(f"mqtt: dropped unsafe override {k!r} from {OVERRIDES}", flush=True)
+    if cur.get(var) == value and not rejected:
         return
     cur[var] = value
     os.makedirs(os.path.dirname(OVERRIDES), exist_ok=True)
     with open(OVERRIDES + ".tmp", "w", encoding="utf-8") as f:
         f.write("# Written by ha-kiosk-bridge (Home Assistant / MQTT). Overrides kiosk.env.\n")
         for k, v in sorted(cur.items()):
-            if safe_override(k, v):
-                f.write(f'{k}="{v}"\n')
-            else:
-                print(f"mqtt: dropped unsafe override {k!r} from {OVERRIDES}", flush=True)
+            f.write(f'{k}="{v}"\n')
     os.replace(OVERRIDES + ".tmp", OVERRIDES)
     print(f"mqtt: {var}={value}", flush=True)
     subprocess.run(["systemctl", "restart", "ha-kiosk-display"], check=False)

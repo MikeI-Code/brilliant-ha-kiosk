@@ -33,6 +33,7 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 from pybrilliantkiosk import (
     AuthFailed,
     CannotConnect,
+    DeviceIdUnavailable,
     HostKeyInfo,
     HostKeyMismatch,
     InvalidArgument,
@@ -43,6 +44,7 @@ from pybrilliantkiosk import (
     SetupError,
     fetch_host_key,
     format_value,
+    is_md5_fingerprint,
     kiosk_env_from_bundle,
 )
 
@@ -68,6 +70,8 @@ from .const import (
     PROVIDER_BRILLIANT_MQTT,
     PROVIDER_BUILTIN,
     PROVIDERS,
+    is_fingerprint,
+    node_of,
     provider_of,
 )
 from .errors import InstallRefused
@@ -85,7 +89,8 @@ class Probe:
     """What a successful connection to a panel told us."""
 
     fingerprint: str
-    unique_id: str
+    #: The panel's identity: ``brilliant_<12 characters of Brilliant's device id>``. None only
+    #: when it could not be read and the caller allowed that (``require_node=False``).
     node: str | None
     installed: bool
     settings: Mapping[str, str]
@@ -97,11 +102,19 @@ async def probe_panel(
     password: str | None,
     host_key: str | None = None,
     private_key: str | None = None,
+    *,
+    require_node: bool = True,
 ) -> Probe:
     """Connect, read the state of the panel and close again. Raises library errors.
 
     Always pass ``host_key`` once the user confirmed it: the password is then only sent to a
     panel presenting that key. Authenticate with ``password``, ``private_key`` or both.
+
+    The panel's identity is Brilliant's device id, read from the stock firmware (it needs no part
+    of the kiosk, so it is there before an install and after an uninstall or a re-flash). When it
+    cannot be read :class:`DeviceIdUnavailable` is raised, unless ``require_node`` is False (a
+    reauth or reconfigure, which compare the id only when both sides have one). The host key
+    fingerprint is never used as an identity: it changes when the panel is re-flashed.
     """
     panel = Panel(
         host,
@@ -116,14 +129,15 @@ async def probe_panel(
         settings = await panel.get_settings()
         node: str | None = None
         try:
-            node = "brilliant_" + (await panel.bus_peripherals()).device_id[:12]
-        except PanelError:
+            node = node_of(await panel.device_id())
+        except DeviceIdUnavailable:
+            if require_node:
+                raise
             _LOGGER.debug("Could not read the Brilliant device id from %s", host)
     finally:
         await panel.close()
     return Probe(
         fingerprint=fingerprint,
-        unique_id=node or fingerprint,
         node=node,
         installed=status.installed,
         settings=settings,
@@ -154,6 +168,11 @@ def _install_error(err: Exception) -> tuple[str, str]:
         return _error_key(err), str(err)
     _LOGGER.error("Unexpected error installing the kiosk", exc_info=err)
     return "unknown", ""
+
+
+def _key_placeholders(info: HostKeyInfo) -> dict[str, str]:
+    """The fingerprint (``SHA256:...``, as ssh-keygen -l prints it) and the key type to show."""
+    return {"fingerprint": info.sha256, "key_type": info.label or "unknown"}
 
 
 def _internal_url(hass: HomeAssistant) -> str:
@@ -208,7 +227,8 @@ def _install_field_errors(user_input: Mapping[str, Any]) -> dict[str, str]:
 class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for one panel."""
 
-    VERSION = 1
+    #: 2: the unique id is the node of the Brilliant device id (1 allowed a host key fingerprint).
+    VERSION = 2
 
     def __init__(self) -> None:
         """Initialise."""
@@ -241,8 +261,11 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         errors: dict[str, str] = {}
         if user_input is not None:
+            expected = (user_input.get(CONF_EXPECTED_FINGERPRINT) or "").strip()
             if not _credentials(user_input):
                 errors["base"] = "auth_required"
+            elif is_md5_fingerprint(expected):
+                errors[CONF_EXPECTED_FINGERPRINT] = "md5_fingerprint"
             else:
                 try:
                     info = await fetch_host_key(user_input[CONF_HOST])
@@ -252,7 +275,6 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.exception("Unexpected error reading the host key of the panel")
                     errors["base"] = "unknown"
                 else:
-                    expected = (user_input.get(CONF_EXPECTED_FINGERPRINT) or "").strip()
                     if expected and not info.matches(expected):
                         errors["base"] = "host_key_mismatch"
                     else:
@@ -294,8 +316,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={
                 "host": self._user_input[CONF_HOST],
-                # "ED25519 SHA256:..." so it can be compared with ssh-keygen -l output.
-                "fingerprint": self._host_info.display,
+                **_key_placeholders(self._host_info),
             },
         )
 
@@ -312,13 +333,22 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._host_info.sha256,
                 credentials.get(CONF_PRIVATE_KEY),
             )
+        except DeviceIdUnavailable:
+            return self.async_abort(reason="device_id_unavailable")
         except PanelError as err:
             return self._show_user_form(user_input, {"base": _error_key(err)})
         except Exception:
             _LOGGER.exception("Unexpected error connecting to %s", user_input[CONF_HOST])
             return self._show_user_form(user_input, {"base": "unknown"})
-        await self.async_set_unique_id(probe.unique_id)
+        assert probe.node is not None  # require_node
+        await self.async_set_unique_id(probe.node)
         self._abort_if_unique_id_configured(updates={CONF_HOST: user_input[CONF_HOST]})
+        # A version 1 entry that is not converted yet has the host key as its unique id.
+        for existing in self._async_current_entries(include_ignore=False):
+            if is_fingerprint(existing.unique_id) and (
+                existing.data.get(CONF_HOST_KEY) == probe.fingerprint
+            ):
+                return self.async_abort(reason="already_configured")
         self._data = {
             CONF_HOST: user_input[CONF_HOST],
             CONF_USERNAME: user_input[CONF_USERNAME],
@@ -464,15 +494,22 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "host": host or entry.data[CONF_HOST],
                 "old_fingerprint": entry.data[CONF_HOST_KEY],
-                "fingerprint": self._host_info.display,
+                **_key_placeholders(self._host_info),
             },
             errors=errors,
         )
 
     def _node_mismatch(self, entry: ConfigEntry[Any], probe: Probe) -> bool:
-        """After a key change: is this another panel than the entry's (by its Brilliant id)?"""
-        node = entry.data.get(CONF_NODE)
-        return bool(node) and probe.node != node
+        """Is this another panel than the entry's, by its Brilliant device id?
+
+        Compared only when both ids are known: an entry made before the id could be read has
+        none (its unique id is a fingerprint), and a panel whose id cannot be read right now
+        proves nothing either way.
+        """
+        known = entry.data.get(CONF_NODE) or (
+            None if is_fingerprint(entry.unique_id) else entry.unique_id
+        )
+        return bool(known) and probe.node is not None and probe.node != known
 
     # -- reauth -------------------------------------------------------------------------
 
@@ -524,6 +561,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                         credentials.get(CONF_PASSWORD),
                         key,
                         credentials.get(CONF_PRIVATE_KEY),
+                        require_node=False,
                     )
                 except PanelError as err:
                     errors["base"] = _error_key(err)
@@ -531,7 +569,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.exception("Unexpected error during reauthentication")
                     errors["base"] = "unknown"
                 else:
-                    if self._host_info is not None and self._node_mismatch(entry, probe):
+                    if self._node_mismatch(entry, probe):
                         return self.async_abort(reason="unique_id_mismatch")
                     # Replace both credentials with what was given: a stale password or key
                     # that no longer works must not linger next to the new one.
@@ -617,16 +655,15 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 entry.data.get(CONF_PASSWORD),
                 host_key,
                 entry.data.get(CONF_PRIVATE_KEY),
+                require_node=False,
             )
         except PanelError as err:
             return self._reconfigure_failed(entry, {"base": _error_key(err)})
         except Exception:
             _LOGGER.exception("Unexpected error during reconfiguration")
             return self._reconfigure_failed(entry, {"base": "unknown"})
-        await self.async_set_unique_id(probe.unique_id)
-        if self._host_info is not None and self._node_mismatch(entry, probe):
+        if self._node_mismatch(entry, probe):
             return self.async_abort(reason="unique_id_mismatch")
-        self._abort_if_unique_id_mismatch()
         return self.async_update_reload_and_abort(
             entry, data_updates={CONF_HOST: host, CONF_HOST_KEY: probe.fingerprint}
         )

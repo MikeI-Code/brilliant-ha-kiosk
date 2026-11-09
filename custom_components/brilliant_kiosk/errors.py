@@ -7,16 +7,23 @@ from contextlib import contextmanager
 
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from pybrilliantkiosk import (
+    ActivationRolledBack,
     AuthFailed,
     CannotConnect,
     ChecksumMismatch,
     CommandFailed,
     ConcurrentModification,
+    DeviceIdUnavailable,
     HostKeyMismatch,
     InvalidArgument,
+    NotInstalled,
     PanelError,
     ReleaseError,
+    SettingsRejected,
     SetupBusy,
+    SetupError,
+    StockUIRestored,
+    VerificationFailed,
 )
 
 from .const import DOMAIN
@@ -49,6 +56,13 @@ def to_ha_error(err: PanelError) -> HomeAssistantError:
         (AuthFailed, "invalid_auth"),
         (HostKeyMismatch, "host_key_mismatch"),
         (SetupBusy, "setup_busy"),
+        (VerificationFailed, "verification_failed"),
+        (SettingsRejected, "settings_rejected"),
+        (ActivationRolledBack, "activation_rolled_back"),
+        (StockUIRestored, "stock_ui_restored"),
+        (NotInstalled, "not_installed"),
+        (SetupError, "setup_failed"),
+        (DeviceIdUnavailable, "device_id_unavailable"),
         (ConcurrentModification, "concurrent_modification"),
         (CannotConnect, "cannot_connect"),
         (ChecksumMismatch, "checksum_mismatch"),

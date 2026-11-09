@@ -69,8 +69,8 @@ state topic). Set MQTT up first and make sure your panels publish to the same br
 1. Enter the panel's **host** (name or IP address), the SSH **username** (normally `root`) and a
    **password**, a **private key**, or both.
 2. The integration connects once to read the panel's SSH host key and shows its fingerprint.
-   Compare it with the panel (`ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub`), or paste the
-   fingerprint into **Expected host key fingerprint** to skip this step. **No password or key is
+   Compare it with the panel (`ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub`), or
+   paste the SHA256 fingerprint into **Expected host key fingerprint** to skip this step. **No password or key is
    sent before you confirm the key**, and afterwards only to a panel that presents it.
 3. If the kiosk is not installed on the panel, you are offered to install it
    ([installation parameters](#installation-parameters)). Untick **Install the kiosk now** to add
@@ -96,11 +96,11 @@ Set when adding a panel (and changed with **Reconfigure** or **Reauthenticate**)
 | Username | SSH user, normally `root`. |
 | Password | SSH password. Optional if you give a private key. |
 | Private key | The whole text of an **unencrypted** OpenSSH or PEM private key; the panel needs the matching public key in `authorized_keys`. Optional if you give a password. |
-| Expected host key fingerprint | Optional SHA256 or MD5 fingerprint; if given and it matches, the confirmation step is skipped. |
+| Expected host key fingerprint | Optional `SHA256:...` fingerprint; if given and it matches, the confirmation step is skipped. MD5 fingerprints are refused with an explanation: they are not safe to pin. |
 
 The SSH host key is **pinned** when you confirm it. If it ever changes (the panel was reset or
 re-flashed, or something else answers at that address), polling stops and Home Assistant starts a
-**re-authentication**: it shows the pinned and the new fingerprint and pins the new key only after
+**re-authentication** (in Devices & services, not in Repairs): it shows the pinned and the new fingerprint, both as `SHA256:...` with the new key's type beside it, and pins the new key only after
 you tick the confirmation box and enter your credentials. Reconfiguring to an address that
 presents another key works the same way.
 
@@ -113,7 +113,30 @@ presents another key works the same way.
 | Manage installs | Allow installing, updating and rolling back the kiosk from Home Assistant. Off by default when brilliant-mqtt manages the panel. |
 
 The **Release channel** select entity (stable or nightly) chooses which releases the update
-entity offers and whether a nightly may be installed (see [Data update](#data-update)).
+entity offers and whether a nightly may be installed (see [Data update](#data-update)). On first
+setup it follows what is installed: a panel running a nightly starts on the nightly channel, any
+other on stable. Your later choice is never overwritten.
+
+### How a panel is identified
+
+A panel is identified by **Brilliant's own device id**, which never changes. It is read from the
+stock firmware's message bus with Brilliant's Python and libraries, using nothing of the kiosk, so
+it is available before the kiosk is installed and after it was uninstalled or the panel was
+re-flashed. The config entry's unique id (and the Home Assistant device) is
+`brilliant_<first 12 characters of the device id>`, the same node name the kiosk's MQTT discovery
+uses.
+
+* The SSH **host key is never an identity**: it changes on a re-flash. It only authenticates the
+  connection (pinning).
+* If the device id cannot be read when adding a panel, the panel is **not added**; the flow ends
+  with an explanation (the bus restarts for a minute or two when the kiosk is switched on or off,
+  and after a reboot; wait and try again).
+* **Reauthenticate** and **Reconfigure** compare the id only when both sides have one, so they work
+  after an uninstall or a re-flash, and refuse a different panel behind the same address.
+* Entries (config entry version 1) made while the id could not be read have the host key
+  fingerprint as unique id. On the first successful poll they are converted to the device id,
+  together with their device and entities (names, history and settings are kept). If another entry
+  already has that id, a warning is logged and nothing is merged.
 
 ## Installation parameters
 
@@ -259,8 +282,11 @@ only with Manage installs) and an **update** entity.
 
 Home Assistant **polls** each panel every **60 seconds** with **one SSH command** that returns the
 panel's health (uptime, load, memory, kiosk version, unit states, backlight), both copies of
-`kiosk.env` with their checksums, the runtime overrides and the output of
-`ha-kiosk-setup status`, in marked sections. Earlier versions needed four commands per poll;
+`kiosk.env` with their checksums, the runtime overrides and the files `ha-kiosk-setup status` reads
+(state, current and previous version, heartbeat, last result), in marked sections. The poll never
+starts the setup tool's Python interpreter; the full `status` (enabled flags, releases) is used for
+setup and after installs. The section markers carry a random per-command nonce, so no file content
+can forge one. Earlier versions needed four commands per poll;
 there is now exactly one (a test asserts it). One persistent SSH connection is reused.
 
 The **GitHub releases** list is refreshed every **6 hours** by one coordinator shared by all
@@ -391,8 +417,15 @@ hardware or adapter is needed.
   reach port 22. The integration retries by itself.
 * **Invalid authentication.** The password or key was rejected: Home Assistant asks again
   (**Reauthenticate**).
-* **The panel's host key changed.** Home Assistant opens a re-authentication that shows the old
-  and the new fingerprint. Confirm only if you expect the change (a reset or re-flash).
+* **The panel's host key changed.** Home Assistant asks you to sign in again (Devices & services)
+  and shows the old and the new fingerprint. Confirm only if you expect the change (a reset or
+  re-flash).
+* **"Could not read the Brilliant device id" when adding a panel.** Brilliant's own software must
+  be running; it restarts for a minute or two after a reboot or when the kiosk is switched on or
+  off. Wait and try again.
+* **An update failed.** The messages say which case it was: not verified (nothing installed),
+  settings rejected (nothing changed), rolled back to the previous version (running again), or the
+  stock screen restored (no earlier version could start; install the kiosk again).
 * **A repair says the running and saved settings differ.** `ha-kiosk-setup` rebuilds
   `/etc/ha-kiosk/kiosk.env` from the saved copy on reinstall, which would drop the difference.
   Use the repair's fix to write the running values to both copies. If it names keys that "cannot

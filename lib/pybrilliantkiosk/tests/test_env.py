@@ -51,7 +51,8 @@ def test_roundtrip_preserves_everything():
 def test_set_updates_last_occurrence_in_place():
     env = EnvFile.parse(SAMPLE).set("DAY_LEVEL", "9")
     text = env.serialize()
-    assert "DAY_LEVEL=15\n" in text  # the earlier assignment is left alone
+    assert text.count("DAY_LEVEL") == 1  # shadowed earlier assignments are dropped
+    assert "DAY_LEVEL=15" not in text
     assert "DAY_LEVEL=12" not in text
     assert text.index('DAY_LEVEL="9"') > text.index("HA_TOKEN=")
     assert env.values()["DAY_LEVEL"] == "9"
@@ -241,3 +242,75 @@ def test_reconcile_and_drift_keys():
     same, none, nothing = reconcile(saved, saved)
     assert (same, none, nothing) == (saved, (), ())
     assert drift_keys(saved, saved) == ()
+
+
+def test_set_drops_an_earlier_unsafe_duplicate_instead_of_carrying_it_over():
+    env = EnvFile.parse('A=1;rm -rf /\nB="2"\nA="ok"\n')
+    assert env.unsafe_lines() == ("A",)
+    fixed = env.set("A", "new")
+    assert fixed.serialize() == 'B="2"\nA="new"\n'
+    assert fixed.unsafe_lines() == ()
+    assert env.set("C", "3").unsafe_lines() == ("A",)  # untouched keys are not rewritten
+
+
+def test_unsafe_lines_names_what_a_root_shell_would_run():
+    text = "\n".join(
+        [
+            "# a comment with `backticks` and $(subshell) is inert",
+            "",
+            "   ",
+            'OK_QUOTED="has space; and | pipes & more > redirects"',
+            "OK_SINGLE='single quoted'",
+            "OK_BARE=http://ha.local:8123/path,x=1@%+-_",
+            "OK_EMPTY=",
+            "  INDENTED=1",
+            "BARE_SEMI=1;rm -rf /",
+            "BARE_SPACE=a b",
+            'DOLLAR="$(id)"',
+            'TICK="`id`"',
+            'BACKSLASH="a\\b"',
+            "SINGLE_DOLLAR='$HOME'",
+            'TRAILING="x" # comment',
+            'TRAILING_CMD="x"; id',
+            'UNTERMINATED="x',
+            "export EXPORTED=1",
+            "rm -rf /",
+            "lower_case=ok",
+            'LONG="' + "x" * 1025 + '"',
+        ]
+    )
+    assert EnvFile.parse(text).unsafe_lines() == (
+        "BARE_SEMI",
+        "BARE_SPACE",
+        "DOLLAR",
+        "TICK",
+        "BACKSLASH",
+        "SINGLE_DOLLAR",
+        "TRAILING",
+        "TRAILING_CMD",
+        "UNTERMINATED",
+        "line 18",
+        "line 19",
+        "LONG",
+    )
+
+
+def test_every_line_this_class_renders_is_safe():
+    env = EnvFile().set("A", "x; y | z & (w) > v").set("B", "").set("C", "a b")
+    assert env.unsafe_lines() == ()
+    assert EnvFile.parse(SAMPLE).unsafe_lines() == ("line 13",)  # "garbage line"
+
+
+def test_known_keys_equal_the_setup_tools_keys():
+    """KNOWN_KEYS is the fallback list: it must never lag the ha-kiosk-setup of this repository."""
+    from pathlib import Path
+
+    from pybrilliantkiosk.env import KNOWN_KEYS, parse_setup_keys
+
+    tool = Path(__file__).resolve().parents[3] / "kiosk" / "ha-kiosk-setup"
+    if not tool.is_file():
+        pytest.skip("kiosk/ha-kiosk-setup is not next to the library (running from an sdist)")
+    keys = parse_setup_keys(tool.read_text(encoding="utf-8"))
+    assert keys is not None
+    assert keys == KNOWN_KEYS
+    assert "WEATHER_FX" in KNOWN_KEYS

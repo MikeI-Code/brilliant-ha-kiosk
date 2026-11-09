@@ -70,6 +70,30 @@ _SENSITIVE_PARTS = (
 )
 #: Setting names whose values are also removed from free text.
 _IDENTIFYING_PARTS = ("HOST", "USER", "DEVICE_ID", "BASE")
+#: Values that are words, not identifiers: scrubbing them out of free text would mangle it (every
+#: "root" or "mqtt" in a log line) without hiding anything. A setting holding one of these is
+#: still redacted by name in the settings themselves.
+_COMMON_WORDS = frozenset(
+    {
+        "admin",
+        "brilliant",
+        "brilliant_kiosk",
+        "default",
+        "disabled",
+        "enabled",
+        "false",
+        "homeassistant",
+        "kiosk",
+        "localhost",
+        "mqtt",
+        "none",
+        "null",
+        "root",
+        "true",
+        "user",
+    }
+)
+_MIN_IDENTIFIER_LENGTH = 4
 _IPV4_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 _IPV6_RE = re.compile(r"(?<![\w:.])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:.])")
 
@@ -90,11 +114,25 @@ def _ipv6_or_same(match: re.Match[str]) -> str:
     return REDACTED if "::" in text or text.count(":") >= 7 else text
 
 
+def _is_identifier(value: object) -> bool:
+    """Whether a value names this panel, its network or its login, and may be scrubbed from text.
+
+    Short values and common words are left alone: removing "root" or "mqtt" from every sentence
+    would corrupt the report without protecting anything.
+    """
+    text = str(value) if value else ""
+    return len(text) >= _MIN_IDENTIFIER_LENGTH and text.lower() not in _COMMON_WORDS
+
+
 def _scrub(value: Any, secrets: tuple[str, ...]) -> Any:
-    """Replace every known identifier and every IP address in all strings of ``value``."""
+    """Replace every known identifier and every IP address in all strings of ``value``.
+
+    An identifier is replaced as a whole token only: ``10.0.0.5`` inside ``10.0.0.55`` or a host
+    name inside a longer word is not an occurrence of it.
+    """
     if isinstance(value, str):
         for secret in secrets:
-            value = value.replace(secret, REDACTED)
+            value = re.sub(rf"(?<![A-Za-z0-9]){re.escape(secret)}(?![A-Za-z0-9])", REDACTED, value)
         return _IPV6_RE.sub(_ipv6_or_same, _IPV4_RE.sub(REDACTED, value))
     if isinstance(value, Mapping):
         return {key: _scrub(item, secrets) for key, item in value.items()}
@@ -119,7 +157,7 @@ async def async_get_config_entry_diagnostics(
         *(v for k, v in data.env.items() if any(p in k.upper() for p in _IDENTIFYING_PARTS)),
     ]
     secrets = tuple(
-        sorted({str(v) for v in identifying if v and len(str(v)) > 3}, key=len, reverse=True)
+        sorted({str(v) for v in identifying if _is_identifier(v)}, key=len, reverse=True)
     )
     report = {
         "entry": async_redact_data(dict(entry.data), TO_REDACT),

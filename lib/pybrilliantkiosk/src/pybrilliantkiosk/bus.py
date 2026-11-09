@@ -10,7 +10,31 @@ from .exceptions import InvalidArgument
 from .models import BusListing, BusPeripheral, BusVariable
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
-_BASE = "cd /data/switch-embedded && env/bin/python /etc/ha-kiosk/brilliant_bus.py"
+SWITCH_DIR = "/data/switch-embedded"
+BUS_SOCKET = "/var/run/brilliant/server_socket"
+_BASE = f"cd {SWITCH_DIR} && env/bin/python /etc/ha-kiosk/brilliant_bus.py"
+_DEVICE_ID_RE = re.compile(r"^device ([A-Za-z0-9_-]{12,64})$", re.M)
+#: The HELLO of ``tools/brilliant_bus.py``, self-contained: it needs only Brilliant's own Python
+#: and libraries, not one file of the kiosk, so it works on a stock panel (before the kiosk is
+#: installed, and after it was removed). The bus answers a client's HELLO with its own whose
+#: ``domain`` is the panel's device id (docs/hardware-and-services.md, section 6).
+_DEVICE_ID_SCRIPT = f"""import socket, sys
+sys.path.insert(0, {SWITCH_DIR!r})
+import lib.serialization as S
+from thrift_types.protocol import ttypes as P
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(10)
+s.connect({BUS_SOCKET!r})
+hello = P.Hello(name="ha_kiosk_identity", aliases=[])
+msg = P.Message(
+    message_type=P.MessageType.HELLO,
+    sequence_number=1,
+    body_union=P.MessageBodyUnion(hello=hello),
+)
+s.sendall(S.serialize(msg).encode() + b"\\n")
+line = s.makefile("rb").readline()
+print("device", S.deserialize(P.Message, line.strip().decode()).body_union.hello.domain)
+"""
 _PERIPHERAL_RE = re.compile(r"^\s+(\S+)\s+\((\d+) variables\)\s*$")
 _VARIABLE_RE = re.compile(r"^(\S+) =(?: (.*?))?(   \[read-only\])?$")
 _SET_RE = re.compile(r"^set (\S+) =(?: (.*))?$")
@@ -21,6 +45,17 @@ def validate_name(name: str, what: str = "name") -> str:
     if not NAME_RE.match(name):
         raise InvalidArgument(f"invalid {what}: {name!r}")
     return name
+
+
+def device_id_command() -> str:
+    """Shell command printing ``device <id>``: Brilliant's id of the panel, from the stock bus."""
+    return f"cd {SWITCH_DIR} && env/bin/python -c {shlex.quote(_DEVICE_ID_SCRIPT)}"
+
+
+def parse_device_id(output: str) -> str | None:
+    """The device id in the output of :func:`device_id_command` (None if it is not valid)."""
+    match = _DEVICE_ID_RE.search(output)
+    return match.group(1) if match else None
 
 
 def list_command() -> str:

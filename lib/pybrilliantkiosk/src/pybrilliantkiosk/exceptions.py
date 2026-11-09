@@ -33,6 +33,10 @@ class CommandFailed(PanelError):
         self.stderr = stderr
 
 
+class DeviceIdUnavailable(PanelError):
+    """Brilliant's device id of the panel could not be read from the stock message bus."""
+
+
 class InvalidArgument(PanelError, ValueError):
     """A caller-supplied value (unit, key, peripheral name, ...) was rejected."""
 

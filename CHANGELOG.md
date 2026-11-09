@@ -14,6 +14,12 @@ These changes will be part of the next stable release.
 
 ### New
 
+- **Home Assistant integration `brilliant_kiosk`** (custom integration, nightly; library
+  `pybrilliantkiosk` 0.1.1). Health and install state, settings, logs, bus variables and kiosk
+  updates of each panel over SSH, with host key pinning. A panel is identified by Brilliant's own
+  device id, read from the stock firmware; a first install from Home Assistant keeps every
+  setting of the bundle (including `WEATHER_FX`). See
+  [docs/home-assistant-integration.md](docs/home-assistant-integration.md).
 - **Admin helper, phase 1** (in progress). `lib/pybrilliantkiosk`, a typed async library for panel
   health, kiosk.env, services, logs, Brilliant bus variables, version installs and GitHub releases.
   The Home Assistant integration builds on it (spec: docs/admin-helper-spec.md).

@@ -23,13 +23,13 @@ from custom_components.brilliant_kiosk.const import (
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResultType
-from pybrilliantkiosk import BusListing, CannotConnect, HostKeyInfo, SetupStatus
+from pybrilliantkiosk import CannotConnect, DeviceIdUnavailable, HostKeyInfo, SetupStatus
 
 from .conftest import FINGERPRINT, HOST, NIGHTLY, STABLE, make_entry, setup_entry
 from .test_config_flow import INSTALL_INPUT, USER_INPUT, connect, install, start, to_install_step
 
 NEW_KEY = "SHA256:newkeynewkey"
-NEW_INFO = HostKeyInfo(NEW_KEY, "MD5:00", "ssh-ed25519")
+NEW_INFO = HostKeyInfo(NEW_KEY, "ssh-ed25519")
 PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----"
 KEY_INPUT = {CONF_HOST: HOST, CONF_USERNAME: "root", CONF_PRIVATE_KEY: PEM}
 
@@ -68,8 +68,10 @@ async def test_reauth_shows_a_changed_host_key_and_pins_it_only_when_confirmed(
     assert result["step_id"] == "reauth_host_key"
     placeholders = result["description_placeholders"]
     assert placeholders["host"] == HOST
+    # Both fingerprints in the same form (SHA256:..., no key type in front); the type apart.
     assert placeholders["old_fingerprint"] == FINGERPRINT
-    assert placeholders["fingerprint"] == f"ED25519 {NEW_KEY}"
+    assert placeholders["fingerprint"] == NEW_KEY
+    assert placeholders["key_type"] == "ED25519"
     panel.flow_panel_cls.assert_not_called()  # no credentials went anywhere yet
 
     # Not confirmed: stays on the form, still nothing sent, nothing pinned.
@@ -107,7 +109,7 @@ async def test_reauth_refuses_another_panel_behind_the_new_key(
     entry = make_entry()
     await setup_entry(hass, entry)
     panel.fetch_host_key.return_value = NEW_INFO
-    panel.bus_peripherals.return_value = BusListing("ffffffffffffffffffff", ())
+    panel.device_id.return_value = "ffffffffffffffffffff"
     panel.connect.return_value = NEW_KEY
     result = await entry.start_reauth_flow(hass)
     result = await hass.config_entries.flow.async_configure(
@@ -184,7 +186,8 @@ async def test_reconfigure_to_a_host_with_another_key_asks_for_confirmation(
     assert result["description_placeholders"] == {
         "host": "10.0.0.9",
         "old_fingerprint": FINGERPRINT,
-        "fingerprint": f"ED25519 {NEW_KEY}",
+        "fingerprint": NEW_KEY,
+        "key_type": "ED25519",
     }
     panel.flow_panel_cls.assert_not_called()  # the stored password stays home
 
@@ -222,7 +225,7 @@ async def test_reconfigure_confirmed_key_of_another_panel_is_refused(
     entry = make_entry()
     await setup_entry(hass, entry)
     panel.fetch_host_key.return_value = NEW_INFO
-    panel.bus_peripherals.return_value = BusListing("ffffffffffffffffffff", ())
+    panel.device_id.return_value = "ffffffffffffffffffff"
     panel.connect.return_value = NEW_KEY
     result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
@@ -237,10 +240,15 @@ async def test_reconfigure_confirmed_key_of_another_panel_is_refused(
     assert entry.data[CONF_HOST_KEY] == FINGERPRINT
 
 
-async def test_reconfigure_confirmed_key_cannot_pass_for_an_entry_without_a_node(
+async def test_reconfigure_of_an_entry_without_a_node_compares_nothing_it_does_not_know(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
-    """No Brilliant id was known, so the entry's id is its old key: a new key is another id."""
+    """A version 1 entry whose unique id is still a fingerprint has no Brilliant id to compare.
+
+    Refusing it (as a "different panel") after a re-flash was the bug: a fingerprint changes
+    exactly then. The ids are compared only when both are known.
+    """
+    panel.device_id.side_effect = DeviceIdUnavailable("not yet")  # the poll cannot convert it
     entry = make_entry()
     entry.add_to_hass(hass)
     hass.config_entries.async_update_entry(
@@ -248,7 +256,7 @@ async def test_reconfigure_confirmed_key_cannot_pass_for_an_entry_without_a_node
     )
     await setup_entry(hass, entry)
     panel.fetch_host_key.return_value = NEW_INFO
-    panel.bus_peripherals.side_effect = CannotConnect("no bus")
+    panel.device_id.side_effect = None  # the panel answers at the new address
     panel.connect.return_value = NEW_KEY
     result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
@@ -258,7 +266,42 @@ async def test_reconfigure_confirmed_key_cannot_pass_for_an_entry_without_a_node
         result["flow_id"], {CONF_NEW_HOST_KEY: True}
     )
     assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_HOST_KEY] == NEW_KEY
+
+
+async def test_reauth_and_reconfigure_do_not_abort_when_the_device_id_cannot_be_read_now(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """After an uninstall or a re-flash the bus may be restarting: that proves nothing."""
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    panel.device_id.side_effect = DeviceIdUnavailable("restarting")
+    result = await entry.start_reauth_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "newpw"}
+    )
+    assert result["reason"] == "reauth_successful"
+    result = await entry.start_reconfigure_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_HOST: "10.0.0.9"}
+    )
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_HOST] == "10.0.0.9"
+
+
+async def test_reauth_with_the_same_key_but_another_panel_is_refused(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry()
+    await setup_entry(hass, entry)
+    panel.device_id.return_value = "ffffffffffffffffffff"
+    result = await entry.start_reauth_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "newpw"}
+    )
     assert result["reason"] == "unique_id_mismatch"
+    assert entry.data[CONF_PASSWORD] == "pw"
 
 
 async def test_reconfigure_unexpected_scan_error(

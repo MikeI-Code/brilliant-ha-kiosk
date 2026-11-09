@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shlex
 from types import SimpleNamespace
 from typing import Any
@@ -25,7 +26,7 @@ from pybrilliantkiosk.panel import fingerprint_matches, parse_health
 
 HOST_KEY = asyncssh.generate_private_key("ssh-ed25519")
 SHA_FP = HOST_KEY.get_fingerprint("sha256")
-MD5_FP = HOST_KEY.get_fingerprint("md5")
+MD5_FP = HOST_KEY.get_fingerprint("md5")  # only to prove it is refused
 
 
 def sh_run(script: str, cwd: Any, *, args: tuple[str, ...] = ()) -> str:
@@ -60,7 +61,7 @@ def state_out(
     prelude: str = "",
 ) -> Any:
     """What the one-round-trip settings read prints (``running`` defaults to ``saved``)."""
-    return out(prelude + "#--kl:begin--\n" + _env_sections(saved, running, overrides))
+    return out(prelude + "#--kl-TESTNONCE:begin--\n" + _env_sections(saved, running, overrides))
 
 
 def _env_sections(saved: str | None, running: str | object | None, overrides: str) -> str:
@@ -69,13 +70,19 @@ def _env_sections(saved: str | None, running: str | object | None, overrides: st
     text = ""
     for name, body in (("config", saved), ("running", running)):
         if body is None:
-            text += f"#--kl:{name}:absent--\n"
+            text += f"#--kl-TESTNONCE:{name}:absent--\n"
         else:
-            text += f"#--kl:{name}:present:{sha(str(body))}--\n{body}\n"
-    return text + f"#--kl:overrides--\n{overrides}"
+            text += f"#--kl-TESTNONCE:{name}:present:{sha(str(body))}--\n{body}\n"
+    return text + f"#--kl-TESTNONCE:overrides--\n{overrides}"
 
 
 POLL_HEALTH = "uptime=100.5\nloadavg=0.1 0.2 0.3\nversion=v1.4.0\nunit.ha-kiosk.service=active\n"
+POLL_FACTS = {
+    "tool": "present",
+    "current": "v1.4.0",
+    "state": "active",
+    "now": "1000",
+}
 
 
 def poll_out(
@@ -83,13 +90,17 @@ def poll_out(
     running: str | object | None = ...,
     overrides: str = "",
     *,
-    status: str = '{"state": "active", "version": "v1.4.0"}',
-    status_code: int = 0,
+    facts: dict[str, str] | None = None,
+    heartbeat: str = "",
+    result: str = "",
 ) -> Any:
-    """What the one-round-trip poll prints: health, both copies, overrides and setup status."""
-    text = "banner line\n#--kl:begin--\n#--kl:health--\n" + POLL_HEALTH
+    """What the one-round-trip poll prints: health, both copies, overrides and the setup files."""
+    text = "banner line\n#--kl-TESTNONCE:begin--\n#--kl-TESTNONCE:health--\n" + POLL_HEALTH
     text += _env_sections(saved, running, overrides)
-    return out(text + f"\n#--kl:status:{status_code}--\n{status}\n")
+    text += "\n#--kl-TESTNONCE:setup--\n"
+    text += "".join(f"{k}={v}\n" for k, v in (POLL_FACTS if facts is None else facts).items())
+    text += f"#--kl-TESTNONCE:heartbeat--\n{heartbeat}\n#--kl-TESTNONCE:result--\n{result}\n"
+    return out(text)
 
 
 class FakeFile:
@@ -126,6 +137,14 @@ class FakeSFTP:
         return FakeFile(self.sink)
 
 
+def renonce(command: str, result: Any) -> Any:
+    """Markers carry a random nonce chosen per command: answer with the one asked for."""
+    nonce = re.search(r"#--kl-([0-9a-f]+):begin--", command)
+    if nonce and isinstance(getattr(result, "stdout", None), bytes):
+        result.stdout = result.stdout.replace(b"#--kl-TESTNONCE:", f"#--kl-{nonce[1]}:".encode())
+    return result
+
+
 class FakeConn:
     def __init__(self, handler: Any) -> None:
         self.handler = handler
@@ -140,7 +159,7 @@ class FakeConn:
         result = self.handler(command, kw.get("input"))
         if isinstance(result, BaseException):
             raise result
-        return result
+        return renonce(command, result)
 
     def start_sftp_client(self) -> FakeSFTP:
         return self.sftp
@@ -183,9 +202,26 @@ def test_fingerprint_matching():
     assert fingerprint_matches(SHA_FP, HOST_KEY)
     assert fingerprint_matches(SHA_FP.rstrip("="), HOST_KEY)
     assert fingerprint_matches(f"ssh-ed25519 255 {SHA_FP}", HOST_KEY)
-    assert fingerprint_matches(MD5_FP, HOST_KEY)
-    assert fingerprint_matches(MD5_FP.removeprefix("MD5:").upper(), HOST_KEY)
+    assert fingerprint_matches(f"256 {SHA_FP} host (ED25519)", HOST_KEY)
+    assert fingerprint_matches(SHA_FP.replace("SHA256:", "sha256:"), HOST_KEY)  # the prefix only
     assert not fingerprint_matches("SHA256:nope", HOST_KEY)
+    # Base64 is case-sensitive: a case-folded digest is another digest.
+    assert not fingerprint_matches(SHA_FP.swapcase().replace("sha256:", "SHA256:"), HOST_KEY)
+    assert not fingerprint_matches(SHA_FP.removeprefix("SHA256:"), HOST_KEY)  # no algorithm named
+
+
+def test_md5_fingerprints_are_never_accepted():
+    from pybrilliantkiosk import is_md5_fingerprint
+
+    assert not fingerprint_matches(MD5_FP, HOST_KEY)
+    assert not fingerprint_matches(MD5_FP.removeprefix("MD5:").upper(), HOST_KEY)
+    assert not fingerprint_matches(f"{MD5_FP} {MD5_FP.upper()}", HOST_KEY)
+    assert is_md5_fingerprint(MD5_FP)
+    assert is_md5_fingerprint(MD5_FP.removeprefix("MD5:").upper())
+    assert is_md5_fingerprint(f"ssh-ed25519 255 {MD5_FP}")
+    assert not is_md5_fingerprint(SHA_FP)
+    assert not is_md5_fingerprint("")
+    assert not is_md5_fingerprint("aa:bb:cc")
 
 
 async def test_connect_unpinned_returns_fingerprint(net: Net):
@@ -197,13 +233,19 @@ async def test_connect_unpinned_returns_fingerprint(net: Net):
     assert panel.host_key_fingerprint == SHA_FP
     assert net.kwargs["password"] == "pw"
     assert net.kwargs["username"] == "root"
-    assert net.kwargs["client_keys"] == []
+    # None, never []: asyncssh reads an empty list as "load ~/.ssh/id_* as default keypairs".
+    assert net.kwargs["client_keys"] is None
     assert net.kwargs["config"] == []
 
 
-@pytest.mark.parametrize("pin", [SHA_FP, MD5_FP, f"ssh-ed25519 255 {SHA_FP}"])
+@pytest.mark.parametrize("pin", [SHA_FP, f"ssh-ed25519 255 {SHA_FP}"])
 async def test_connect_pinned_ok(net: Net, pin: str):
     assert await Panel("h", password="pw", host_key=pin).connect() == SHA_FP
+
+
+async def test_connect_with_an_md5_pin_is_a_mismatch(net: Net):
+    with pytest.raises(HostKeyMismatch):
+        await Panel("h", password="pw", host_key=MD5_FP).connect()
 
 
 async def test_connect_pinned_mismatch(net: Net):
@@ -315,15 +357,14 @@ async def test_run_after_connection_dropped_concurrently(net: Net, monkeypatch: 
 async def test_fetch_host_key_sends_no_credentials(net: Net):
     info = await fetch_host_key("h")
     assert info.sha256 == SHA_FP
-    assert info.md5 == MD5_FP
     assert info.matches(SHA_FP)
     assert info.matches(f"ssh-ed25519 255 {SHA_FP}")
-    assert info.matches(MD5_FP.removeprefix("MD5:").upper())
+    assert not info.matches(MD5_FP)
     assert not info.matches("SHA256:nope")
     # No password, no key, no username: authentication can never start.
     assert "password" not in net.kwargs
     assert "username" not in net.kwargs
-    assert net.kwargs["client_keys"] == []
+    assert net.kwargs["client_keys"] is None
     assert net.conn.calls == []
 
 
@@ -425,8 +466,8 @@ def env_handler(
             calls.append((cmd, stdin))
         if "ha-kiosk-setup status" in cmd:
             return out(json.dumps({"state": state}))
-        if cmd.startswith("echo '#--kl:begin--'"):
-            return state_out(base, running, overrides)
+        if cmd.startswith("echo '#--kl-"):
+            return renonce(cmd, state_out(base, running, overrides))
         if cmd.startswith("cat /var/lib/ha-kiosk/ha-kiosk-setup"):
             return out(setup_tool or "", 0 if setup_tool else 1)
         if "fcntl.flock" in cmd:
@@ -713,7 +754,7 @@ async def test_host_key_info_carries_the_key_algorithm(net: Net):
     assert info.matches(info.display)  # the shown text is accepted as a pin as well
     from pybrilliantkiosk import HostKeyInfo
 
-    assert HostKeyInfo("SHA256:x", "MD5:y").display == "SHA256:x"  # unknown type: just the hash
+    assert HostKeyInfo("SHA256:x").display == "SHA256:x"  # unknown type: just the hash
     labels = {
         "ecdsa-sha2-nistp256": "ECDSA",
         "rsa-sha2-512": "RSA",
@@ -722,7 +763,7 @@ async def test_host_key_info_carries_the_key_algorithm(net: Net):
         "sk-something": "SK-SOMETHING",
     }
     for alg, label in labels.items():
-        assert HostKeyInfo("SHA256:x", "MD5:y", alg).label == label
+        assert HostKeyInfo("SHA256:x", alg).label == label
 
 
 # -- B: stdin and the kiosk.env write script ----------------------------------------------------
@@ -1024,14 +1065,14 @@ async def test_set_env_with_only_the_running_copy_uses_it_as_base(net: Net):
 
 # -- D: the allowlist comes from the panel's tool -------------------------------------------------
 
-TOOL = '"""tool"""\nimport re\nKEYS = set("""\nDAY_LEVEL DIM_LEVEL WEATHER_FX\n""".split())\n'
+TOOL = '"""tool"""\nimport re\nKEYS = set("""\nDAY_LEVEL DIM_LEVEL NEW_SETTING\n""".split())\n'
 
 
 async def test_setting_allowlist_is_read_from_the_installed_tool(net: Net):
     calls: list[tuple[str, Any]] = []
     net.conn.handler = env_handler(setup_tool=TOOL, calls=calls)
     panel = Panel("h")
-    assert await panel.set_env({"WEATHER_FX": "full"}) == ("WEATHER_FX",)  # not in v1.4.0's list
+    assert await panel.set_env({"NEW_SETTING": "on"}) == ("NEW_SETTING",)  # not bundled
     with pytest.raises(InvalidArgument, match="unknown setting"):
         await panel.set_env({"HA_ZOOM": "150"})  # in the bundled list, not in this tool
     with pytest.raises(InvalidArgument, match="unknown setting"):
@@ -1045,7 +1086,7 @@ async def test_allowlist_cache_is_per_connection(net: Net):
     calls: list[tuple[str, Any]] = []
     net.conn.handler = env_handler(setup_tool=TOOL, calls=calls)
     panel = Panel("h")
-    await panel.set_env({"WEATHER_FX": "full"})
+    await panel.set_env({"NEW_SETTING": "on"})
     await panel.close()
     net.conn = FakeConn(net.conn.handler)  # the next connection is a different object
     await panel.set_env({"DIM_LEVEL": "2"})
@@ -1058,7 +1099,7 @@ async def test_allowlist_falls_back_to_the_bundled_list(net: Net, tool: str | No
     panel = Panel("h")
     assert await panel.set_env({"HA_ZOOM": "150"}) == ("HA_ZOOM",)
     with pytest.raises(InvalidArgument, match="unknown setting"):
-        await panel.set_env({"WEATHER_FX": "full"})
+        await panel.set_env({"NEW_SETTING": "on"})  # only a newer tool knows it
 
 
 async def test_charset_rules_stay_strict_with_a_dynamic_allowlist(net: Net):
@@ -1066,7 +1107,7 @@ async def test_charset_rules_stay_strict_with_a_dynamic_allowlist(net: Net):
     panel = Panel("h")
     for bad in ('a"b', "a$b", "a`b", "a\\b", "a'b", "a\nb"):
         with pytest.raises(InvalidArgument):
-            await panel.set_env({"WEATHER_FX": bad})
+            await panel.set_env({"NEW_SETTING": bad})
     with pytest.raises(InvalidArgument):
         await panel.set_env({"bad key": "x"})
 
@@ -1097,7 +1138,7 @@ async def test_banner_output_before_the_settings_is_not_written_into_kiosk_env(n
     base = env_handler(base='A="1"', calls=calls)
 
     def handler(cmd: str, stdin: Any) -> Any:
-        if cmd.startswith("echo '#--kl:begin--'"):
+        if cmd.startswith("echo '#--kl-"):
             return state_out('A="1"', prelude="\nWelcome to the panel\n\n")
         return base(cmd, stdin)
 
@@ -1136,18 +1177,22 @@ def run_sh_c(command: str, cwd: Any) -> str:
     return done.stdout
 
 
+NONCE = "0123456789abcdef"
+
+
 def test_state_read_survives_real_sh_output(tmp_path: Any):
     """Run the real read command with sh over files with awkward endings, then parse it."""
-    from pybrilliantkiosk.panel import _STATE_COMMAND, _parse_state
+    from pybrilliantkiosk.panel import _parse_state, _state_command
 
     (tmp_path / "saved").write_bytes(b"\n# c\nA=1\n\n")
     (tmp_path / "running").write_bytes(b"A=1\nB=2")  # no trailing newline
     command = (
-        _STATE_COMMAND.replace("/var/lib/ha-kiosk/config/kiosk.env", str(tmp_path / "saved"))
+        _state_command(NONCE)
+        .replace("/var/lib/ha-kiosk/config/kiosk.env", str(tmp_path / "saved"))
         .replace("/etc/ha-kiosk/kiosk.env", str(tmp_path / "running"))
         .replace("/var/lib/ha-kiosk/overrides.env", str(tmp_path / "overrides"))
     )
-    state = _parse_state(run_sh_c(command, tmp_path))
+    state = _parse_state(run_sh_c(command, tmp_path), NONCE)
     assert state.saved is not None
     assert state.saved.serialize() == "\n# c\nA=1\n\n"
     assert state.running is not None
@@ -1155,7 +1200,7 @@ def test_state_read_survives_real_sh_output(tmp_path: Any):
     assert state.drift == ("B",)
     assert state.overrides == {}
     (tmp_path / "saved").unlink()
-    assert _parse_state(run_sh_c(command, tmp_path)).saved is None
+    assert _parse_state(run_sh_c(command, tmp_path), NONCE).saved is None
 
 
 # -- F: one exec per poll -------------------------------------------------------------------------
@@ -1172,10 +1217,12 @@ async def test_poll_is_one_ssh_command_with_everything_in_it(net: Net):
     command = net.conn.calls[0][0]
     for needle in (
         "systemctl is-active ha-kiosk.service",
+        "systemctl is-active ha-kiosk-setup-job.service",
         "/etc/ha-kiosk/kiosk.env",
         "/var/lib/ha-kiosk/config/kiosk.env",
         "/var/lib/ha-kiosk/overrides.env",
-        "ha-kiosk-setup status",
+        "/var/lib/ha-kiosk/state",
+        "/run/ha-kiosk/heartbeat.json",
         "sha256sum",
     ):
         assert needle in command
@@ -1192,24 +1239,129 @@ async def test_poll_is_one_ssh_command_with_everything_in_it(net: Net):
     assert snapshot.unsafe == ()
 
 
-async def test_poll_tolerates_a_failing_setup_tool_and_missing_files(net: Net):
-    net.conn.handler = lambda c, i: poll_out(None, None, status="boom", status_code=2)
+async def test_a_poll_starts_no_python_interpreter(net: Net):
+    """The per-minute poll used to spawn the setup tool's Python (a heavy process on the panel)."""
+    net.conn.handler = lambda c, i: poll_out("A=1")
+    await Panel("h").poll()
+    command = net.conn.calls[0][0]
+    assert "python" not in command.lower()
+    assert "ha-kiosk-setup status" not in command
+    assert "/data/switch-embedded" not in command
+
+
+async def test_poll_builds_the_whole_setup_status_from_the_files(net: Net):
+    facts = {
+        "tool": "present",
+        "current": "v1.5.0",
+        "state": "active",
+        "previous": "v1.4.0",
+        "mqtt_base": "brilliant_kiosk",
+        "firmware": "",
+        "os_release": 'NAME="Brilliant"',
+        "now": "1010",
+        "secrets": "/etc/ha-kiosk/token /etc/ha-kiosk/kiosk.env ",
+    }
+    heartbeat = '{"time": 1000.5, "ha": "connected"}'
+    result = '{"command": "install", "exit": 0, "message": "ok"}'
+    net.conn.handler = lambda c, i: poll_out(
+        'KIOSK_MQTT="kiosk"\n', facts=facts, heartbeat=heartbeat, result=result
+    )
+    setup = (await Panel("h").poll()).setup
+    assert (setup.state, setup.version, setup.previous) == ("active", "v1.5.0", "v1.4.0")
+    assert (setup.mqtt_mode, setup.mqtt_base) == ("kiosk", "brilliant_kiosk")
+    assert setup.firmware == 'NAME="Brilliant"'
+    assert setup.heartbeat_age_s == 9.5
+    assert setup.ha_connected is True
+    assert setup.secrets_present == ("/etc/ha-kiosk/token", "/etc/ha-kiosk/kiosk.env")
+    assert setup.last_result == {"command": "install", "exit": 0, "message": "ok"}
+    # Unit states come from the health section, not from a second systemctl per unit.
+    assert setup.services["ha-kiosk"] is True
+    assert setup.services["ha-kiosk-voice"] is False
+
+
+@pytest.mark.parametrize(
+    ("facts", "units", "state"),
+    [
+        ({"state": "active", "job": "active"}, {"ha-kiosk.service": "active"}, "in_progress"),
+        ({"state": "activating"}, {"ha-kiosk.service": "active"}, "failed"),
+        ({"state": "active"}, {"ha-kiosk.service": "inactive"}, "failed"),
+        ({"state": "active", "job": "inactive"}, {"ha-kiosk.service": "active"}, "active"),
+        ({"state": "disabled"}, {}, "disabled"),
+        ({"state": "", "qml": "1"}, {}, "unmanaged"),
+        ({"state": ""}, {}, "not_installed"),
+    ],
+)
+def test_setup_state_follows_the_tools_status_rules(
+    facts: dict[str, str], units: dict[str, str], state: str
+):
+    from pybrilliantkiosk.setup import status_from_files
+
+    assert status_from_files({"tool": "present", **facts}, "", "", units, {}).state == state
+
+
+def test_a_panel_without_the_setup_tool_is_not_installed():
+    from pybrilliantkiosk.setup import status_from_files
+
+    status = status_from_files({"tool": "absent", "state": "active"}, "", "", {}, {})
+    assert status.state == "not_installed"
+    assert not status.installed
+
+
+@pytest.mark.parametrize(
+    ("heartbeat", "age", "ha"),
+    [
+        ("", None, None),
+        ("not json", None, None),
+        ("[1, 2]", None, None),
+        ('{"time": 0, "ha": "connecting"}', None, False),
+        ('{"time": "x"}', None, None),
+        ('{"time": 990, "ha": true}', 10.0, True),
+        ('{"time": 990.25, "ha": 3}', 9.8, None),
+    ],
+)
+def test_heartbeat_is_read_like_the_tool_does(heartbeat: str, age: float | None, ha: bool | None):
+    from pybrilliantkiosk.setup import status_from_files
+
+    facts = {"tool": "present", "state": "active", "now": "1000"}
+    status = status_from_files(facts, heartbeat, "", {"ha-kiosk.service": "active"}, {})
+    assert status.heartbeat_age_s == age
+    assert status.ha_connected is ha
+
+
+def test_heartbeat_age_needs_the_panels_clock():
+    from pybrilliantkiosk.setup import status_from_files
+
+    facts = {"tool": "present", "state": "active", "now": ""}
+    heartbeat = '{"time": 990}'
+    assert status_from_files(facts, heartbeat, "", {}, {}).heartbeat_age_s is None
+    assert status_from_files({**facts, "now": "x"}, heartbeat, "", {}, {}).heartbeat_age_s is None
+
+
+async def test_poll_with_no_files_and_the_tool_missing(net: Net):
+    net.conn.handler = lambda c, i: poll_out(None, None, facts={"tool": "absent"})
     snapshot = await Panel("h").poll()
-    assert snapshot.setup.state == "unknown"
+    assert snapshot.setup.state == "not_installed"
+    assert snapshot.setup.installed is False
     assert snapshot.settings == {}
     assert snapshot.drift == ()
-    net.conn.handler = lambda c, i: poll_out(
-        "A=1", status='{"state": "not_installed"}', overrides=""
-    )
-    assert (await Panel("h").poll()).setup.installed is False
+
+
+async def test_poll_reads_the_running_copy_for_the_mqtt_mode_when_there_is_no_saved_one(net: Net):
+    net.conn.handler = lambda c, i: poll_out(None, 'KIOSK_MQTT="kiosk"\n')
+    assert (await Panel("h").poll()).setup.mqtt_mode == "kiosk"
+    net.conn.handler = lambda c, i: poll_out("# nothing set\n", 'KIOSK_MQTT="kiosk"\n')
+    assert (await Panel("h").poll()).setup.mqtt_mode == "1"  # the saved copy wins, as in the tool
+    net.conn.handler = lambda c, i: poll_out(None, None)
+    assert (await Panel("h").poll()).setup.mqtt_mode == "1"
 
 
 @pytest.mark.parametrize(
     "stdout",
     [
         "garbage, no begin marker",
-        "#--kl:begin--\n#--kl:overrides--\n",  # no health or status section
-        "#--kl:begin--\n#--kl:health--\nuptime=1\n#--kl:overrides--\n",  # no status
+        "#--kl-TESTNONCE:begin--\n#--kl-TESTNONCE:overrides--\n",  # no health or status section
+        "#--kl-TESTNONCE:begin--\n#--kl-TESTNONCE:health--\nuptime=1\n"
+        "#--kl-TESTNONCE:overrides--\n",  # no setup section
     ],
 )
 async def test_poll_garbled_output_is_a_command_failure(net: Net, stdout: str):
@@ -1220,53 +1372,94 @@ async def test_poll_garbled_output_is_a_command_failure(net: Net, stdout: str):
 
 async def test_a_present_copy_without_a_hash_is_refused(net: Net):
     net.conn.handler = lambda c, i: out(
-        "#--kl:begin--\n#--kl:config:present--\nA=1\n#--kl:overrides--\n"
+        "#--kl-TESTNONCE:begin--\n#--kl-TESTNONCE:config:present--\nA=1\n#--kl-TESTNONCE:overrides--\n"
     )
     with pytest.raises(CommandFailed, match="no hash"):
         await Panel("h").get_settings()
 
 
-def _local_poll_command(tmp_path: Any, tool_body: str | None) -> str:
+def _local_poll_command(tmp_path: Any, nonce: str = NONCE, job: str = "inactive") -> str:
     """The real poll command with the panel's paths pointed into ``tmp_path``."""
-    from pybrilliantkiosk.panel import _POLL_COMMAND
+    from pybrilliantkiosk.panel import _poll_command
 
     command = (
-        _POLL_COMMAND.replace("/var/lib/ha-kiosk/config/kiosk.env", str(tmp_path / "saved"))
-        .replace("/etc/ha-kiosk/kiosk.env", str(tmp_path / "running"))
-        .replace("/var/lib/ha-kiosk/overrides.env", str(tmp_path / "overrides"))
+        _poll_command(nonce)
+        .replace("/var/lib/ha-kiosk", str(tmp_path / "var"))
         .replace("/etc/ha-kiosk/VERSION", str(tmp_path / "VERSION"))
-        .replace("/var/lib/ha-kiosk/ha-kiosk-setup", str(tmp_path / "tool"))
-        .replace("/data/switch-embedded/env/bin/python", "sh")
+        .replace("/etc/ha-kiosk", str(tmp_path / "etc"))
+        .replace("/run/ha-kiosk", str(tmp_path / "run"))
+        .replace("/etc/brilliant_release", str(tmp_path / "brilliant_release"))
+        .replace("/etc/os-release", str(tmp_path / "os-release"))
     )
-    if tool_body is not None:
-        (tmp_path / "tool").write_text(tool_body)
-    return command
+    # systemctl is not the point here: it answers like a panel whose job unit is ``job``.
+    return f"systemctl() {{ echo {job}; }}\n{command}"
+
+
+def _sections(tmp_path: Any, **kw: Any) -> Any:
+    from pybrilliantkiosk.panel import _split_sections
+
+    return _split_sections(run_sh_c(_local_poll_command(tmp_path, **kw), tmp_path), NONCE)
 
 
 def test_real_sh_runs_the_whole_poll_command(tmp_path: Any):
     """Run the real command with sh: markers, hashes, a file without a final newline, status."""
-    from pybrilliantkiosk.panel import _split_sections, _state_from, _status_from, parse_health
+    from pybrilliantkiosk.panel import _facts, _state_from, parse_health
+    from pybrilliantkiosk.setup import status_from_files
 
-    (tmp_path / "saved").write_bytes(b"A=1\nB=2\n")
-    (tmp_path / "running").write_bytes(b"A=1\nB=3")  # no trailing newline
-    (tmp_path / "overrides").write_bytes(b"DAY_LEVEL=9")  # neither: must not glue on the status
+    for name in ("var", "etc", "run", "var/config"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    (tmp_path / "var" / "config" / "kiosk.env").write_bytes(b"A=1\nB=2\n")
+    (tmp_path / "etc" / "kiosk.env").write_bytes(b"A=1\nB=3")  # no trailing newline
+    (tmp_path / "var" / "overrides.env").write_bytes(
+        b"DAY_LEVEL=9"
+    )  # must not glue on what follows
     (tmp_path / "VERSION").write_text("v9.9.9\n")
-    command = _local_poll_command(tmp_path, 'echo \'{"state": "active", "version": "v9.9.9"}\'\n')
-    sections = _split_sections(run_sh_c(command, tmp_path))
+    (tmp_path / "var" / "ha-kiosk-setup").write_text("#!tool\n")
+    (tmp_path / "var" / "current").write_text("v9.9.9\nsecond line=ignored\n")
+    (tmp_path / "var" / "state").write_text("active\n")
+    (tmp_path / "var" / "mqtt_base").write_text("brilliant_kiosk")
+    (tmp_path / "etc" / "token").write_text("t")
+    (tmp_path / "run" / "heartbeat.json").write_text('{"time": 1, "ha": "connected"}')
+    (tmp_path / "run" / "setup-result.json").write_text('{"command": "install", "exit": 0}')
+    (tmp_path / "os-release").write_text('NAME="Test OS"\nID=test\n')
+    sections = _sections(tmp_path)
     state = _state_from(sections)
     assert state.config_sha == hashlib.sha256(b"A=1\nB=2\n").hexdigest()
     assert state.running_sha == hashlib.sha256(b"A=1\nB=3").hexdigest()
     assert state.drift == ("B",)
     assert state.overrides == {"DAY_LEVEL": "9"}
-    assert parse_health(sections["health"].body).version == "v9.9.9"
-    status = _status_from(sections["status"])
-    assert (status.state, status.version) == ("active", "v9.9.9")
+    health = parse_health(sections["health"].body)
+    assert health.version == "v9.9.9"
+    facts = _facts(sections["setup"].body)
+    assert facts["current"] == "v9.9.9"  # first line only: a file cannot add facts
+    assert "second line" not in facts
+    assert facts["firmware"] == ""
+    assert facts["os_release"] == 'NAME="Test OS"'
+    assert set(facts["secrets"].split()) == {
+        str(tmp_path / "etc" / "token"),
+        str(tmp_path / "etc" / "kiosk.env"),
+        str(tmp_path / "var" / "config" / "kiosk.env"),
+    }
+    assert facts["now"].isdigit()
+    status = status_from_files(
+        facts,
+        sections["heartbeat"].body,
+        sections["result"].body,
+        {"ha-kiosk.service": "active"},
+        {},
+    )
+    assert (status.state, status.version, status.previous) == ("active", "v9.9.9", None)
+    assert status.mqtt_base == "brilliant_kiosk"
+    assert status.ha_connected is True
+    assert status.last_result == {"command": "install", "exit": 0}
+    assert status.heartbeat_age_s is not None and status.heartbeat_age_s > 1_000_000
 
 
 def test_real_sh_poll_without_files_or_tool(tmp_path: Any):
-    from pybrilliantkiosk.panel import _split_sections, _state_from, _status_from
+    from pybrilliantkiosk.panel import _facts, _state_from
+    from pybrilliantkiosk.setup import status_from_files
 
-    sections = _split_sections(run_sh_c(_local_poll_command(tmp_path, None), tmp_path))
+    sections = _sections(tmp_path)
     state = _state_from(sections)
     assert (state.saved, state.running, state.config_sha, state.running_sha) == (
         None,
@@ -1274,16 +1467,53 @@ def test_real_sh_poll_without_files_or_tool(tmp_path: Any):
         None,
         None,
     )
-    assert _status_from(sections["status"]).state == "not_installed"
+    facts = _facts(sections["setup"].body)
+    assert facts["tool"] == "absent"
+    assert status_from_files(facts, "", "", {}, {}).state == "not_installed"
+    assert sections["heartbeat"].body == "\n"  # absent files are empty sections, not errors
 
 
-def test_real_sh_poll_with_a_failing_tool(tmp_path: Any):
-    from pybrilliantkiosk.panel import _split_sections, _status_from
+def test_real_sh_poll_sees_a_running_job(tmp_path: Any):
+    from pybrilliantkiosk.panel import _facts
 
-    command = _local_poll_command(tmp_path, "echo 'half a lin'; exit 4\n")
-    sections = _split_sections(run_sh_c(command, tmp_path))
-    assert sections["status"].args == ("4",)
-    assert _status_from(sections["status"]).state == "unknown"
+    assert _facts(_sections(tmp_path, job="active")["setup"].body)["job"] == "active"
+
+
+def test_a_kiosk_env_line_equal_to_the_old_static_marker_cannot_desync_the_poll(tmp_path: Any):
+    """Markers carry a random per-command nonce: file content cannot forge or collide with one."""
+    from pybrilliantkiosk.panel import _state_from
+
+    old = "#--kl:overrides--\n#--kl:running:absent--\n#--kl:begin--\n"
+    forged = "#--kl-0000000000000000:overrides--\nA=evil\n"
+    for name in ("var", "etc", "var/config"):
+        (tmp_path / name).mkdir(exist_ok=True)
+    (tmp_path / "var" / "config" / "kiosk.env").write_text(old + forged + 'REAL="1"\n')
+    (tmp_path / "etc" / "kiosk.env").write_text('REAL="1"\n')
+    (tmp_path / "var" / "overrides.env").write_text("DAY_LEVEL=9\n")
+    state = _state_from(_sections(tmp_path))
+    assert state.saved is not None
+    assert state.saved.serialize() == old + forged + 'REAL="1"\n'  # intact, nothing split
+    assert state.running is not None
+    assert state.overrides == {"DAY_LEVEL": "9"}  # the overrides section is still the real one
+    assert state.config_sha == hashlib.sha256((old + forged + 'REAL="1"\n').encode()).hexdigest()
+
+
+def test_every_command_uses_a_fresh_unguessable_nonce():
+    from pybrilliantkiosk.panel import _new_nonce, _poll_command, _state_command
+
+    nonces = {_new_nonce() for _ in range(50)}
+    assert len(nonces) == 50
+    assert all(re.fullmatch(r"[0-9a-f]{16}", n) for n in nonces)
+    assert _poll_command("aa" * 8) != _poll_command("bb" * 8)
+    assert "#--kl-" + "aa" * 8 + ":begin--" in _state_command("aa" * 8)
+
+
+async def test_a_reply_with_the_wrong_nonce_is_garbled_output(net: Net):
+    net.conn.handler = lambda c, i: out(
+        "#--kl-ffffffffffffffff:begin--\n#--kl-ffffffffffffffff:overrides--\n"
+    )
+    with pytest.raises(CommandFailed, match="unexpected output"):
+        await Panel("h").get_settings()
 
 
 # -- G: optimistic concurrency --------------------------------------------------------------------
@@ -1315,7 +1545,7 @@ async def test_a_concurrent_change_is_retried_once_on_fresh_state(net: Net):
 
     def handler(cmd: str, stdin: Any) -> Any:
         nonlocal reads
-        if cmd.startswith("echo '#--kl:begin--'"):
+        if cmd.startswith("echo '#--kl-"):
             reads += 1
             if reads == 2:  # someone else edited the file between the two attempts
                 return state_out(ENV_TEXT + "HA_ZOOM=150\n")
@@ -1390,3 +1620,173 @@ async def test_install_refuses_a_bundle_of_the_wrong_size_before_any_io(net: Net
     with pytest.raises(ChecksumMismatch, match="expected 7"):
         await Panel("h").install(b"bundle", sha("bundle"), size=7)
     assert net.connects == 0
+
+
+# -- unsafe lines of the saved copy are not carried into the root-sourced running copy ------------
+
+SAVED_WITH_EVIL_LINE = 'DAY_LEVEL="9"\nHA_ZOOM=150;touch /tmp/pwned\nKIOSK_MQTT="1"\n'
+
+
+async def test_set_env_refuses_to_copy_an_unsafe_line_of_the_saved_copy(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED_WITH_EVIL_LINE, calls=calls)
+    with pytest.raises(InvalidArgument, match="HA_ZOOM") as err:
+        await Panel("h").set_env({"DIM_LEVEL": "3"}, restart=True)
+    assert "nothing was changed" in str(err.value)
+    assert not any("fcntl.flock" in c or "restart" in c for c, _ in calls)  # nothing written
+
+
+async def test_set_env_names_every_unsafe_line_and_junk_without_a_key(net: Net):
+    base = 'A="1"\nHA_ZOOM=150;id\nrm -rf /\nDAY_LEVEL="$(id)"\n'
+    net.conn.handler = env_handler(base=base)
+    with pytest.raises(InvalidArgument) as err:
+        await Panel("h").set_env({"DIM_LEVEL": "3"})
+    for named in ("HA_ZOOM", "line 3", "DAY_LEVEL"):
+        assert named in str(err.value)
+
+
+async def test_set_env_may_replace_or_delete_the_unsafe_line_it_is_told_about(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED_WITH_EVIL_LINE, calls=calls)
+    assert await Panel("h").set_env({"HA_ZOOM": "150"}) == ("HA_ZOOM",)
+    _, _, stdin = locked_write(calls)
+    assert stdin == 'DAY_LEVEL="9"\nHA_ZOOM="150"\nKIOSK_MQTT="1"\n'
+    calls.clear()
+    assert await Panel("h").set_env({}, ["HA_ZOOM"]) == ("HA_ZOOM",)
+    _, _, stdin = locked_write(calls)
+    assert "touch" not in stdin
+
+
+async def test_an_unsafe_line_does_not_block_a_call_that_writes_nothing(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED_WITH_EVIL_LINE, calls=calls)
+    assert await Panel("h").set_env({"DAY_LEVEL": "9"}) == ()
+    assert not any("fcntl.flock" in c for c, _ in calls)
+
+
+async def test_an_unsafe_hand_edited_line_in_the_running_copy_is_not_carried_over(net: Net):
+    """The running copy equal to the saved one in value, but with a bare ``;`` line."""
+    calls: list[tuple[str, Any]] = []
+    saved = 'DAY_LEVEL="9"\nHA_ZOOM=150;id\n'
+    net.conn.handler = env_handler(
+        base=saved, running='DAY_LEVEL="9"\nHA_ZOOM="150;id"\n', calls=calls
+    )
+    with pytest.raises(InvalidArgument, match="HA_ZOOM"):
+        await Panel("h").set_env({"DIM_LEVEL": "3"})
+    assert not any("fcntl.flock" in c for c, _ in calls)
+
+
+# -- the device id of the stock firmware -------------------------------------------------------
+
+
+async def test_device_id_is_read_with_brilliants_own_python(net: Net):
+    net.conn.handler = lambda c, i: out("device 0123456789abcdef0123\n")
+    assert await Panel("h").device_id() == "0123456789abcdef0123"
+    command = net.conn.calls[0][0]
+    assert command.startswith("cd /data/switch-embedded && env/bin/python -c ")
+    assert "/etc/ha-kiosk" not in command  # no file of the kiosk: it works on a stock panel
+    assert "/var/run/brilliant/server_socket" in command
+    assert "MessageType.HELLO" in command
+
+
+@pytest.mark.parametrize(
+    ("stdout", "status", "stderr"),
+    [
+        ("", 1, "Traceback\nConnectionRefusedError: nope"),
+        ("device \n", 0, ""),
+        ("device short\n", 0, ""),
+        ("device bad id with spaces\n", 0, ""),
+        ("device " + "a" * 65 + "\n", 0, ""),
+        ("something else\n", 0, ""),
+        ("device 0123456789abcdef0123\n", 3, ""),
+        ("", None, ""),
+    ],
+)
+async def test_device_id_unavailable(net: Net, stdout: str, status: int | None, stderr: str):
+    from pybrilliantkiosk import DeviceIdUnavailable
+
+    net.conn.handler = lambda c, i: out(stdout, status, stderr)
+    with pytest.raises(DeviceIdUnavailable, match="Brilliant device id"):
+        await Panel("h").device_id()
+
+
+async def test_device_id_error_names_the_last_stderr_line(net: Net):
+    from pybrilliantkiosk import DeviceIdUnavailable
+
+    net.conn.handler = lambda c, i: out("", 1, "Traceback\nConnectionRefusedError: socket gone\n")
+    with pytest.raises(DeviceIdUnavailable, match="socket gone"):
+        await Panel("h").device_id()
+
+
+def test_the_device_id_script_does_the_hello_of_brilliant_bus(tmp_path: Any):
+    """Run the script itself against stubs of Brilliant's libraries and a fake bus socket."""
+    import socket as socketlib
+    import subprocess
+    import sys
+    import threading
+
+    from pybrilliantkiosk import bus
+
+    lib = tmp_path / "lib"
+    pkg = tmp_path / "thrift_types" / "protocol"
+    lib.mkdir()
+    pkg.mkdir(parents=True)
+    (tmp_path / "thrift_types" / "__init__.py").write_text("")
+    pkg.joinpath("__init__.py").write_text("")
+    lib.joinpath("__init__.py").write_text("")
+    lib.joinpath("serialization.py").write_text(
+        "import base64, json\n"
+        "def serialize(obj):\n"
+        "    raw = json.dumps(obj, default=lambda o: vars(o))\n"
+        "    return base64.b64encode(raw.encode()).decode()\n"
+        "class _N:\n"
+        "    def __init__(self, d):\n"
+        "        for k, v in d.items():\n"
+        "            setattr(self, k, _N(v) if isinstance(v, dict) else v)\n"
+        "def deserialize(cls, text):\n"
+        "    return _N(json.loads(base64.b64decode(text)))\n"
+    )
+    pkg.joinpath("ttypes.py").write_text(
+        "class _Base:\n"
+        "    def __init__(self, **kw):\n"
+        "        self.__dict__.update(kw)\n"
+        "class Hello(_Base): pass\n"
+        "class Message(_Base): pass\n"
+        "class MessageBodyUnion(_Base): pass\n"
+        "class MessageType:\n"
+        "    HELLO = 2\n"
+    )
+    sock_path = str(tmp_path / "bus.sock")
+    script = bus._DEVICE_ID_SCRIPT.replace(bus.SWITCH_DIR, str(tmp_path)).replace(
+        bus.BUS_SOCKET, sock_path
+    )
+    server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+    received: list[bytes] = []
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        with conn:
+            received.append(conn.makefile("rb").readline())
+            reply = {"body_union": {"hello": {"domain": "deadbeefcafe0123"}}}
+            import base64
+            import json
+
+            conn.sendall(base64.b64encode(json.dumps(reply).encode()) + b"\n")
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=False
+    )
+    thread.join(timeout=10)
+    server.close()
+    assert done.returncode == 0, done.stderr
+    assert bus.parse_device_id(done.stdout) == "deadbeefcafe0123"
+    import base64
+    import json
+
+    hello = json.loads(base64.b64decode(received[0]))
+    assert hello["message_type"] == 2  # HELLO
+    assert hello["body_union"]["hello"]["name"] == "ha_kiosk_identity"

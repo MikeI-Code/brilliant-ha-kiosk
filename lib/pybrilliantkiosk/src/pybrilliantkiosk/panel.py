@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import re
+import secrets
 import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -32,6 +34,7 @@ from .exceptions import (
     ChecksumMismatch,
     CommandFailed,
     ConcurrentModification,
+    DeviceIdUnavailable,
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
@@ -53,14 +56,21 @@ from .models import (
     PanelSnapshot,
 )
 from .setup import (
+    ETC_DIR,
     EXIT_IN_PROGRESS,
+    HEARTBEAT_PATH,
+    JOB_UNIT,
+    RESULT_PATH,
+    SECRET_PATHS,
     SETUP_PATH,
     SETUP_PYTHON,
     STATE_IN_PROGRESS,
+    VAR_DIR,
     SetupStatus,
     error_for_exit,
     parse_json_object,
     parse_status,
+    status_from_files,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,38 +86,61 @@ _INCOMPLETE_INPUT = 3
 _CHANGED_ON_PANEL = 10
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_LOG_LINES = 5000
-#: Section markers of the combined read (see ``_POLL_COMMAND``), one full line each:
-#: ``#--kl:<name>[:<arg>...]--``. Everything before the begin marker (a login banner, profile
-#: output, ...) is ignored; a file's text is followed by one ``echo`` newline that the parser
-#: removes again, so nothing is added or lost.
-_BEGIN = "#--kl:begin--"
-_SECTION_RE = re.compile(r"^#--kl:([a-z]+)((?::[A-Za-z0-9]+)*)--\n", re.M)
+#: Section markers of the combined read (see :func:`_poll_command`), one full line each:
+#: ``#--kl-<nonce>:<name>[:<arg>...]--``. The nonce is random and new for every command, so no
+#: file content (kiosk.env is user-editable) can contain a marker by accident or on purpose.
+#: Everything before the begin marker (a login banner, profile output, ...) is ignored; a file's
+#: text is followed by one ``echo`` newline that the parser removes again, so nothing is added or
+#: lost.
 
 
-def _file_section(name: str, path: str) -> str:
+def _new_nonce() -> str:
+    return secrets.token_hex(8)
+
+
+def _marker(nonce: str, name: str) -> str:
+    return f"#--kl-{nonce}:{name}"
+
+
+def _begin(nonce: str) -> str:
+    return f"{_marker(nonce, 'begin')}--"
+
+
+def _file_section(nonce: str, name: str, path: str) -> str:
     """Print one kiosk.env copy as a section: ``present:<sha256>`` plus its text, or ``absent``.
 
     The hash is taken *before* the text is read. If the file changes in between, the hash is of
     older content than what was parsed, so the write that follows sees a mismatch and aborts
     (:class:`ConcurrentModification`) instead of building on a stale view.
     """
+    mark = _marker(nonce, name)
     return (
         f"if [ -f {path} ]; then "
-        f'echo "#--kl:{name}:present:$(sha256sum {path} | cut -d" " -f1)--"; cat {path}; echo; '
-        f"else echo '#--kl:{name}:absent--'; fi; "
+        f'echo "{mark}:present:$(sha256sum {path} | cut -d" " -f1)--"; cat {path}; echo; '
+        f"else echo '{mark}:absent--'; fi; "
     )
 
 
-#: Reads both copies of kiosk.env (with their hashes) and the runtime overrides.
-_STATE_COMMAND = (
-    f"echo '{_BEGIN}'; "
-    + _file_section("config", CONFIG_ENV_PATH)
-    + _file_section("running", ENV_PATH)
-    + f"echo '#--kl:overrides--'; cat {OVERRIDES_PATH} 2>/dev/null; echo; true"
-)
+def _state_command(nonce: str) -> str:
+    """Reads both copies of kiosk.env (with their hashes) and the runtime overrides."""
+    return (
+        f"echo '{_begin(nonce)}'; "
+        + _file_section(nonce, "config", CONFIG_ENV_PATH)
+        + _file_section(nonce, "running", ENV_PATH)
+        + f"echo '{_marker(nonce, 'overrides')}--'; cat {OVERRIDES_PATH} 2>/dev/null; echo; true"
+    )
+
+
 SETUP_COMMANDS = ("reapply", "enable", "disable", "rollback", "uninstall", "purge")
 WAIT_TIMEOUT = 100
-WAIT_ROUNDS = 8
+#: Worst case of one detached job, from the timeouts in ``kiosk/ha-kiosk-setup``: activating the
+#: new release (``install-local.sh`` up to 400 s, then 60 s for the UI to report in), activating
+#: the previous one after a failure (the same), and restoring the stock UI (400 s). The contract
+#: (docs/INTEGRATION.md section 3) quotes about 6.5 minutes; the tool's own limits add up to more,
+#: so the wait is sized from them, plus a margin for the verify and stage steps and a slow panel.
+SETUP_JOB_WORST_CASE_SECS = 2 * (400 + 60) + 400
+SETUP_JOB_MARGIN_SECS = 180
+WAIT_ROUNDS = math.ceil((SETUP_JOB_WORST_CASE_SECS + SETUP_JOB_MARGIN_SECS) / WAIT_TIMEOUT)
 
 
 #: Runs ``sys.argv[1]`` with ``sh -c`` while holding the setup tool's flock; exit 8 when busy.
@@ -121,6 +154,13 @@ _LOCKED_RUNNER = (
     "    sys.exit(8)\n"
     "sys.exit(subprocess.call(['sh', '-c', sys.argv[1]]))\n"
 )
+
+
+@dataclass(slots=True)
+class _Job:
+    """Whether a detached ``ha-kiosk-setup`` job started by this call may still be running."""
+
+    running: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,12 +218,13 @@ class _Section:
     body: str
 
 
-def _split_sections(stdout: str) -> dict[str, _Section]:
+def _split_sections(stdout: str, nonce: str) -> dict[str, _Section]:
     """The marked sections after the begin marker (a missing marker means garbled output)."""
-    _, sep, rest = stdout.partition(f"{_BEGIN}\n")
+    _, sep, rest = stdout.partition(f"{_begin(nonce)}\n")
     if not sep:
         raise CommandFailed("read the panel", None, "unexpected output while reading the panel")
-    parts = _SECTION_RE.split(rest)  # [pre, name, args, body, name, args, body, ...]
+    section_re = re.compile(rf"^#--kl-{nonce}:([a-z]+)((?::[A-Za-z0-9]+)*)--\n", re.M)
+    parts = section_re.split(rest)  # [pre, name, args, body, name, args, body, ...]
     return {
         name: _Section(tuple(args.split(":")[1:]), body)
         for name, args, body in zip(parts[1::3], parts[2::3], parts[3::3], strict=True)
@@ -211,15 +252,8 @@ def _state_from(sections: Mapping[str, _Section]) -> _EnvState:
     )
 
 
-def _status_from(section: _Section) -> SetupStatus:
-    """The setup status of a poll; ``unknown`` if the tool exited with an error."""
-    if section.args[:1] != ("0",):
-        return SetupStatus(state="unknown")
-    return parse_status(parse_json_object(section.body))
-
-
-def _parse_state(stdout: str) -> _EnvState:
-    return _state_from(_split_sections(stdout))
+def _parse_state(stdout: str, nonce: str) -> _EnvState:
+    return _state_from(_split_sections(stdout, nonce))
 
 
 def _health_script() -> str:
@@ -238,22 +272,58 @@ def _health_script() -> str:
     return "\n".join(lines)
 
 
-#: ``ha-kiosk-setup status`` as a section whose argument is the tool's exit status. A panel
-#: without the tool reports ``not_installed``.
-_STATUS_SECTION = (
-    f"if [ -f {SETUP_PATH} ]; then s=$({SETUP_PYTHON} {SETUP_PATH} status 2>/dev/null); rc=$?; "
-    'else s=\'{"state": "not_installed"}\'; rc=0; fi; '
-    'echo "#--kl:status:$rc--"; echo "$s"'
-)
-#: Health, both kiosk.env copies, overrides and setup status in ONE SSH command: one exec per
-#: poll instead of four.
-_POLL_COMMAND = (
-    f"echo '{_BEGIN}'; echo '#--kl:health--'\n"
-    + _health_script()
-    + "\n"
-    + _STATE_COMMAND.removeprefix(f"echo '{_BEGIN}'; ")
-    + f"; {_STATUS_SECTION}"
-)
+def _setup_script(nonce: str) -> str:
+    """The files ``ha-kiosk-setup status`` reads, as three sections; no Python is started.
+
+    One line per fact (``first line of the file``, so a file cannot add facts of its own), then the
+    two JSON files as they are. :func:`pybrilliantkiosk.setup.status_from_files` turns them into
+    the same :class:`SetupStatus` the tool's ``status`` gives.
+    """
+    first = "head -n 1 {} 2>/dev/null"
+    lines = [
+        f"echo '{_marker(nonce, 'setup')}--'",
+        f"if [ -f {SETUP_PATH} ]; then echo tool=present; else echo tool=absent; fi",
+        f'echo "current=$({first.format(f"{VAR_DIR}/current")})"',
+        f'echo "state=$({first.format(f"{VAR_DIR}/state")})"',
+        f'echo "previous=$({first.format(f"{VAR_DIR}/previous")})"',
+        f'echo "mqtt_base=$({first.format(f"{VAR_DIR}/mqtt_base")})"',
+        f'echo "qml=$([ -f {ETC_DIR}/native/main.qml ] && echo 1)"',
+        f'echo "job=$(systemctl is-active {JOB_UNIT} 2>/dev/null)"',
+        f'echo "firmware=$({first.format("/etc/brilliant_release")})"',
+        f'echo "os_release=$({first.format("/etc/os-release")})"',
+        'echo "now=$(date +%s 2>/dev/null)"',
+        'echo "secrets=$(for p in '
+        + " ".join(SECRET_PATHS)
+        + "; do [ -e $p ] && printf '%s ' $p; done)\"",
+    ]
+    for name, path in (("heartbeat", HEARTBEAT_PATH), ("result", RESULT_PATH)):
+        lines.append(f"echo '{_marker(nonce, name)}--'; cat {path} 2>/dev/null; echo")
+    return "\n".join(lines)
+
+
+def _poll_command(nonce: str) -> str:
+    """Health, both kiosk.env copies, overrides and setup state in ONE SSH command.
+
+    One exec per poll instead of four, and nothing that starts a Python interpreter.
+    """
+    return (
+        f"echo '{_begin(nonce)}'; echo '{_marker(nonce, 'health')}--'\n"
+        + _health_script()
+        + "\n"
+        + _state_command(nonce).removeprefix(f"echo '{_begin(nonce)}'; ")
+        + "\n"
+        + _setup_script(nonce)
+    )
+
+
+def _facts(body: str) -> dict[str, str]:
+    """``key=value`` lines of the setup section (the first occurrence of a key counts)."""
+    facts: dict[str, str] = {}
+    for line in body.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key not in facts:
+            facts[key] = value.strip()
+    return facts
 
 
 def _write_env_script(
@@ -359,23 +429,39 @@ def parse_health(output: str) -> PanelHealth:
     )
 
 
-def _normalise_fp(fingerprint: str) -> str:
-    return fingerprint.strip().rstrip("=").lower()
+_SHA256_PREFIX = "sha256:"
+_MD5_RE = re.compile(r"^(?:md5:)?(?:[0-9a-f]{2}:){15}[0-9a-f]{2}$", re.I)
 
 
-def _fingerprints_match(pinned: str, sha256: str, md5: str) -> bool:
-    candidates = {_normalise_fp(token) for token in pinned.split()}
-    sha, md = _normalise_fp(sha256), _normalise_fp(md5)
-    return sha in candidates or md in candidates or md.removeprefix("md5:") in candidates
+def _sha256_digest(token: str) -> str | None:
+    """The base64 digest of a ``SHA256:...`` token (case-sensitive, padding ignored), else None."""
+    if not token.lower().startswith(_SHA256_PREFIX):
+        return None
+    return token[len(_SHA256_PREFIX) :].rstrip("=")
+
+
+def _fingerprints_match(pinned: str, sha256: str) -> bool:
+    want = _sha256_digest(sha256)
+    return want is not None and any(_sha256_digest(token) == want for token in pinned.split())
+
+
+def is_md5_fingerprint(text: str) -> bool:
+    """Whether ``text`` holds an MD5 host key fingerprint (``MD5:aa:bb:...`` or bare colon hex).
+
+    Those are not accepted as pins: MD5 is broken for this purpose, so a pin must be ``SHA256:...``
+    (``ssh-keygen -l -E sha256``). Callers use this to tell the user why a pin was refused.
+    """
+    return any(_MD5_RE.match(token) for token in text.split())
 
 
 def fingerprint_matches(pinned: str, key: asyncssh.SSHKey) -> bool:
     """Whether a pinned fingerprint matches ``key``.
 
-    ``pinned`` may be an OpenSSH ``SHA256:...`` or ``MD5:aa:bb:...`` fingerprint (as printed by
-    ssh-keygen or plink), alone or embedded in text such as ``ssh-ed25519 255 SHA256:...``.
+    ``pinned`` is an OpenSSH ``SHA256:...`` fingerprint as printed by ``ssh-keygen -l``, alone or
+    embedded in text such as ``256 SHA256:... host (ED25519)``. The digest is compared exactly
+    (base64 is case-sensitive); MD5 fingerprints never match.
     """
-    return _fingerprints_match(pinned, key.get_fingerprint("sha256"), key.get_fingerprint("md5"))
+    return _fingerprints_match(pinned, key.get_fingerprint("sha256"))
 
 
 #: Host-key algorithms in OpenSSH's / PuTTY's order of preference. Panels offer ED25519, ECDSA and
@@ -406,7 +492,6 @@ class HostKeyInfo:
     """A panel's SSH host key as seen before any credentials were sent."""
 
     sha256: str
-    md5: str
     #: SSH name of the key type, e.g. ``ssh-ed25519`` (empty when unknown).
     algorithm: str = ""
 
@@ -424,8 +509,8 @@ class HostKeyInfo:
         return f"{self.label} {self.sha256}" if self.algorithm else self.sha256
 
     def matches(self, pinned: str) -> bool:
-        """Whether ``pinned`` (SHA256 or MD5 fingerprint, see :func:`fingerprint_matches`) fits."""
-        return _fingerprints_match(pinned, self.sha256, self.md5)
+        """Whether ``pinned`` (a SHA256 fingerprint, see :func:`fingerprint_matches`) fits."""
+        return _fingerprints_match(pinned, self.sha256)
 
 
 class _PinningClient(asyncssh.SSHClient):
@@ -445,9 +530,7 @@ class _PinningClient(asyncssh.SSHClient):
         self, host: str, addr: str, port: int, key: asyncssh.SSHKey
     ) -> bool:
         self.fingerprint = key.get_fingerprint("sha256")
-        self.info = HostKeyInfo(
-            self.fingerprint, key.get_fingerprint("md5"), key.algorithm.decode("ascii", "replace")
-        )
+        self.info = HostKeyInfo(self.fingerprint, key.algorithm.decode("ascii", "replace"))
         if self._scan_only:
             return False
         return self._pinned is None or fingerprint_matches(self._pinned, key)
@@ -472,7 +555,9 @@ async def fetch_host_key(
             server_host_key_algs=list(HOST_KEY_ALGS),
             config=[],
             agent_path=None,
-            client_keys=[],
+            # None, not []: asyncssh reads an empty list as "load the default keypairs", which
+            # would offer this host's ~/.ssh/id_* keys to the panel.
+            client_keys=None,
             connect_timeout=connect_timeout,
             login_timeout=connect_timeout,
         )
@@ -554,12 +639,15 @@ class Panel:
             return await self._open()
 
     async def _open(self) -> str:
-        client_keys: list[asyncssh.SSHKey] = []
+        # Only the configured key is ever offered. With none, ``client_keys`` must be None:
+        # asyncssh treats an empty list as "load the default keypairs" (~/.ssh/id_*), which would
+        # authenticate to the panel with an identity nobody configured, and reveal it.
+        client_keys: list[asyncssh.SSHKey] | None = None
         if self._private_key:
             try:
-                client_keys.append(
+                client_keys = [
                     asyncssh.import_private_key(self._private_key, passphrase=self._passphrase)
-                )
+                ]
             except (asyncssh.KeyImportError, asyncssh.KeyEncryptionError) as err:
                 raise AuthFailed(f"cannot use private key: {err}") from err
         client = _PinningClient(self._host_key)
@@ -660,18 +748,33 @@ class Panel:
 
         This is what a coordinator should call on every update: one exec on the panel instead of
         one each for :meth:`health`, :meth:`get_settings`, :meth:`env_drift` and
-        :meth:`setup_status`. The setup status is ``unknown`` when the tool fails (a broken tool
-        must not make the whole panel unavailable); a garbled reply raises :class:`CommandFailed`.
+        :meth:`setup_status`. The setup status is rebuilt from the files ``ha-kiosk-setup status``
+        reads (see :func:`pybrilliantkiosk.setup.status_from_files`), so a poll never starts the
+        tool's Python interpreter; use :meth:`setup_status` for the full status (enabled flags,
+        releases, ...). A garbled reply raises :class:`CommandFailed`.
         """
-        sections = _split_sections((await self._run(_POLL_COMMAND)).stdout)
-        health = sections.get("health")
-        status = sections.get("status")
-        if health is None or status is None:
+        nonce = _new_nonce()
+        sections = _split_sections((await self._run(_poll_command(nonce))).stdout, nonce)
+        health_section = sections.get("health")
+        setup = sections.get("setup")
+        if health_section is None or setup is None:
             raise CommandFailed("poll", None, "unexpected output while reading the panel")
         state = _state_from(sections)
+        health = parse_health(health_section.body)
+        # The tool reads the saved copy of kiosk.env, the running one when there is none.
+        saved = state.saved
+        tool_env = saved if saved is not None and saved.serialize().strip() else state.running
+        facts = {**_facts(setup.body), "version": health.version or ""}
+        heartbeat, result = sections.get("heartbeat"), sections.get("result")
         return PanelSnapshot(
-            health=parse_health(health.body),
-            setup=_status_from(status),
+            health=health,
+            setup=status_from_files(
+                facts,
+                heartbeat.body if heartbeat else "",
+                result.body if result else "",
+                health.units,
+                tool_env.values() if tool_env else {},
+            ),
             settings=state.settings(mask_secrets=True),
             drift=state.drift,
             unsafe=state.unsafe,
@@ -679,7 +782,8 @@ class Panel:
 
     async def _read_state(self) -> _EnvState:
         """Both copies of kiosk.env and the runtime overrides (one round trip)."""
-        return _parse_state((await self._run(_STATE_COMMAND)).stdout)
+        nonce = _new_nonce()
+        return _parse_state((await self._run(_state_command(nonce))).stdout, nonce)
 
     async def get_env(self, *, mask_secrets: bool = True) -> dict[str, str]:
         """Effective ``kiosk.env`` values (last assignment wins); secrets masked by default.
@@ -772,7 +876,9 @@ class Panel:
         :class:`ConcurrentModification`. If the running copy holds a value that cannot be written
         safely (see :func:`pybrilliantkiosk.env.reconcile`) and the caller did not set or delete
         that key, :class:`InvalidArgument` names the keys and nothing is written: the saved value
-        would otherwise silently replace, say, a hand-set ``HA_URL`` in both copies.
+        would otherwise silently replace, say, a hand-set ``HA_URL`` in both copies. The same
+        error names any other line of the final text that is not inert when a root shell sources
+        it (an unsafe line already in the saved copy is not copied into the running one).
 
         The panel-side script holds the ``ha-kiosk-setup`` flock, so it cannot interleave with a
         setup run (:class:`SetupBusy`); calls on one :class:`Panel` are serialised. KNOWN RACE:
@@ -862,6 +968,13 @@ class Panel:
         )
         if not write_base and not purge:
             return ()
+        # Lines nobody passed are carried over verbatim, into the root-sourced running copy too:
+        # one that is not inert (a hand edit, ``A=1;cmd``) must not travel with them.
+        if write_base and (unsafe := new.unsafe_lines()):
+            raise InvalidArgument(
+                f"kiosk.env has lines that cannot be written safely ({', '.join(unsafe)}); "
+                "nothing was changed. Fix them on the panel."
+            )
         text = new.serialize()
         digest = sha256_hex(text.encode()) if write_base else ""
         script = _write_env_script(purge, write_base, digest, (state.config_sha, state.running_sha))
@@ -929,6 +1042,23 @@ class Panel:
 
     # -- message bus --------------------------------------------------------------------
 
+    async def device_id(self) -> str:
+        """Brilliant's device id of the panel, read from the stock firmware's message bus.
+
+        The id is the panel's identity: it never changes, and survives installing, removing or
+        re-flashing the kiosk, because it is read with Brilliant's own Python and libraries and
+        needs no file of the kiosk. Raises :class:`DeviceIdUnavailable` when the bus does not
+        answer (it restarts while the kiosk is switched on or off) or gives something else.
+        """
+        result = await self._run(bus.device_id_command(), check=False)
+        device_id = bus.parse_device_id(result.stdout) if result.exit_status == 0 else None
+        if device_id is None:
+            detail = result.stderr.strip().splitlines()[-1:] or [f"exit {result.exit_status}"]
+            raise DeviceIdUnavailable(
+                f"cannot read the Brilliant device id of {self.host}: {detail[0]}"
+            )
+        return device_id
+
     async def bus_peripherals(self) -> BusListing:
         """List message-bus peripherals."""
         return bus.parse_listing((await self._run(bus.list_command())).stdout)
@@ -990,8 +1120,13 @@ class Panel:
                 raise error_for_exit(started.exit_status or 1, started.stdout)
             return await self._setup_wait(SETUP_PATH)
 
-    async def _setup_wait(self, tool: str) -> SetupStatus:
-        """Poll ``wait --timeout 100`` until the detached job ends (exit != 9)."""
+    async def _setup_wait(self, tool: str, job: _Job | None = None) -> SetupStatus:
+        """Poll ``wait --timeout 100`` until the detached job ends (exit != 9).
+
+        Waits for up to :data:`WAIT_ROUNDS` rounds, sized from the job's worst case (a failed
+        activation, the rollback and a stock UI restore). ``job.running`` is cleared as soon as the
+        tool reports a final state, whatever it is, and not before.
+        """
         output = ""
         for _ in range(WAIT_ROUNDS):
             result = await self._setup_run(
@@ -1000,6 +1135,8 @@ class Panel:
             output = result.stdout
             if result.exit_status == EXIT_IN_PROGRESS:
                 continue
+            if job is not None:
+                job.running = False
             if result.exit_status != 0:
                 raise error_for_exit(result.exit_status or 1, output)
             return parse_status(parse_json_object(output))
@@ -1041,12 +1178,19 @@ class Panel:
             workdir = made.stdout.strip()
             if not _INSTALL_DIR_RE.match(workdir):
                 raise CommandFailed("mktemp -d", made.exit_status, f"unexpected output {workdir!r}")
+            job = _Job()
             try:
                 return await self._install_in(
-                    workdir, bundle, expected, len(bundle) if size is None else size, env, token
+                    workdir,
+                    bundle,
+                    expected,
+                    len(bundle) if size is None else size,
+                    env,
+                    token,
+                    job,
                 )
             finally:
-                await self._cleanup_install(workdir)
+                await self._cleanup_install(workdir, job)
 
     async def _install_in(
         self,
@@ -1056,6 +1200,7 @@ class Panel:
         size: int,
         env: str | None,
         token: str | None,
+        job: _Job,
     ) -> SetupStatus:
         remote = f"{workdir}/bundle.tar.gz"
         tool = f"{workdir}/ha-kiosk-setup"
@@ -1077,9 +1222,22 @@ class Panel:
         started = await self._setup_run(args, tool=tool)
         if started.exit_status != 0:
             raise error_for_exit(started.exit_status or 1, started.stdout)
-        return await self._setup_wait(tool)
+        job.running = True  # the job reads the bundle, the tool and the settings from workdir
+        return await self._setup_wait(tool, job)
 
-    async def _cleanup_install(self, workdir: str) -> None:
+    async def _cleanup_install(self, workdir: str, job: _Job) -> None:
+        """Remove the install directory, unless the detached job may still be using it.
+
+        The job runs the copy of the tool, reads the bundle and the settings files from there.
+        When the wait ended without a final state (budget used up, connection lost, cancelled) the
+        job may be running: the directory (a bundle's worth of the panel's ``/tmp``) stays, and a
+        later install makes its own.
+        """
+        if job.running:
+            _LOGGER.warning(
+                "ha-kiosk-setup may still be running on %s; leaving %s in place", self.host, workdir
+            )
+            return
         try:
             await self._run(f"rm -rf {workdir}")
         except PanelError:
@@ -1114,5 +1272,6 @@ __all__ = [
     "Panel",
     "fetch_host_key",
     "fingerprint_matches",
+    "is_md5_fingerprint",
     "parse_health",
 ]

@@ -395,3 +395,39 @@ async def test_diagnostics_scrub_identifiers_out_of_free_text(
     assert "2001:db8" not in firmware
     assert firmware.endswith(" at 12:30:45")  # a time of day is not an address
     assert firmware.startswith("fw for ")
+
+
+async def test_diagnostics_scrub_only_real_identifiers_not_common_words(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, hass_client
+) -> None:
+    """A login called "admin" or a base topic "brilliant_kiosk" must not eat those words."""
+    panel.get_settings.return_value = {
+        "MQTT_USER": "admin",
+        "MQTT_BASE": "brilliant_kiosk",
+        "MQTT_HOST": "mqtt",
+        "MQTT_DEVICE_ID": "abc",  # shorter than any identifier worth scrubbing
+    }
+    panel.setup_status.return_value = SetupStatus(
+        state="active", firmware="admin console, mqtt and brilliant_kiosk with abc"
+    )
+    entry = await loaded(hass, panel, releases)
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    assert diag["setup"]["firmware"] == "admin console, mqtt and brilliant_kiosk with abc"
+    for key in ("MQTT_USER", "MQTT_BASE", "MQTT_HOST", "MQTT_DEVICE_ID"):
+        assert diag["settings"][key] == "**REDACTED**"  # by name, whatever the value
+
+
+async def test_diagnostics_scrub_whole_tokens_only(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock, hass_client
+) -> None:
+    panel.get_settings.return_value = {"MQTT_USER": "login42", "MQTT_HOST": "broker-7.example.net"}
+    panel.setup_status.return_value = SetupStatus(
+        state="failed",
+        firmware="login42 failed; login425 and mylogin42x are other words; (login42), broker-7.example.net.",
+    )
+    entry = await loaded(hass, panel, releases)
+    diag = await get_diagnostics_for_config_entry(hass, hass_client, entry)
+    assert diag["setup"]["firmware"] == (
+        "**REDACTED** failed; login425 and mylogin42x are other words; (**REDACTED**), "
+        "**REDACTED**."
+    )

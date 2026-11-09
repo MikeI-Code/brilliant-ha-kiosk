@@ -10,8 +10,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
+from pybrilliantkiosk import parse_version
 
 from .const import (
+    CHANNEL_NIGHTLY,
+    CHANNEL_STABLE,
+    CONF_CHANNEL,
     CONF_MANAGE_INSTALLS,
     CONF_MQTT_DEVICE_ID,
     CONF_MQTT_PROVIDER,
@@ -49,9 +53,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntr
     if coordinator.releases.data is None:
         await coordinator.releases.async_refresh()
     entry.runtime_data = coordinator
+    _default_channel(hass, entry, coordinator.data.health.version)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
+
+
+def _default_channel(
+    hass: HomeAssistant, entry: BrilliantKioskConfigEntry, installed: str | None
+) -> None:
+    """On first setup, follow the channel of what is installed: nightly for a nightly build.
+
+    Without this a panel running a nightly shows the release channel "stable" and the update
+    entity would offer nothing newer than the last stable release. Done before the update
+    listener exists, so it does not look like an option change; later choices are never touched.
+    """
+    if CONF_CHANNEL in entry.options:
+        return
+    version = parse_version(installed)
+    channel = CHANNEL_NIGHTLY if version is not None and version.nightly else CHANNEL_STABLE
+    hass.config_entries.async_update_entry(entry, options={**entry.options, CONF_CHANNEL: channel})
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> None:
@@ -72,6 +93,22 @@ async def _async_options_updated(hass: HomeAssistant, entry: BrilliantKioskConfi
         await hass.config_entries.async_reload(entry.entry_id)
     else:
         coordinator.mqtt_device_id = device_id
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> bool:
+    """Migrate a config entry to the current version.
+
+    Version 2: the unique id is always the node of the panel's Brilliant device id. A version 1
+    entry made while that id could not be read carries the host key fingerprint instead; it needs
+    the panel to be converted, which the coordinator does on the first successful poll (this
+    runs before any connection, and must not wait for one). Entries of a newer version are not
+    understood by this one.
+    """
+    if entry.version > 2:
+        return False
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(entry, version=2)
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEntry) -> bool:

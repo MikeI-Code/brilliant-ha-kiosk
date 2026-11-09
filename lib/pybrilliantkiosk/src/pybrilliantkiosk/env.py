@@ -24,8 +24,15 @@ from .exceptions import InvalidArgument
 KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _ASSIGN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 _BAD_VALUE_RE = re.compile(r"[\"'`$\\\x00-\x1f\x7f]")
+#: A line a root shell can ``.``-source without running anything: ``KEY="inert"``, ``KEY='inert'``
+#: or a bare value made of characters that need no quoting.
+_SAFE_LINE_RE = re.compile(
+    r"^\s*[A-Za-z_][A-Za-z0-9_]*="
+    r"""(?:"[^"'`$\\\x00-\x1f\x7f]*"|'[^'"`$\\\x00-\x1f\x7f]*'|[A-Za-z0-9_@%+=:,./-]*)\s*$"""
+)
 MAX_VALUE_LEN = 1024
-#: Settings ``ha-kiosk-setup`` accepts (copy of KEYS in kiosk/ha-kiosk-setup, v1.4.0).
+#: Settings ``ha-kiosk-setup`` accepts: a copy of ``KEYS`` in kiosk/ha-kiosk-setup (a test in the
+#: repository keeps the two equal). Only the fallback: the panel's own tool is parsed when possible.
 KNOWN_KEYS = frozenset(
     [
         "KIOSK_MODE",
@@ -119,6 +126,7 @@ KNOWN_KEYS = frozenset(
         "PANEL_GROUP",
         "ALLOW_MIC",
         "ALLOW_CAMERA",
+        "WEATHER_FX",
     ]
 )
 _GESTURE_KEY_RE = re.compile(r"^GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))$")
@@ -290,16 +298,42 @@ class EnvFile:
         return {k: (MASK if v and is_secret(k) else v) for k, v in self.values().items()}
 
     def set(self, key: str, value: str) -> EnvFile:
-        """Return a copy with ``key`` set (last occurrence updated in place, or appended)."""
+        """Return a copy with ``key`` set.
+
+        The last assignment is updated in place (or the line appended); earlier assignments of the
+        same key are dropped, since they are shadowed anyway and would otherwise be carried over
+        verbatim, whatever they contain.
+        """
         validate_key(key)
         new = _Line(render_line(key, value), key, value)
-        lines = list(self.lines)
-        for idx in range(len(lines) - 1, -1, -1):
-            if lines[idx].key == key:
-                lines[idx] = new
-                return EnvFile(tuple(lines))
-        lines.append(new)
-        return EnvFile(tuple(lines))
+        last = max((i for i, line in enumerate(self.lines) if line.key == key), default=None)
+        if last is None:
+            return EnvFile((*self.lines, new))
+        return EnvFile(
+            tuple(
+                new if i == last else line
+                for i, line in enumerate(self.lines)
+                if i == last or line.key != key
+            )
+        )
+
+    def unsafe_lines(self) -> tuple[str, ...]:
+        """Keys (or ``line N`` for a line without one) of lines that are not inert when sourced.
+
+        Lines this class rendered are always safe. Lines carried over verbatim from a file someone
+        edited are not necessarily: ``A=1;rm -rf /`` assigns nothing, it runs a command, and
+        ``kiosk.env`` is sourced by root shell scripts. Comments and blank lines are fine.
+        """
+        bad: list[str] = []
+        for number, line in enumerate(self.lines, 1):
+            text = line.raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            if line.key is None:
+                bad.append(f"line {number}")
+            elif not _SAFE_LINE_RE.match(line.raw) or len(line.value) > MAX_VALUE_LEN:
+                bad.append(line.key)
+        return tuple(dict.fromkeys(bad))
 
     def delete(self, key: str) -> EnvFile:
         """Return a copy without any assignment of ``key``."""

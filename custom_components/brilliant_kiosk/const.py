@@ -31,6 +31,28 @@ PROVIDER_BUILTIN: Final = "builtin"
 PROVIDER_BRILLIANT_MQTT: Final = "brilliant_mqtt"
 PROVIDERS: Final = (PROVIDER_BUILTIN, PROVIDER_BRILLIANT_MQTT)
 
+#: Prefix of the node name, the Brilliant device id's 12 first characters after it. It is the
+#: config entry's unique id, the name the kiosk's built-in MQTT registers its device under and
+#: the topic of the retained ``kiosk_state`` the integration is discovered from.
+NODE_PREFIX: Final = "brilliant_"
+NODE_ID_LENGTH: Final = 12
+
+
+def node_of(device_id: str) -> str:
+    """The node name (and unique id) of the panel whose Brilliant device id is ``device_id``."""
+    return f"{NODE_PREFIX}{device_id[:NODE_ID_LENGTH]}"
+
+
+def is_fingerprint(unique_id: str | None) -> bool:
+    """Whether a unique id is an SSH host key fingerprint, as version 1 entries may have.
+
+    Version 1 used the host key fingerprint of a panel whose Brilliant device id could not be
+    read (the kiosk's own tool was needed for that). A fingerprint changes when the panel is
+    re-flashed, so such an entry is converted to the device id on its first successful poll.
+    """
+    return bool(unique_id) and str(unique_id).startswith("SHA256:")
+
+
 DEFAULT_USERNAME: Final = "root"
 SCAN_INTERVAL: Final = timedelta(seconds=60)
 RELEASES_INTERVAL: Final = timedelta(hours=6)

@@ -34,7 +34,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 HOST = "192.168.1.50"
 FINGERPRINT = "SHA256:abcdef"
-MD5_FINGERPRINT = "MD5:aa:bb:cc:dd"
+MD5_FINGERPRINT = "MD5:" + ":".join(["ab"] * 16)  # only ever refused
 DEVICE_ID = "0123456789abcdef0123"
 NODE = "brilliant_0123456789ab"
 UNIQUE_ID = NODE
@@ -104,6 +104,7 @@ def make_panel() -> MagicMock:
     panel.get_settings = AsyncMock(return_value=dict(SETTINGS))
     panel.setup_status = AsyncMock(return_value=SetupStatus(state="active", version="v1.4.0"))
     panel.bus_peripherals = AsyncMock(return_value=BusListing(DEVICE_ID, (BusPeripheral("p", 1),)))
+    panel.device_id = AsyncMock(return_value=DEVICE_ID)
     panel.bus_get = AsyncMock(return_value=(BusVariable("a", "1", False),))
     panel.bus_set = AsyncMock(return_value=())
     panel.set_env = AsyncMock(return_value=("DIM_LEVEL",))
@@ -138,7 +139,7 @@ def make_panel() -> MagicMock:
 def panel() -> Generator[MagicMock]:
     """The one Panel double used by the coordinator and the config flow."""
     instance = make_panel()
-    scan = AsyncMock(return_value=HostKeyInfo(FINGERPRINT, MD5_FINGERPRINT))
+    scan = AsyncMock(return_value=HostKeyInfo(FINGERPRINT, "ssh-ed25519"))
     with (
         patch(
             "custom_components.brilliant_kiosk.coordinator.Panel", return_value=instance
@@ -192,6 +193,7 @@ def make_entry(**options: object) -> MockConfigEntry:
         domain=DOMAIN,
         title=f"Brilliant panel {HOST}",
         unique_id=UNIQUE_ID,
+        version=2,
         data={
             CONF_HOST: HOST,
             CONF_USERNAME: "root",

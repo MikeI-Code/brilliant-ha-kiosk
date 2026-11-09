@@ -17,7 +17,7 @@
           "host": "IP address or host name of the panel.",
           "username": "SSH user, normally root.",
           "password": "SSH password of that user. Optional when you paste a private key.",
-          "expected_fingerprint": "Paste the panel's SHA256 or MD5 host key fingerprint to verify it up front (ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub on the panel) and skip the confirmation step.",
+          "expected_fingerprint": "Paste the panel's SHA256 host key fingerprint (SHA256:...) to verify it up front (ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub on the panel) and skip the confirmation step. MD5 fingerprints are not accepted.",
           "private_key": "The whole text of an unencrypted OpenSSH or PEM private key (the panel must have the matching public key in authorized_keys). Optional when you enter a password."
         }
       },
@@ -37,7 +37,8 @@
           "ha_url": "An address the panel can reach on your network, starting with http:// or https://.",
           "mqtt_host": "Host name or IP address of your MQTT broker. The panel publishes its entities there (built-in kiosk MQTT).",
           "mqtt_password": "Must not contain ' \" $ ` or \\ : the panel keeps it in a settings file that shell scripts read, so these characters are refused.",
-          "mqtt_user": "Must not contain quotes, backslash, $ or a backtick."
+          "mqtt_user": "Must not contain quotes, backslash, $ or a backtick.",
+          "token": "A long-lived access token, created on a Home Assistant user's profile page (Security tab). The kiosk on the panel uses it to talk to Home Assistant; it is kept on the panel, readable only by root."
         }
       },
       "reauth_confirm": {
@@ -63,21 +64,27 @@
       },
       "host_key": {
         "title": "Confirm the panel host key",
-        "description": "The panel at {host} presented this SSH host key fingerprint:\n\n`{fingerprint}`\n\nCompare it with the key on the panel before continuing. Submitting pins this key; the SSH password is only sent to a panel that presents it.",
+        "description": "The panel at {host} presented this SSH host key fingerprint:\n\n`{fingerprint}` ({key_type})\n\nCompare it with the key on the panel before continuing. Submitting pins this key; the SSH password is only sent to a panel that presents it.",
         "data": {}
       },
       "reauth_host_key": {
         "title": "The panel's host key changed",
-        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}`\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key; your credentials are asked for next and only sent to a panel that presents it.",
+        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}` ({key_type})\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key; your credentials are asked for next and only sent to a panel that presents it.",
         "data": {
           "trust_new_key": "I checked the new host key and trust it"
+        },
+        "data_description": {
+          "trust_new_key": "Tick this only after you compared the new fingerprint with the key on the panel (ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub). Confirming replaces the pinned key."
         }
       },
       "reconfigure_host_key": {
         "title": "The new address has a different host key",
-        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}`\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key and the stored credentials are used to log in.",
+        "description": "The panel at {host} now presents a different SSH host key than the one pinned.\n\nPinned: `{old_fingerprint}`\nNow: `{fingerprint}` ({key_type})\n\nThis is expected after the panel was reset or re-flashed. If you did not expect it, something else may be answering at that address: do not confirm. Confirming pins the new key and the stored credentials are used to log in.",
         "data": {
           "trust_new_key": "I checked the new host key and trust it"
+        },
+        "data_description": {
+          "trust_new_key": "Tick this only after you compared the new fingerprint with the key on the panel (ssh-keygen -l -E sha256 -f /etc/ssh/ssh_host_ed25519_key.pub). Confirming replaces the pinned key."
         }
       }
     },
@@ -94,14 +101,16 @@
       "invalid_url": "Enter an address starting with http:// or https://.",
       "host_key_not_confirmed": "Tick the box to trust the new host key, or cancel.",
       "release_not_pinned": "This integration only installs releases whose checksum it contains, and the latest release is not one of them: {error}. Update the integration, or untick the install and add the panel for monitoring only.",
-      "nightly_not_allowed": "Nightly builds are not installed from here: {error}"
+      "nightly_not_allowed": "Nightly builds are not installed from here: {error}",
+      "md5_fingerprint": "MD5 fingerprints are not accepted: they are not safe to pin. Paste the SHA256 fingerprint (SHA256:...)."
     },
     "abort": {
       "already_configured": "Device is already configured",
       "reauth_successful": "Re-authentication was successful",
       "reconfigure_successful": "Re-configuration was successful",
       "unique_id_mismatch": "That is a different panel than the one in this entry.",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "device_id_unavailable": "Home Assistant could not read this panel's Brilliant device id. It is what identifies the panel (the SSH host key changes when a panel is re-flashed), so the panel was not added. Brilliant's own software must be running: it restarts for a minute or two when the kiosk is switched on or off, and after a reboot. Wait a few minutes and try again."
     },
     "progress": {
       "installing": "Downloading and installing the kiosk on the panel. This can take a few minutes (the panel restarts its display services)."
@@ -119,7 +128,8 @@
         },
         "data_description": {
           "mqtt_device_id": "Required for brilliant-mqtt (MQTT_DEVICE_ID in kiosk.env): the kiosk's entities join that device.",
-          "manage_installs": "Allow installing, updating and rolling back the kiosk from Home Assistant. Off by default when brilliant-mqtt manages the panel."
+          "manage_installs": "Allow installing, updating and rolling back the kiosk from Home Assistant. Off by default when brilliant-mqtt manages the panel.",
+          "mqtt_provider": "Who publishes the panel's entities over MQTT: the kiosk itself (built-in, KIOSK_MQTT=1) or the brilliant-mqtt project (KIOSK_MQTT=kiosk)."
         }
       }
     },
@@ -233,7 +243,7 @@
       "message": "Cannot connect to the panel: {error}"
     },
     "host_key_mismatch": {
-      "message": "The panel's SSH host key changed. Confirm the new key in the repair that opened: {error}"
+      "message": "The panel's SSH host key changed. Open Settings > Devices & services, where Brilliant Kiosk asks you to sign in again, and confirm the new key there: {error}"
     },
     "command_failed": {
       "message": "The panel command failed: {error}"
@@ -279,6 +289,27 @@
     },
     "release_not_pinned": {
       "message": "{tag} is not in this integration's list of verified releases, so it will not be installed on a panel. Update the integration to a version that includes it."
+    },
+    "verification_failed": {
+      "message": "The panel could not verify the kiosk bundle, so nothing was installed: {error} The download may be damaged; try again."
+    },
+    "settings_rejected": {
+      "message": "The panel rejected the kiosk settings, so nothing was changed: {error}"
+    },
+    "activation_rolled_back": {
+      "message": "The update failed and the panel rolled back to the previous kiosk version, which is running again: {error}"
+    },
+    "stock_ui_restored": {
+      "message": "The update failed and no earlier kiosk version could be started, so the panel shows Brilliant's own screen again: {error} Check the panel, then install the kiosk again."
+    },
+    "not_installed": {
+      "message": "The kiosk is not installed on this panel with ha-kiosk-setup, so this cannot be done: {error} Install it first."
+    },
+    "setup_failed": {
+      "message": "ha-kiosk-setup failed on the panel: {error}"
+    },
+    "device_id_unavailable": {
+      "message": "Cannot read the Brilliant device id from the panel: {error}"
     }
   },
   "issues": {

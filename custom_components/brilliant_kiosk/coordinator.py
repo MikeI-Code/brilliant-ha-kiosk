@@ -11,6 +11,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -48,6 +49,8 @@ from .const import (
     PROVIDER_BUILTIN,
     RELEASES_INTERVAL,
     SCAN_INTERVAL,
+    is_fingerprint,
+    node_of,
 )
 from .errors import panel_errors
 from .install import async_fetch_bundle
@@ -171,6 +174,9 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         self.mqtt_provider: str = entry.options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN)
         self.mqtt_device_id: str = entry.options.get(CONF_MQTT_DEVICE_ID, "")
         self.manage_installs: bool = entry.options.get(CONF_MANAGE_INSTALLS, True)
+        #: A version 1 entry may carry a host key fingerprint as unique id; see
+        #: :meth:`_async_migrate_identity`.
+        self._identity_pending = is_fingerprint(entry.unique_id)
 
     async def _async_update_data(self) -> KioskData:
         try:
@@ -199,10 +205,64 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             drift=snapshot.drift,
             unsafe=snapshot.unsafe,
         )
+        if self._identity_pending:
+            await self._async_migrate_identity(first=self.data is None)
         self._sync_drift_issue(data.drift, data.unsafe)
         self._link_mqtt_device(data.env)
         self._sync_device_version(data.health.version)
         return data
+
+    # -- identity -----------------------------------------------------------------------
+
+    async def _async_migrate_identity(self, *, first: bool) -> None:
+        """Replace a host key fingerprint used as unique id by the node of the device id.
+
+        A fingerprint changes when the panel is re-flashed, so it cannot identify the panel. The
+        id is read from the stock firmware (:meth:`Panel.device_id`); when that fails the entry
+        keeps its old id and the next poll tries again. The device and the entities follow the
+        new id (their identifiers and unique ids are built from it); a reload picks it up
+        unless this is the very first refresh, before any entity exists. If another entry
+        already has that node (the panel was added twice), nothing is changed and the user is
+        told once.
+        """
+        entry = self.config_entry
+        old = str(entry.unique_id)
+        try:
+            node = node_of(await self.panel.device_id())
+        except PanelError as err:
+            _LOGGER.debug("Cannot read the Brilliant device id of %s yet: %s", self.panel.host, err)
+            return
+        self._identity_pending = False
+        other = self.hass.config_entries.async_entry_for_domain_unique_id(DOMAIN, node)
+        if other is not None and other.entry_id != entry.entry_id:
+            _LOGGER.warning(
+                "The panel %s is configured twice (%s and %s); remove one of the entries",
+                self.panel.host,
+                entry.title,
+                other.title,
+            )
+            return
+        devices = dr.async_get(self.hass)
+        device = devices.async_get_device(identifiers={(DOMAIN, old)})
+        if device is not None and devices.async_get_device(identifiers={(DOMAIN, node)}) is None:
+            devices.async_update_device(device.id, new_identifiers={(DOMAIN, node)})
+
+        @callback
+        def _entity_id(entity: er.RegistryEntry) -> dict[str, str] | None:
+            prefix = f"{old}_"
+            if entity.unique_id.startswith(prefix):
+                return {"new_unique_id": f"{node}_{entity.unique_id.removeprefix(prefix)}"}
+            return None
+
+        await er.async_migrate_entries(self.hass, entry.entry_id, _entity_id)
+        self.hass.config_entries.async_update_entry(
+            entry, unique_id=node, data={**entry.data, CONF_NODE: node}
+        )
+        _LOGGER.info(
+            "The unique id of %s is now %s (was a host key fingerprint)", entry.title, node
+        )
+        if not first:
+            self.hass.config_entries.async_schedule_reload(entry.entry_id)
 
     # -- device registry ----------------------------------------------------------------
 

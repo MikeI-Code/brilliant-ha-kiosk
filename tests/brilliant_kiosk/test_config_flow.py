@@ -34,6 +34,7 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 from pybrilliantkiosk import (
     AuthFailed,
     CannotConnect,
+    DeviceIdUnavailable,
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
@@ -105,7 +106,11 @@ async def test_user_flow_confirms_host_key_before_using_the_password(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "host_key"
-    assert result["description_placeholders"] == {"host": HOST, "fingerprint": FINGERPRINT}
+    assert result["description_placeholders"] == {
+        "host": HOST,
+        "fingerprint": FINGERPRINT,  # as ssh-keygen -l prints it, no key type in front
+        "key_type": "ED25519",
+    }
     panel.fetch_host_key.assert_awaited_once_with(HOST)
     # Nothing credentialed happened yet: no Panel (which holds the password) was even built.
     panel.flow_panel_cls.assert_not_called()
@@ -129,7 +134,7 @@ async def test_user_flow_confirms_host_key_before_using_the_password(
 
 @pytest.mark.parametrize(
     "expected",
-    [FINGERPRINT, f" ssh-ed25519 256 {FINGERPRINT} root@panel ", MD5_FINGERPRINT.upper()],
+    [FINGERPRINT, f" ssh-ed25519 256 {FINGERPRINT} root@panel "],
 )
 async def test_matching_expected_fingerprint_skips_the_confirm_step(
     hass, panel: MagicMock, releases: MagicMock, expected: str
@@ -139,6 +144,30 @@ async def test_matching_expected_fingerprint_skips_the_confirm_step(
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_HOST_KEY] == FINGERPRINT  # the scanned SHA256 is what gets pinned
+
+
+@pytest.mark.parametrize(
+    "md5",
+    [
+        MD5_FINGERPRINT,
+        MD5_FINGERPRINT.upper(),
+        MD5_FINGERPRINT.removeprefix("MD5:"),
+        f"ssh-ed25519 256 {MD5_FINGERPRINT} root@panel",
+    ],
+)
+async def test_an_md5_fingerprint_is_refused_with_a_translated_error(
+    hass, panel: MagicMock, releases: MagicMock, md5: str
+) -> None:
+    """MD5 pins are not accepted; the user is told why, before anything is sent anywhere."""
+    result = await hass.config_entries.flow.async_configure(
+        (await start(hass))["flow_id"], {**USER_INPUT, CONF_EXPECTED_FINGERPRINT: md5}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {CONF_EXPECTED_FINGERPRINT: "md5_fingerprint"}
+    panel.fetch_host_key.assert_not_awaited()  # not even the host key scan ran
+    panel.flow_panel_cls.assert_not_called()
+    assert CONF_PASSWORD not in _suggested(result)
 
 
 async def test_wrong_expected_fingerprint_never_reaches_the_password(
@@ -170,13 +199,44 @@ async def test_user_flow_detects_brilliant_mqtt(
     }
 
 
-async def test_unique_id_falls_back_to_fingerprint(
+async def test_the_unique_id_is_never_the_host_key_fingerprint(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
-    panel.bus_peripherals.side_effect = SetupError("no bus")
+    """Without the device id the panel is not added: a fingerprint changes on a re-flash."""
+    panel.device_id.side_effect = DeviceIdUnavailable("no bus")
     result = await connect(hass)
-    assert result["result"].unique_id == FINGERPRINT
-    assert result["data"][CONF_NODE] is None
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "device_id_unavailable"
+    assert hass.config_entries.async_entries(DOMAIN) == []
+    panel.close.assert_awaited()
+
+
+async def test_the_device_id_is_read_from_the_stock_firmware_not_from_kiosk_files(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """A bare panel (nothing of the kiosk installed) still gets its Brilliant identity."""
+    panel.setup_status.return_value = SetupStatus(state="not_installed")
+    panel.bus_peripherals.side_effect = SetupError("needs /etc/ha-kiosk/brilliant_bus.py")
+    result = await connect(hass)
+    assert result["step_id"] == "install"
+    assert hass.config_entries.flow.async_progress()[0]["context"]["unique_id"] == UNIQUE_ID
+    panel.device_id.assert_awaited()
+    panel.bus_peripherals.assert_not_called()
+
+
+async def test_a_panel_added_before_conversion_is_not_added_twice(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    """A version 1 entry that still has the fingerprint as unique id matches by its host key."""
+    old = make_entry()
+    old.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        old, data={**old.data, CONF_NODE: None}, unique_id=FINGERPRINT
+    )
+    result = await connect(hass)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
 
 
 @pytest.mark.parametrize(
@@ -557,9 +617,7 @@ async def test_reconfigure_rejects_a_different_panel(
 ) -> None:
     entry = make_entry()
     await setup_entry(hass, entry)
-    panel.bus_peripherals.return_value = type(panel.bus_peripherals.return_value)(
-        "ffffffffffffffffffff", ()
-    )
+    panel.device_id.return_value = "ffffffffffffffffffff"
     result = await entry.start_reconfigure_flow(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_HOST: "10.0.0.9"}

@@ -10,6 +10,7 @@ from .exceptions import (
     ChecksumMismatch,
     CommandFailed,
     ConcurrentModification,
+    DeviceIdUnavailable,
     HostKeyMismatch,
     InvalidArgument,
     NotInstalled,
@@ -31,12 +32,12 @@ from .models import (
     PanelSnapshot,
     Release,
 )
-from .panel import HostKeyInfo, Panel, fetch_host_key
+from .panel import HostKeyInfo, Panel, fetch_host_key, is_md5_fingerprint
 from .releases import Releases
 from .setup import SetupStatus
 from .versions import KioskVersion, is_newer, parse_version
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "OVERRIDE_KEYS",
@@ -50,6 +51,7 @@ __all__ = [
     "ChecksumMismatch",
     "CommandFailed",
     "ConcurrentModification",
+    "DeviceIdUnavailable",
     "EnvFile",
     "HostKeyInfo",
     "HostKeyMismatch",
@@ -72,6 +74,7 @@ __all__ = [
     "__version__",
     "fetch_host_key",
     "format_value",
+    "is_md5_fingerprint",
     "is_newer",
     "is_secret",
     "kiosk_env_from_bundle",

@@ -208,3 +208,62 @@ def test_the_integration_never_reads_other_integrations_config_entries() -> None
                 pytest.fail(f"{source.name} lists config entries of other integrations")
     consts = (COMPONENT / "const.py").read_text(encoding="utf-8")
     assert "WYOMING" not in consts
+
+
+# -- every form field explains itself ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["strings.json", "translations/en.json"])
+def test_every_data_field_has_a_data_description(name: str) -> None:
+    texts = _json(name)
+    for section in ("config", "options"):
+        for step_id, step in texts[section]["step"].items():
+            data = step.get("data", {})
+            described = step.get("data_description", {})
+            assert set(data) == set(described), (section, step_id, set(data) ^ set(described))
+            for field, text in described.items():
+                assert text.strip(), (section, step_id, field)
+
+
+def test_every_field_of_every_form_is_in_the_strings() -> None:
+    """The schema of each step, not just the strings, is what the user sees: compare them."""
+    flow = (COMPONENT / "config_flow.py").read_text(encoding="utf-8")
+    texts = _json("strings.json")
+    fields = {
+        "user": {"host", "username", "password", "private_key", "expected_fingerprint"},
+        "install": {"install", "ha_url", "token", "mqtt_host", "mqtt_user", "mqtt_password"},
+        "reauth_confirm": {"password", "private_key"},
+        "reconfigure": {"host"},
+        "reauth_host_key": {"trust_new_key"},
+        "reconfigure_host_key": {"trust_new_key"},
+    }
+    for step_id, names in fields.items():
+        assert set(texts["config"]["step"][step_id]["data"]) == names, step_id
+        assert set(texts["config"]["step"][step_id]["data_description"]) == names, step_id
+    assert set(texts["options"]["step"]["init"]["data_description"]) == {
+        "mqtt_provider",
+        "mqtt_device_id",
+        "manage_installs",
+    }
+    assert "CONF_NEW_HOST_KEY" in flow  # the trust box exists in the code these strings describe
+
+
+def test_the_library_version_is_the_one_the_manifest_pins() -> None:
+    import pybrilliantkiosk
+
+    manifest = _json("manifest.json")
+    assert manifest["requirements"] == [f"pybrilliantkiosk=={pybrilliantkiosk.__version__}"]
+    pyproject = (ROOT / "lib" / "pybrilliantkiosk" / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'version = "{pybrilliantkiosk.__version__}"' in pyproject
+    assert pybrilliantkiosk.__version__ == "0.1.1"
+    assert pybrilliantkiosk.__version__ == metadata.version("pybrilliantkiosk")
+
+
+def test_the_md5_error_and_the_unreadable_device_id_have_texts() -> None:
+    for name in ("strings.json", "translations/en.json"):
+        texts = _json(name)["config"]
+        assert "SHA256" in texts["error"]["md5_fingerprint"]
+        assert "device id" in texts["abort"]["device_id_unavailable"]
+        assert "MD5" not in texts["step"]["user"]["data_description"][
+            "expected_fingerprint"
+        ].replace("MD5 fingerprints are not accepted", "")

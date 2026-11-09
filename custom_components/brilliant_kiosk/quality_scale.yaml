@@ -34,7 +34,7 @@ rules:
       pybrilliantkiosk 0.1.0 is on PyPI (Apache-2.0, source in lib/pybrilliantkiosk), but it was
       uploaded by hand. The rule needs a release built and published by public CI from a tag:
       .github/workflows/publish-lib.yml does that with PyPI trusted publishing. Remaining: push
-      the source, add the trusted publisher on PyPI, tag pybrilliantkiosk-v0.1.1, pin 0.1.1 here.
+      the source, add the trusted publisher on PyPI, tag pybrilliantkiosk-v0.1.1 (the manifest already pins 0.1.1).
   docs-actions:
     status: done
     comment: >-

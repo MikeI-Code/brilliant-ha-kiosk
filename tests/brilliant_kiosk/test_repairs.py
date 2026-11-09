@@ -29,7 +29,7 @@ from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
 )
 
-from .conftest import FINGERPRINT, HOST, MD5_FINGERPRINT, make_entry, setup_entry
+from .conftest import FINGERPRINT, HOST, make_entry, setup_entry
 from .test_config_flow import USER_INPUT, connect, mqtt_info, start, submit_options
 
 # -- F: KIOSK_MQTT absent means built-in ---------------------------------------------------------
@@ -159,13 +159,14 @@ async def test_mqtt_device_of_a_panel_without_kiosk_mqtt_is_the_builtin_one(
 async def test_host_key_step_shows_the_key_type(
     hass, panel: MagicMock, releases: MagicMock
 ) -> None:
-    panel.fetch_host_key.return_value = HostKeyInfo(FINGERPRINT, MD5_FINGERPRINT, "ssh-ed25519")
+    panel.fetch_host_key.return_value = HostKeyInfo(FINGERPRINT, "ssh-ed25519")
     result = await start(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], USER_INPUT)
     assert result["step_id"] == "host_key"
     assert result["description_placeholders"] == {
         "host": HOST,
-        "fingerprint": f"ED25519 {FINGERPRINT}",
+        "fingerprint": FINGERPRINT,
+        "key_type": "ED25519",
     }
     # The pin that gets stored is still the bare SHA256 fingerprint.
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
