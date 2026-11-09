@@ -39,7 +39,7 @@ jobs:
         run: uv run --python 3.14 --with-editable '.[dev]' pytest -q
       - name: Build
         working-directory: lib/pybrilliantkiosk
-        run: uv build && uvx twine@6.2.0 check dist/*
+        run: uv build && uvx twine@7.0.0 check dist/*
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
