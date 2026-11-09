@@ -36,6 +36,7 @@ These changes will be part of the next stable release.
 
 ### Fixed
 
+- `ha-kiosk-setup` now accepts `WEATHER_FX` (it rejected the animated-sky setting the UI reads); the setting is documented in `config/kiosk.env.example`.
 - Restarting the kiosk (for example after an install) no longer fills the screen with
   `ioctl ...: Bad file descriptor` text from Brilliant's boot splash.
 - Forecast lookups that fail in the background no longer show a "Couldn't do that" message.
