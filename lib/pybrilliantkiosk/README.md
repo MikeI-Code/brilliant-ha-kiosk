@@ -91,7 +91,7 @@ ruff check . && ruff format --check . && mypy --strict src && pytest  # 100 % co
 ```
 
 Source, issues and changelog:
-[github.com/MikeI-Code/brilliant-ha-kiosk/tree/main/lib/pybrilliantkiosk](https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/main/lib/pybrilliantkiosk),
+[github.com/MikeI-Code/brilliant-ha-kiosk/tree/nightly/lib/pybrilliantkiosk](https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/nightly/lib/pybrilliantkiosk),
 [issues](https://github.com/MikeI-Code/brilliant-ha-kiosk/issues),
-[CHANGELOG](https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/lib/pybrilliantkiosk/CHANGELOG.md).
+[CHANGELOG](https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/nightly/lib/pybrilliantkiosk/CHANGELOG.md).
 Apache License 2.0.

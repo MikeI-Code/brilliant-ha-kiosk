@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pybrilliantkiosk"
-version = "0.1.3"
+version = "0.1.4"
 description = "Async client for managing Brilliant smart-panel kiosks (ha-kiosk) over SSH"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -26,9 +26,9 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/MikeI-Code/brilliant-ha-kiosk"
-Source = "https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/main/lib/pybrilliantkiosk"
+Source = "https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/nightly/lib/pybrilliantkiosk"
 Issues = "https://github.com/MikeI-Code/brilliant-ha-kiosk/issues"
-Documentation = "https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/lib/pybrilliantkiosk/README.md"
+Documentation = "https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/nightly/lib/pybrilliantkiosk/README.md"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "mypy", "ruff"]

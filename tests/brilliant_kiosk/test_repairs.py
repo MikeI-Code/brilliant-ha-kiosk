@@ -327,7 +327,7 @@ async def test_unsafe_running_values_raise_an_issue_that_cannot_be_fixed_here(
     assert issue.translation_key == "env_drift_unsafe"
     assert issue.is_fixable is False
     assert issue.learn_more_url == TROUBLESHOOTING_URL
-    assert TROUBLESHOOTING_URL.endswith("/docs/home-assistant-integration.md#troubleshooting")
+    assert TROUBLESHOOTING_URL == "https://github.com/MikeI-Code/ha-brilliant-kiosk#troubleshooting"
     assert issue.translation_placeholders["unsafe"] == "HA_URL"
     assert issue.translation_placeholders["keys"] == "HA_URL, DAY_LEVEL"
     assert entry.runtime_data.data.unsafe == ("HA_URL",)

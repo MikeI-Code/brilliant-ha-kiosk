@@ -38,7 +38,7 @@ from .releases import Releases
 from .setup import SetupStatus
 from .versions import KioskVersion, is_newer, parse_version
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "OVERRIDE_KEYS",

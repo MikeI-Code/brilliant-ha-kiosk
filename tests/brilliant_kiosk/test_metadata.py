@@ -55,7 +55,8 @@ def test_the_workflow_uses_the_requirements_file_and_checks_formatting() -> None
 def test_manifest_links_and_quality_scale() -> None:
     manifest = _json("manifest.json")
     base = "https://github.com/MikeI-Code/brilliant-ha-kiosk"
-    assert manifest["documentation"].startswith(base)
+    # The docs live where users land: the distribution repo's README (the full integration doc).
+    assert manifest["documentation"] == "https://github.com/MikeI-Code/ha-brilliant-kiosk"
     assert manifest["issue_tracker"] == f"{base}/issues"
     assert (
         manifest["quality_scale"] == "platinum"
@@ -255,7 +256,7 @@ def test_the_library_version_is_the_one_the_manifest_pins() -> None:
     assert manifest["requirements"] == [f"pybrilliantkiosk=={pybrilliantkiosk.__version__}"]
     pyproject = (ROOT / "lib" / "pybrilliantkiosk" / "pyproject.toml").read_text(encoding="utf-8")
     assert f'version = "{pybrilliantkiosk.__version__}"' in pyproject
-    assert pybrilliantkiosk.__version__ == "0.1.3"
+    assert pybrilliantkiosk.__version__ == "0.1.4"
     assert pybrilliantkiosk.__version__ == metadata.version("pybrilliantkiosk")
 
 

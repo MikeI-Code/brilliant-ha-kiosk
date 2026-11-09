@@ -109,10 +109,7 @@ ISSUE_ENV_DRIFT_UNSAFE: Final = "env_drift_unsafe"
 CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
 
 #: Where the documentation explains how to fix what a repair issue cannot fix from Home Assistant.
-TROUBLESHOOTING_URL: Final = (
-    "https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/docs/"
-    "home-assistant-integration.md#troubleshooting"
-)
+TROUBLESHOOTING_URL: Final = "https://github.com/MikeI-Code/ha-brilliant-kiosk#troubleshooting"
 
 #: The retained ``<base>/kiosk_state`` of a kiosk that is running. The kiosk and ha-kiosk-setup
 #: publish ``not_installed``, ``disabled`` and ``failed`` otherwise; only a running kiosk is

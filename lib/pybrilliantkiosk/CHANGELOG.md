@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Documentation links (README, PyPI project URLs) point at files that exist; they pointed at the
+  `main` branch, where the library is not published yet.
+
 ## 0.1.3
 
 - `Panel.identity()` (new) returns `PanelIdentity(device_id, room)`: the device id and Brilliant's
