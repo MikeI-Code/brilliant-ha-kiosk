@@ -366,7 +366,10 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             if flow["flow_id"] != self.flow_id and not flow["context"].get("prefilled"):
                 self.hass.config_entries.flow.async_abort(flow["flow_id"])
         await self.async_set_unique_id(node)
-        self._abort_if_unique_id_configured()
+        # A panel that is already added but now reports a different address (DHCP) gets its
+        # stored host updated and the entry reloaded. Safe: the connection still has to present
+        # the pinned SSH host key, so a wrong or spoofed address cannot be used.
+        self._abort_if_unique_id_configured(updates={CONF_HOST: found.host} if found.host else None)
         if found.state != KIOSK_STATE_ACTIVE:
             return self.async_abort(reason="kiosk_not_active")
         self._discovered_node = node

@@ -93,6 +93,28 @@ async def test_a_panel_already_added_is_not_offered(
     assert result["reason"] == "already_configured"
 
 
+async def test_a_new_address_of_a_panel_already_added_updates_its_host(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    result = await discover(hass, message(host="192.168.1.77"))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert entry.data[CONF_HOST] == "192.168.1.77"
+
+
+async def test_a_message_without_an_address_keeps_the_host(
+    hass, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = make_entry()
+    entry.add_to_hass(hass)
+    result = await discover(hass, message(state="disabled", host=None))
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert entry.data[CONF_HOST] == HOST
+
+
 @pytest.mark.parametrize("state", ["not_installed", "disabled", "failed", "offline", ""])
 async def test_only_an_active_kiosk_is_offered(
     hass, panel: MagicMock, releases: MagicMock, state: str

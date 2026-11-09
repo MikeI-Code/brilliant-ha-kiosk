@@ -12,5 +12,5 @@
   "mqtt": ["brilliant_kiosk/+/kiosk_state", "brilliant_kiosk/+/discovery"],
   "quality_scale": "platinum",
   "requirements": ["pybrilliantkiosk==0.1.3"],
-  "version": "0.2.0"
+  "version": "0.2.1"
 }

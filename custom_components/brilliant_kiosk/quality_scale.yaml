@@ -143,9 +143,13 @@ rules:
     comment: >-
       Diagnostics remove the panel's address, ids, host key, logins, secrets, MQTT broker details, allow-lists and every IP address, also from free text such as the setup tool's messages; a test asserts none of them appear anywhere in the output.
   discovery-update-info:
-    status: exempt
+    status: done
     comment: >-
-      The MQTT discovery payload carries only the node id (topic <base>/<node>/kiosk_state), never an address, so there is nothing to update a stored host from. A changed address is handled by the reconfigure flow, which also verifies the pinned SSH host key.
+      The retained <base>/<node>/discovery JSON carries the panel's address; when an already
+      added panel reports a different one, the stored host is updated and the entry reloads
+      (config_flow._async_discovery_message). The pinned SSH host key still has to match, so a
+      wrong address cannot be used. Older kiosks publish only kiosk_state, without an address;
+      for them a changed address is set with the reconfigure flow.
   discovery:
     status: done
     comment: |
