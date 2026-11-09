@@ -1,0 +1,231 @@
+{
+  "title": "Brilliant Kiosk",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Connect to a Brilliant panel",
+        "description": "Enter the panel's address and its SSH login. The panel's SSH host key is pinned on first connect.",
+        "data": {
+          "host": "Host",
+          "username": "Username",
+          "password": "Password"
+        },
+        "data_description": {
+          "host": "IP address or host name of the panel.",
+          "username": "SSH user, normally root.",
+          "password": "SSH password of that user."
+        }
+      },
+      "install": {
+        "title": "Install the kiosk",
+        "description": "The kiosk is not installed on this panel. Home Assistant can install the latest stable release with ha-kiosk-setup. Create a long-lived access token (profile page) for the panel and paste it here. {error}",
+        "data": {
+          "install": "Install the kiosk now",
+          "ha_url": "Home Assistant URL for the panel",
+          "token": "Long-lived access token",
+          "mqtt_host": "MQTT broker host",
+          "mqtt_user": "MQTT user",
+          "mqtt_password": "MQTT password"
+        },
+        "data_description": {
+          "install": "Untick to add the panel for monitoring only.",
+          "ha_url": "An address the panel can reach on your network.",
+          "mqtt_host": "The panel publishes its entities here (built-in kiosk MQTT)."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-enter the panel password",
+        "description": "The SSH password for {host} was rejected.",
+        "data": {
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Change the panel address",
+        "data": {
+          "host": "Host"
+        },
+        "data_description": {
+          "host": "The new address must reach the same panel (same SSH host key)."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "host_key_mismatch": "The panel's SSH host key does not match the pinned key.",
+      "invalid_value": "A value is not allowed in kiosk.env: {error}",
+      "settings_rejected": "The panel rejected the settings: {error}",
+      "install_failed": "The installation failed: {error}",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "reconfigure_successful": "Re-configuration was successful",
+      "unique_id_mismatch": "That address belongs to a different panel.",
+      "unknown": "Unexpected error"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Brilliant Kiosk options",
+        "description": "MQTT is never switched off: the panel always publishes its entities, either with the kiosk's built-in MQTT or through brilliant-mqtt.",
+        "data": {
+          "mqtt_provider": "MQTT provider",
+          "mqtt_device_id": "brilliant-mqtt device id",
+          "manage_installs": "Manage installs"
+        },
+        "data_description": {
+          "mqtt_device_id": "Required for brilliant-mqtt (MQTT_DEVICE_ID in kiosk.env): the kiosk's entities join that device.",
+          "manage_installs": "Allow installing, updating and rolling back the kiosk from Home Assistant. Off by default when brilliant-mqtt manages the panel."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "host_key_mismatch": "The panel's SSH host key does not match the pinned key.",
+      "device_id_required": "Enter the brilliant-mqtt device id (letters, digits, - and _).",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "not_loaded": "The panel is not connected right now."
+    }
+  },
+  "selector": {
+    "mqtt_provider": {
+      "options": {
+        "builtin": "Built-in kiosk MQTT (KIOSK_MQTT=1)",
+        "brilliant_mqtt": "brilliant-mqtt (KIOSK_MQTT=kiosk)"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "ha_kiosk": { "name": "Kiosk" },
+      "ha_kiosk_display": { "name": "Display service" },
+      "ha_kiosk_bridge": { "name": "Bridge service" },
+      "ha_kiosk_swap": { "name": "Swap service" },
+      "ha_kiosk_voice": { "name": "Voice service" },
+      "ha_kiosk_intercom": { "name": "Intercom service" },
+      "ha_kiosk_capture": { "name": "Capture service" }
+    },
+    "button": {
+      "restart_kiosk": { "name": "Restart kiosk" },
+      "restart_voice": { "name": "Restart voice" },
+      "reboot": { "name": "Reboot panel" },
+      "reapply": { "name": "Reapply kiosk" },
+      "rollback": { "name": "Roll back kiosk" }
+    },
+    "number": {
+      "dim_level": { "name": "Dim level" },
+      "min_level": { "name": "Minimum level" }
+    },
+    "select": {
+      "channel": {
+        "name": "Release channel",
+        "state": {
+          "stable": "Stable",
+          "nightly": "Nightly"
+        }
+      }
+    },
+    "sensor": {
+      "version": { "name": "Kiosk version" },
+      "setup_state": {
+        "name": "Install state",
+        "state": {
+          "active": "Active",
+          "disabled": "Disabled",
+          "failed": "Failed",
+          "in_progress": "In progress",
+          "not_installed": "Not installed",
+          "unmanaged": "Installed manually"
+        }
+      },
+      "load": { "name": "Load" },
+      "memory_used": { "name": "Memory used" }
+    },
+    "update": {
+      "kiosk": { "name": "Kiosk" }
+    }
+  },
+  "exceptions": {
+    "invalid_auth": { "message": "The panel rejected the SSH password." },
+    "cannot_connect": { "message": "Cannot connect to the panel: {error}" },
+    "host_key_mismatch": { "message": "The panel's SSH host key changed: {error}" },
+    "command_failed": { "message": "The panel command failed: {error}" },
+    "checksum_mismatch": { "message": "The bundle did not match its checksum: {error}" },
+    "release_error": { "message": "Could not fetch the kiosk release: {error}" },
+    "invalid_argument": { "message": "Invalid value: {error}" },
+    "unknown_error": { "message": "Unexpected error from the panel: {error}" },
+    "entry_not_found": { "message": "No Brilliant Kiosk panel with config entry id {entry_id}." },
+    "entry_not_loaded": { "message": "The panel {title} is not loaded." },
+    "mqtt_cannot_be_disabled": { "message": "KIOSK_MQTT cannot be switched off or removed: the panel must always publish over MQTT." },
+    "nothing_to_change": { "message": "Give at least one value to set or one key to delete." },
+    "installs_not_managed": { "message": "Install management is off for this panel. Turn on \"Manage installs\" in its options." },
+    "release_not_found": { "message": "No kiosk release {tag} is available." }
+  },
+  "issues": {
+    "voice_not_in_wyoming": {
+      "title": "Voice satellite is not set up in Home Assistant",
+      "description": "The panel at {host} runs the voice satellite (KIOSK_VOICE=1), but Home Assistant has no Wyoming entry for it. Add the Wyoming Protocol integration with this host, or set KIOSK_VOICE=0."
+    }
+  },
+  "services": {
+    "set_env": {
+      "name": "Set settings",
+      "description": "Merges settings into the panel's kiosk.env. KIOSK_MQTT cannot be switched off.",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to change." },
+        "values": { "name": "Values", "description": "Settings to set (KEY: value). Quotes, backslash, $ and backtick are not allowed in values." },
+        "delete": { "name": "Delete", "description": "Setting keys to remove." },
+        "restart": { "name": "Restart kiosk", "description": "Restart the kiosk service after writing." }
+      }
+    },
+    "get_env": {
+      "name": "Get settings",
+      "description": "Returns the effective settings (kiosk.env plus runtime overrides, secrets masked).",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to read." }
+      }
+    },
+    "bus_get": {
+      "name": "Read bus variables",
+      "description": "Reads the variables of a Brilliant message-bus peripheral.",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to read." },
+        "peripheral": { "name": "Peripheral", "description": "Peripheral name, for example hardware_peripheral." }
+      }
+    },
+    "bus_set": {
+      "name": "Write bus variables",
+      "description": "Writes externally settable variables of a message-bus peripheral.",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to change." },
+        "peripheral": { "name": "Peripheral", "description": "Peripheral name." },
+        "values": { "name": "Values", "description": "Variables to write (name: value)." }
+      }
+    },
+    "logs": {
+      "name": "Get logs",
+      "description": "Returns the last journal lines of a kiosk service.",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to read." },
+        "unit": { "name": "Service", "description": "The systemd unit." },
+        "lines": { "name": "Lines", "description": "How many lines to return." }
+      }
+    },
+    "install_version": {
+      "name": "Install version",
+      "description": "Installs a specific kiosk release with ha-kiosk-setup.",
+      "fields": {
+        "config_entry_id": { "name": "Panel", "description": "The panel to update." },
+        "tag": { "name": "Release tag", "description": "The GitHub release tag, for example v1.4.0." }
+      }
+    }
+  }
+}

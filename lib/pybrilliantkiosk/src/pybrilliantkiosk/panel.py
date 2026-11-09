@@ -13,7 +13,7 @@ from typing import Any, Self, cast
 import asyncssh
 
 from . import bus
-from .env import EnvFile, format_value, validate_key
+from .env import EnvFile, format_value, validate_key, validate_setting_key
 from .exceptions import (
     AuthFailed,
     CannotConnect,
@@ -22,21 +22,38 @@ from .exceptions import (
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
+    SetupError,
 )
 from .models import (
     BACKLIGHT_DIR,
+    CONFIG_ENV_PATH,
     DISPLAY_STATE_PATH,
     ENV_PATH,
+    OVERRIDE_KEYS,
+    OVERRIDES_PATH,
     UNITS,
     VERSION_PATH,
     BusListing,
     BusVariable,
     PanelHealth,
 )
+from .setup import (
+    EXIT_IN_PROGRESS,
+    SETUP_PATH,
+    SETUP_PYTHON,
+    SetupStatus,
+    error_for_exit,
+    parse_json_object,
+    parse_status,
+)
 
 INSTALL_DIR = "/tmp/ha-kiosk-install"  # noqa: S108 - fixed path on the panel, not on this host
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_LOG_LINES = 5000
+SETTINGS_MARKER = "#--overrides--"
+SETUP_COMMANDS = ("reapply", "enable", "disable", "rollback", "uninstall", "purge")
+WAIT_TIMEOUT = 100
+WAIT_ROUNDS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,7 +297,9 @@ class Panel:
     # -- env ----------------------------------------------------------------------------
 
     async def _read_env(self) -> EnvFile:
-        return EnvFile.parse((await self._run(f"cat {ENV_PATH}")).stdout)
+        """The settings source of truth: setup's copy when present, else the running copy."""
+        script = f"if [ -f {CONFIG_ENV_PATH} ]; then cat {CONFIG_ENV_PATH}; else cat {ENV_PATH}; fi"
+        return EnvFile.parse((await self._run(script)).stdout)
 
     async def get_env(self, *, mask_secrets: bool = True) -> dict[str, str]:
         """Effective ``kiosk.env`` values (last assignment wins); secrets masked by default."""
@@ -294,15 +313,20 @@ class Panel:
         *,
         restart: bool = False,
     ) -> tuple[str, ...]:
-        """Edit ``kiosk.env`` atomically (tmp + mv), keeping ``kiosk.env.bak`` and mode 600.
+        """Merge settings into ``kiosk.env`` (like ``--config-merge``), atomically.
 
-        Comments and ordering are preserved. Returns the keys whose effective value changed;
-        when nothing changed nothing is written and no restart happens. ``restart`` restarts
-        ``ha-kiosk.service`` after a write.
+        ``ha-kiosk-setup`` v1.4.0 has no merge command, so this edits both copies it keeps
+        (``/var/lib/ha-kiosk/config/kiosk.env`` and the running ``/etc/ha-kiosk/kiosk.env``),
+        validating keys against setup's allowlist and values against its charset rules, and drops
+        runtime overrides (``overrides.env``) for the keys it changes, as ``--config`` does.
+        Comments and ordering are preserved. Returns the keys whose effective value changed; when
+        nothing changed nothing is written. ``restart`` restarts ``ha-kiosk.service`` after a write.
         """
         delete = tuple(delete)
         for key in (*changes, *delete):
             validate_key(key)
+        for key in changes:
+            validate_setting_key(key)
         for value in changes.values():
             format_value(value)
         old = await self._read_env()
@@ -313,19 +337,42 @@ class Panel:
         )
         if not changed:
             return ()
-        path = shlex.quote(ENV_PATH)
         script = (
             "set -e\n"
-            f"f={path}\n"
-            'if [ -f "$f" ]; then cp -p "$f" "$f.bak"; chmod 600 "$f.bak"; fi\n'
-            'cat > "$f.tmp"\n'
-            'chmod 600 "$f.tmp"\n'
-            'mv "$f.tmp" "$f"\n'
+            "umask 077\n"
+            f"t={shlex.quote(ENV_PATH)}.tmp\n"
+            'cat > "$t"\n'
+            f"for f in {CONFIG_ENV_PATH} {ENV_PATH}; do\n"
+            '  [ -d "$(dirname "$f")" ] || continue\n'
+            '  if [ -f "$f" ]; then cp -p "$f" "$f.bak"; chmod 600 "$f.bak"; fi\n'
+            '  cp "$t" "$f.new"; chmod 600 "$f.new"; mv "$f.new" "$f"\n'
+            "done\n"
+            'rm -f "$t"\n'
         )
+        cleared = [k for k in changed if k in OVERRIDE_KEYS]
+        if cleared:
+            expr = ";".join(f"/^{k}=/d" for k in cleared)
+            script += f"[ -f {OVERRIDES_PATH} ] && sed -i '{expr}' {OVERRIDES_PATH} || true\n"
         await self._run(script, stdin=new.serialize())
         if restart:
             await self.restart("ha-kiosk")
         return changed
+
+    async def get_settings(self, *, mask_secrets: bool = True) -> dict[str, str]:
+        """Effective settings: ``kiosk.env`` with the runtime ``overrides.env`` applied on top.
+
+        Missing files count as empty, so an uninstalled panel returns ``{}``.
+        """
+        result = await self._run(
+            f"if [ -f {CONFIG_ENV_PATH} ]; then cat {CONFIG_ENV_PATH}; else cat {ENV_PATH}; fi"
+            f" 2>/dev/null; echo; echo {SETTINGS_MARKER}; "
+            f"cat {OVERRIDES_PATH} 2>/dev/null; true"
+        )
+        base_text, _, over_text = result.stdout.partition(SETTINGS_MARKER)
+        base = EnvFile.parse(base_text)
+        values = base.masked_values() if mask_secrets else base.values()
+        over = EnvFile.parse(over_text).values()
+        return {**values, **{k: v for k, v in over.items() if k in OVERRIDE_KEYS}}
 
     # -- units --------------------------------------------------------------------------
 
@@ -378,13 +425,81 @@ class Panel:
         result = await self._run(bus.set_command(peripheral, values))
         return bus.parse_set_result(result.stdout)
 
+    # -- setup tool ---------------------------------------------------------------------
+
+    async def _setup_run(
+        self, args: str, *, tool: str = SETUP_PATH, time_limit: float | None = None
+    ) -> _Result:
+        return await self._run(f"{SETUP_PYTHON} {tool} {args}", time_limit=time_limit, check=False)
+
+    async def setup_status(self) -> SetupStatus:
+        """``ha-kiosk-setup status``; a panel without the tool reports ``not_installed``."""
+        script = (
+            f"if [ -f {SETUP_PATH} ]; then {SETUP_PYTHON} {SETUP_PATH} status; "
+            'else echo \'{"state": "not_installed"}\'; fi'
+        )
+        result = await self._run(script, check=False)
+        if result.exit_status != 0:
+            raise error_for_exit(result.exit_status or 1, result.stdout)
+        return parse_status(parse_json_object(result.stdout))
+
+    async def setup_diagnostics(self) -> dict[str, Any]:
+        """``ha-kiosk-setup diagnostics`` (status plus recent logs, secrets redacted)."""
+        result = await self._setup_run("diagnostics")
+        if result.exit_status != 0:
+            raise error_for_exit(result.exit_status or 1, result.stdout)
+        return parse_json_object(result.stdout)
+
+    async def check_env(self, text: str) -> tuple[str, ...]:
+        """Validate settings text with the panel's own ``check-env``; returns the errors."""
+        result = await self._run(
+            f"{SETUP_PYTHON} {SETUP_PATH} check-env -", stdin=text, check=False
+        )
+        if result.exit_status not in (0, 4):
+            raise error_for_exit(result.exit_status or 1, result.stdout)
+        errors = parse_json_object(result.stdout).get("errors")
+        return tuple(str(e) for e in errors) if isinstance(errors, list) else ()
+
+    async def setup_command(self, command: str) -> SetupStatus:
+        """Run reapply, enable, disable, rollback, uninstall or purge, detached, and wait."""
+        if command not in SETUP_COMMANDS:
+            raise InvalidArgument(f"setup command not allowed: {command!r}")
+        started = await self._setup_run(f"{command} --detach")
+        if started.exit_status != 0:
+            raise error_for_exit(started.exit_status or 1, started.stdout)
+        return await self._setup_wait(SETUP_PATH)
+
+    async def _setup_wait(self, tool: str) -> SetupStatus:
+        """Poll ``wait --timeout 100`` until the detached job ends (exit != 9)."""
+        output = ""
+        for _ in range(WAIT_ROUNDS):
+            result = await self._setup_run(
+                f"wait --timeout {WAIT_TIMEOUT}", tool=tool, time_limit=WAIT_TIMEOUT + 30
+            )
+            output = result.stdout
+            if result.exit_status == EXIT_IN_PROGRESS:
+                continue
+            if result.exit_status != 0:
+                raise error_for_exit(result.exit_status or 1, output)
+            return parse_status(parse_json_object(output))
+        raise SetupError("ha-kiosk-setup job is still running", EXIT_IN_PROGRESS)
+
     # -- install ------------------------------------------------------------------------
 
-    async def install(self, bundle: bytes, sha256: str) -> str:
-        """Upload a release bundle, verify it and run ``install-local.sh``; returns the log.
+    async def install(
+        self,
+        bundle: bytes,
+        sha256: str,
+        *,
+        env: str | None = None,
+        token: str | None = None,
+    ) -> SetupStatus:
+        """Install or update the kiosk with ``ha-kiosk-setup`` (docs/INTEGRATION.md section 0).
 
-        The checksum is verified locally and again on the panel. ``install-local.sh`` runs
-        without ``--env``/``--token``, so the panel keeps its current settings and token.
+        The bundle is verified here and on the panel, the tool is extracted from it and run with
+        ``--detach``; the call polls ``wait`` until the job ends. ``env`` / ``token`` text is only
+        needed for a first install (the tool keeps the panel's settings and token otherwise).
+        Raises a :class:`SetupError` subclass for the tool's exit codes.
         """
         if not _SHA256_RE.match(sha256):
             raise InvalidArgument("sha256 must be 64 hex characters")
@@ -392,6 +507,7 @@ class Panel:
         if hashlib.sha256(bundle).hexdigest() != expected:
             raise ChecksumMismatch("bundle does not match the expected sha256")
         remote = f"{INSTALL_DIR}/bundle.tar.gz"
+        tool = f"{INSTALL_DIR}/ha-kiosk-setup"
         await self._run(f"rm -rf {INSTALL_DIR} && mkdir -m 700 {INSTALL_DIR}")
         try:
             await self._upload(bundle, remote)
@@ -399,24 +515,22 @@ class Panel:
             remote_sha = check.stdout.split()[0].lower() if check.stdout.split() else ""
             if remote_sha != expected:
                 raise ChecksumMismatch("bundle checksum on the panel does not match")
-            script = (
-                f"cd {INSTALL_DIR} && rm -rf bundle && mkdir bundle"
-                " && tar xzf bundle.tar.gz -C bundle"
-                " && d=$(find bundle -maxdepth 2 -name install-local.sh | head -n 1)"
-                ' && [ -n "$d" ] && sh "$d" 2>&1\n'
-                "rc=$?\n"
-                f"cd / && rm -rf {INSTALL_DIR}\n"
-                "exit $rc\n"
+            await self._run(
+                f"cd {INSTALL_DIR} && m=$(tar -tzf bundle.tar.gz | grep -E '^[^/]+/ha-kiosk-setup$'"
+                f' | head -n 1) && [ -n "$m" ] && tar -xzOf bundle.tar.gz "$m" > ha-kiosk-setup'
             )
-            result = await self._run(script, time_limit=300, check=False)
-        except PanelError:
+            args = f"install --bundle {remote} --sha256 {expected} --size {len(bundle)} --detach"
+            for name, text, flag in (("env", env, "--env"), ("token", token, "--token")):
+                if text is not None:
+                    path = f"{INSTALL_DIR}/{name}"
+                    await self._run(f"umask 077; cat > {path}", stdin=text)
+                    args += f" {flag} {path}"
+            started = await self._setup_run(args, tool=tool)
+            if started.exit_status != 0:
+                raise error_for_exit(started.exit_status or 1, started.stdout)
+            return await self._setup_wait(tool)
+        finally:
             await self._cleanup_install()
-            raise
-        if result.exit_status != 0:
-            raise CommandFailed(
-                "install-local.sh", result.exit_status, result.stdout + result.stderr
-            )
-        return result.stdout
 
     async def _cleanup_install(self) -> None:
         try:

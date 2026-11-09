@@ -1,4 +1,3 @@
-import hashlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,13 +9,12 @@ from pybrilliantkiosk import (
     BusPeripheral,
     BusVariable,
     CannotConnect,
-    ChecksumMismatch,
     CommandFailed,
     HostKeyMismatch,
     InvalidArgument,
     Panel,
 )
-from pybrilliantkiosk.panel import INSTALL_DIR, fingerprint_matches, parse_health
+from pybrilliantkiosk.panel import fingerprint_matches, parse_health
 
 HOST_KEY = asyncssh.generate_private_key("ssh-ed25519")
 SHA_FP = HOST_KEY.get_fingerprint("sha256")
@@ -279,25 +277,25 @@ async def test_get_env(net: Net):
     assert masked["MQTT_PASSWORD"] != "hunter2"
     assert masked["DAY_LEVEL"] == "15"
     assert (await panel.get_env(mask_secrets=False))["MQTT_PASSWORD"] == "hunter2"
-    assert net.conn.calls[0][0] == "cat /etc/ha-kiosk/kiosk.env"
+    assert "/var/lib/ha-kiosk/config/kiosk.env" in net.conn.calls[0][0]
 
 
-async def test_set_env_writes_atomically(net: Net):
-    net.conn.handler = lambda c, i: out(ENV_TEXT if c.startswith("cat ") else "")
-    changed = await Panel("h").set_env({"DAY_LEVEL": "9", "NEW_KEY": "a b"}, ["HA_URL"])
-    assert set(changed) == {"DAY_LEVEL", "HA_URL", "NEW_KEY"}
+async def test_set_env_writes_both_copies(net: Net):
+    net.conn.handler = lambda c, i: out(ENV_TEXT if "cat /" in c and "set -e" not in c else "")
+    changed = await Panel("h").set_env({"DAY_LEVEL": "9", "DIM_LEVEL": "a b"}, ["HA_URL"])
+    assert set(changed) == {"DAY_LEVEL", "HA_URL", "DIM_LEVEL"}
     script, stdin = net.conn.calls[1]
-    assert 'cat > "$f.tmp"' in script
-    assert 'mv "$f.tmp" "$f"' in script
+    assert "umask 077" in script
+    assert "/var/lib/ha-kiosk/config/kiosk.env /etc/ha-kiosk/kiosk.env" in script
     assert 'cp -p "$f" "$f.bak"' in script
-    assert 'chmod 600 "$f.tmp"' in script
-    assert script.index("cp -p") < script.index("mv ")
-    assert stdin == "# comment\nDAY_LEVEL=9\nMQTT_PASSWORD=hunter2\nNEW_KEY='a b'\n"
+    assert 'mv "$f.new" "$f"' in script
+    assert "sed -i '/^DAY_LEVEL=/d' /var/lib/ha-kiosk/overrides.env" in script
+    assert stdin == "# comment\nDAY_LEVEL=9\nMQTT_PASSWORD=hunter2\nDIM_LEVEL=a b\n"
     assert len(net.conn.calls) == 2  # no restart
 
 
 async def test_set_env_restart_and_noop(net: Net):
-    net.conn.handler = lambda c, i: out(ENV_TEXT if c.startswith("cat ") else "")
+    net.conn.handler = lambda c, i: out(ENV_TEXT if c.startswith("if [ -f") else "")
     panel = Panel("h")
     assert await panel.set_env({"DAY_LEVEL": "15"}, restart=True) == ()
     assert len(net.conn.calls) == 1  # unchanged: no write, no restart
@@ -377,99 +375,14 @@ async def test_bus(net: Net):
     assert len(net.conn.calls) == n
 
 
-BUNDLE = b"tarball"
-SHA = hashlib.sha256(BUNDLE).hexdigest()
-
-
-def install_handler(remote_sha: str = SHA, install_status: int = 0, calls: list[str] | None = None):
-    def handler(cmd: str, stdin: Any) -> Any:
-        if calls is not None:
-            calls.append(cmd)
-        if cmd.startswith("sha256sum"):
-            return out(f"{remote_sha}  {INSTALL_DIR}/bundle.tar.gz\n")
-        if "install-local.sh" in cmd:
-            return out("ha-kiosk: installed v2\n", install_status)
-        return out()
-
-    return handler
-
-
-async def test_install_sftp(net: Net):
-    cmds: list[str] = []
-    net.conn.handler = install_handler(calls=cmds)
-    log = await Panel("h").install(BUNDLE, SHA.upper())
-    assert log == "ha-kiosk: installed v2\n"
-    assert net.conn.sftp.sink == [BUNDLE]
-    assert net.conn.sftp.paths == [f"{INSTALL_DIR}/bundle.tar.gz"]
-    assert cmds[0].startswith(f"rm -rf {INSTALL_DIR} && mkdir -m 700")
-    script = cmds[-1]
-    assert "tar xzf bundle.tar.gz" in script
-    assert 'sh "$d"' in script
-    assert "--env" not in script
-    assert "--token" not in script
-    assert f"rm -rf {INSTALL_DIR}" in script
-
-
-@pytest.mark.parametrize(
-    "error",
-    [asyncssh.SFTPFailure("no sftp"), asyncssh.ChannelOpenError(1, "no subsystem")],
-)
-async def test_install_falls_back_to_cat(net: Net, error: BaseException):
-    net.conn.sftp = FakeSFTP([], error)
-    cat_inputs: list[Any] = []
-
-    def handler(cmd: str, stdin: Any) -> Any:
-        if cmd.startswith("cat > "):
-            cat_inputs.append((cmd, stdin))
-            return out()
-        return install_handler()(cmd, stdin)
-
-    net.conn.handler = handler
-    assert await Panel("h").install(BUNDLE, SHA) == "ha-kiosk: installed v2\n"
-    assert cat_inputs == [(f"cat > {INSTALL_DIR}/bundle.tar.gz", BUNDLE)]
-
-
-async def test_install_upload_connection_error(net: Net):
-    net.conn.sftp = FakeSFTP([], OSError("reset"))
-    net.conn.handler = install_handler()
-    with pytest.raises(CannotConnect, match="upload"):
-        await Panel("h").install(BUNDLE, SHA)
-
-
-async def test_install_rejects_bad_checksums(net: Net):
-    panel = Panel("h")
-    with pytest.raises(InvalidArgument):
-        await panel.install(BUNDLE, "xyz")
-    with pytest.raises(ChecksumMismatch):
-        await panel.install(BUNDLE, "0" * 64)
-    assert net.connects == 0
-
-    cmds: list[str] = []
-    net.conn.handler = install_handler(remote_sha="f" * 64, calls=cmds)
-    with pytest.raises(ChecksumMismatch, match="panel"):
-        await panel.install(BUNDLE, SHA)
-    assert cmds[-1] == f"rm -rf {INSTALL_DIR}"  # cleaned up
-    assert not any("install-local.sh" in c for c in cmds)
-
-    net.conn.handler = lambda c, i: out("", status=0) if not c.startswith("sha256sum") else out("")
-    with pytest.raises(ChecksumMismatch):
-        await panel.install(BUNDLE, SHA)
-
-
-async def test_install_failure_reports_log(net: Net):
-    net.conn.handler = install_handler(install_status=1)
-    with pytest.raises(CommandFailed) as err:
-        await Panel("h").install(BUNDLE, SHA)
-    assert "installed v2" in err.value.stderr
-    assert err.value.exit_status == 1
-
-
-async def test_install_cleanup_failure_is_swallowed(net: Net):
-    def handler(cmd: str, stdin: Any) -> Any:
-        if cmd == f"rm -rf {INSTALL_DIR}":
-            return out("", 1, "nope")
-        return install_handler(remote_sha="e" * 64)(cmd, stdin)
-
-    net.conn.handler = handler
-    with pytest.raises(ChecksumMismatch):
-        await Panel("h").install(BUNDLE, SHA)
+async def test_get_settings_merges_overrides(net: Net):
+    net.conn.handler = lambda c, i: out(
+        "A=1\nDAY_LEVEL=15\nMQTT_PASSWORD=s\n\n#--overrides--\nDAY_LEVEL=9\nOTHER=1\n"
+    )
+    settings = await Panel("h").get_settings()
+    assert settings["DAY_LEVEL"] == "9"
+    assert settings["A"] == "1"
+    assert "OTHER" not in settings
+    assert settings["MQTT_PASSWORD"] != "s"
+    assert (await Panel("h").get_settings(mask_secrets=False))["MQTT_PASSWORD"] == "s"
+    assert "overrides.env" in net.conn.calls[0][0]

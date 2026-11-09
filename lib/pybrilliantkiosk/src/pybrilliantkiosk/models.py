@@ -21,6 +21,16 @@ ENV_PATH = "/etc/ha-kiosk/kiosk.env"
 VERSION_PATH = "/etc/ha-kiosk/VERSION"
 BACKLIGHT_DIR = "/sys/class/backlight/backlight_lcd"
 DISPLAY_STATE_PATH = "/run/ha-kiosk-display/state"
+OVERRIDES_PATH = "/var/lib/ha-kiosk/overrides.env"
+CONFIG_ENV_PATH = "/var/lib/ha-kiosk/config/kiosk.env"
+#: Settings the display service accepts as runtime overrides (same list as ha-kiosk-mqtt.py).
+OVERRIDE_KEYS: tuple[str, ...] = (
+    "SCREENSAVER",
+    "NIGHT_MODE",
+    "MOTION_WAKE",
+    "SMART_DIM",
+    "DAY_LEVEL",
+)
 
 
 @dataclass(frozen=True, slots=True)

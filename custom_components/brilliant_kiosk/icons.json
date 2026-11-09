@@ -1,0 +1,32 @@
+{
+  "entity": {
+    "button": {
+      "restart_kiosk": { "default": "mdi:restart" },
+      "restart_voice": { "default": "mdi:microphone-message" },
+      "reboot": { "default": "mdi:restart-alert" },
+      "reapply": { "default": "mdi:refresh" },
+      "rollback": { "default": "mdi:undo-variant" }
+    },
+    "number": {
+      "dim_level": { "default": "mdi:brightness-4" },
+      "min_level": { "default": "mdi:brightness-2" }
+    },
+    "select": {
+      "channel": { "default": "mdi:source-branch" }
+    },
+    "sensor": {
+      "version": { "default": "mdi:tag" },
+      "setup_state": { "default": "mdi:package-variant-closed" },
+      "load": { "default": "mdi:cpu-32-bit" },
+      "memory_used": { "default": "mdi:memory" }
+    }
+  },
+  "services": {
+    "set_env": { "service": "mdi:file-cog" },
+    "get_env": { "service": "mdi:file-search" },
+    "bus_get": { "service": "mdi:bus" },
+    "bus_set": { "service": "mdi:bus-edit" },
+    "logs": { "service": "mdi:text-long" },
+    "install_version": { "service": "mdi:download" }
+  }
+}

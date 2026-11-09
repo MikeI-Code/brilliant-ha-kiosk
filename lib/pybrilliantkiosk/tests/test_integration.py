@@ -37,9 +37,11 @@ async def _handle(process: Any) -> None:
     elif cmd.startswith("sha256sum"):
         path = cmd.split()[1]
         process.stdout.write(f"{hashlib.sha256(stored[path]).hexdigest()}  {path}\n".encode())
-    elif "install-local.sh" in cmd:
-        process.stdout.write(b"installed\n")
-    elif cmd.startswith("cat /etc/ha-kiosk/kiosk.env"):
+    elif "ha-kiosk-setup install" in cmd:
+        process.stdout.write(b'{"state": "in_progress"}\n')
+    elif "ha-kiosk-setup wait" in cmd:
+        process.stdout.write(b'{"state": "active", "version": "v9"}\n')
+    elif "kiosk.env" in cmd and cmd.startswith("if [ -f"):
         process.stdout.write(b"A=1\n")
     elif cmd == "fail":
         process.stderr.write(b"boom")
@@ -92,4 +94,5 @@ async def test_real_refused():
 
 async def test_real_install_without_sftp(port: int):
     async with Panel("127.0.0.1", port=port, password="pw") as panel:
-        assert await panel.install(BUNDLE, SHA) == "installed\n"
+        status = await panel.install(BUNDLE, SHA)
+        assert (status.state, status.version) == ("active", "v9")

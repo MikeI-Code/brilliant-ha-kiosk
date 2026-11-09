@@ -1,0 +1,62 @@
+set_env:
+  fields:
+    config_entry_id: &panel
+      required: true
+      selector:
+        config_entry:
+          integration: brilliant_kiosk
+    values:
+      selector:
+        object:
+    delete:
+      selector:
+        object:
+    restart:
+      default: false
+      selector:
+        boolean:
+get_env:
+  fields:
+    config_entry_id: *panel
+bus_get:
+  fields:
+    config_entry_id: *panel
+    peripheral:
+      required: true
+      example: hardware_peripheral
+      selector:
+        text:
+bus_set:
+  fields:
+    config_entry_id: *panel
+    peripheral:
+      required: true
+      selector:
+        text:
+    values:
+      required: true
+      selector:
+        object:
+logs:
+  fields:
+    config_entry_id: *panel
+    unit:
+      required: true
+      example: ha-kiosk.service
+      selector:
+        text:
+    lines:
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 5000
+          mode: box
+install_version:
+  fields:
+    config_entry_id: *panel
+    tag:
+      required: true
+      example: v1.4.0
+      selector:
+        text:

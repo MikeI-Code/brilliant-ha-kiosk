@@ -1,0 +1,84 @@
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling:
+    status: done
+    comment: One coordinator polls health, settings and setup status every 60 s over a single SSH connection; releases every 6 h.
+  brands:
+    status: todo
+    comment: Needs a PR to home-assistant/brands (custom integrations ship brand images there or in a brand folder).
+  common-modules: done
+  config-flow-test-coverage: done
+  config-flow: done
+  dependency-transparency:
+    status: todo
+    comment: pybrilliantkiosk==0.1.0 is pinned in manifest.json but not yet published to PyPI (open question 2 of the spec).
+  docs-actions: todo
+  docs-high-level-description: todo
+  docs-installation-instructions: todo
+  docs-removal-instructions: todo
+  entity-event-setup:
+    status: exempt
+    comment: Entities are plain CoordinatorEntity subclasses; the update entity subscribes to the releases coordinator in async_added_to_hass and unsubscribes with async_on_remove.
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: todo
+  docs-installation-parameters: todo
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable:
+    status: done
+    comment: Handled by DataUpdateCoordinator (logs once when unavailable and once when back).
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage: done
+
+  # Gold
+  devices:
+    status: done
+    comment: Entities join the panel's MQTT device (brilliant-mqtt or the kiosk's built-in MQTT) and fall back to an own device.
+  diagnostics: done
+  discovery-update-info:
+    status: done
+    comment: The MQTT discovery topic carries only the node id, not a host; a re-discovered panel keeps its entry and a changed address is fixed through reconfigure.
+  discovery:
+    status: done
+    comment: MQTT discovery on the retained <base>/<node>/kiosk_state topic, which the kiosk publishes in both MQTT modes.
+  docs-data-update: todo
+  docs-examples: todo
+  docs-known-limitations: todo
+  docs-supported-devices: todo
+  docs-supported-functions: todo
+  docs-troubleshooting: todo
+  docs-use-cases: todo
+  dynamic-devices:
+    status: exempt
+    comment: One device per config entry; a panel never has child devices.
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default: done
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues:
+    status: todo
+    comment: The voice-without-Wyoming issue exists; host key changed, install failed and env drift are still to do.
+  stale-devices:
+    status: exempt
+    comment: One device per config entry; it is removed with the entry.
+
+  # Platinum
+  async-dependency: done
+  inject-websession: done
+  strict-typing:
+    status: todo
+    comment: mypy --strict passes locally; .strict-typing registration and CI wiring come with phase 5.

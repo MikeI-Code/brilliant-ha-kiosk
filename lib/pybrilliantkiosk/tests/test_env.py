@@ -1,7 +1,7 @@
 import pytest
 
 from pybrilliantkiosk import EnvFile, InvalidArgument, is_secret
-from pybrilliantkiosk.env import MASK, format_value
+from pybrilliantkiosk.env import MASK, format_value, validate_setting_key
 
 SAMPLE = """# header comment
 KIOSK_MODE=native
@@ -45,9 +45,9 @@ def test_set_updates_last_occurrence_in_place():
     assert text.startswith("# header comment\n")
 
 
-def test_set_appends_new_key_and_quotes():
+def test_set_appends_new_key_bare():
     env = EnvFile.parse("A=1\n").set("B", "has space")
-    assert env.serialize() == "A=1\nB='has space'\n"
+    assert env.serialize() == "A=1\nB=has space\n"
     assert env.values()["B"] == "has space"
     assert EnvFile().set("EMPTY", "").serialize() == "EMPTY=\n"
 
@@ -80,7 +80,25 @@ def test_invalid_keys(key):
         EnvFile().delete(key)
 
 
-@pytest.mark.parametrize("value", ["a\nb", "a\rb", "a\x00b", "it's a'"])
+@pytest.mark.parametrize(
+    "value", ["a\nb", "a\rb", "a\x00b", "it's", 'a"b', "a$b", "a`b", "a\\b", "x" * 1025]
+)
 def test_invalid_values(value):
     with pytest.raises(InvalidArgument):
         format_value(value)
+
+
+def test_values_are_written_bare():
+    assert format_value("has space #and=more") == "has space #and=more"
+    assert format_value("") == ""
+
+
+@pytest.mark.parametrize("key", ["HA_URL", "GESTURE_2_TAP", "GESTURE_3_SWIPE_LEFT"])
+def test_known_setting_keys(key):
+    assert validate_setting_key(key) == key
+
+
+@pytest.mark.parametrize("key", ["NOPE", "GESTURE_4_TAP", "bad key"])
+def test_unknown_setting_keys(key):
+    with pytest.raises(InvalidArgument):
+        validate_setting_key(key)
