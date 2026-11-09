@@ -319,6 +319,18 @@ panel in a quiet room: about −88 dBFS between words, normal speech across the 
 −75 dBFS. That is enough contrast for speech-to-text, but quiet, so it needs about +30 dB of gain.
 `VOICE_MIC=default` gets that from Brilliant's capture chain (DC removal and a 30× amplifier).
 
+`VOICE_MIC` takes any ALSA capture device that can deliver 16 kHz mono 16-bit. On a Brilliant
+panel (`/etc/asound.conf`) that means:
+
+| `VOICE_MIC` | What you get |
+|---|---|
+| `default` (recommended) | DC removal and 30× gain. What Brilliant's Alexa uses; the right level for speech-to-text. |
+| `dsnoop_filtered` | The same, plus a 300 Hz high-pass and 3 kHz low-pass (Brilliant's intercom chain). Less hum and hiss, but narrower; try it if speech-to-text struggles in a noisy room. |
+| `plug_dsnoop_48000` | The raw mics with no gain: about 30 dB too quiet for most speech-to-text. Only useful when the pipeline adds its own gain. |
+
+`dsnoop_48000` and `hw:2,0` on their own don't work: they only deliver 24-bit stereo, and opening
+`hw:2,0` directly would also lock Brilliant out of the mic.
+
 **Speaker and echo.** Replies and announcements play through Brilliant's shared `dmix_filtered`
 output. That output follows Brilliant's volume and has a 600 Hz high-pass filter, so it sounds thin,
 and music isn't the goal. There is no echo cancellation: the panel stops sending the microphone
@@ -915,7 +927,7 @@ just that line in `.private/<panel>.kiosk.env`; to change it for a group, in `.p
 | `VOICE_BIND` | auto | LAN address to listen on |
 | `VOICE_LISTEN_SECS` | `15` | Longest listen after Talk or a wake word |
 | `VOICE_TTS_ENGINE` | `tts.google_translate_en_com` | HA TTS entity for text announcements |
-| `VOICE_MIC` / `VOICE_SPEAKER` | `default` / `dmix_filtered` | ALSA devices (shared with Brilliant) |
+| `VOICE_MIC` / `VOICE_SPEAKER` | `default` / `dmix_filtered` | ALSA devices (shared with Brilliant). Mic choices: `default`, `dsnoop_filtered`, `plug_dsnoop_48000` (§2.9) |
 
 ### Intercom (optional)
 
