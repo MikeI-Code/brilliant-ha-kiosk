@@ -35,7 +35,7 @@ These changes will be part of the next stable release.
   and the sun (dawn, day, dusk, night), with rain, snow, drifting clouds, fog, wind-blown leaves,
   stars, the sun or the moon, and lightning flashes. Drag a finger across it to blow the rain
   or snow aside; waking the screen gives a short flourish. `WEATHER_FX=off|sky|full` in
-  `kiosk.env` (default `full`; `sky` keeps the colours without motion).
+  `kiosk.env` (default `sky`, which keeps the colours without motion; `full` is opt-in).
 - **Tap a day in the weather forecast** to expand its day and night detail in place: condition,
   high/low, rain chance and amount, wind, humidity, UV, and the written forecast where the
   integration provides one (NWS does). Tap again to collapse.
@@ -48,8 +48,24 @@ These changes will be part of the next stable release.
 - Works with weather integrations that have no daily forecast (such as the National Weather
   Service): the daily view is built from the day/night forecast.
 
+### Changed
+
+- `WEATHER_FX` now defaults to `sky` when `kiosk.env` does not set it (it was `full`, which costs
+  about one CPU core in bad weather and heats the panel). `full` stays available: set
+  `WEATHER_FX=full`.
+
 ### Fixed
 
+- Disabling, uninstalling or purging the kiosk now withdraws the retained Home Assistant MQTT
+  discovery configs it published, so its entities no longer linger as unavailable. The services
+  (bridge, voice, intercom, capture) record each config topic in
+  `/var/lib/ha-kiosk/mqtt-discovery-topics`; `ha-kiosk-setup` clears exactly those, whatever the
+  mode, features or `MQTT_DISCOVERY_PREFIX`, and never entities of another integration in
+  `KIOSK_MQTT=kiosk` mode.
+- Every Python reader of `kiosk.env` and `overrides.env` now uses the rules of `ha-kiosk-setup`
+  (new shared `ha-kiosk-common.py`). The bridge's security settings and photo sync and the ambient
+  script used simpler parsers that cut values at `#` or kept unsafe lines; a value like
+  `SECURITY_DEVICES` or an `HA_URL` with a `#` is now read as written.
 - **Home Assistant integration, review round 5** (library `pybrilliantkiosk` 0.1.2): a timed-out SSH
   command no longer leaves its process (and the setup lock) running on the panel; updates and
   `install_version` refuse a panel without the kiosk; the actions are for administrators only and

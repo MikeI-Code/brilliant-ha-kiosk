@@ -23,6 +23,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, "/etc/ha-kiosk")
 from brilliant_bus import Bus  # noqa: E402
 
+
+def _load_common():
+    """ha-kiosk-common.py (shared env parsing), installed flat next to this file."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+common = _load_common()
+
 LOAD = os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0")
 PORT = int(os.environ.get("BRIDGE_PORT", "8765"))
 
@@ -201,15 +214,7 @@ ALARM_MODES = {0: "unknown", 1: "disarmed", 2: "armed_home", 3: "armed_away", 4:
 def read_kiosk_env():
     """This panel's settings: kiosk.env, then overrides.env, then the process environment
     (each file read in order, so the last assignment wins, like systemd)."""
-    env = {}
-    for path in ("/etc/ha-kiosk/kiosk.env", "/var/lib/ha-kiosk/overrides.env"):
-        try:
-            for line in open(path, encoding="utf-8"):
-                if "=" in line and not line.lstrip().startswith("#"):
-                    k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip().strip('"')
-        except OSError:
-            pass
+    env = common.read_settings()
     for k in ("SECURITY_ACCESS", "SECURITY_DEVICES"):
         if k not in env and k in os.environ:
             env[k] = os.environ[k]
@@ -607,7 +612,7 @@ def start_mqtt():
     spec = importlib.util.spec_from_file_location("ha_kiosk_mqtt", "/etc/ha-kiosk/ha-kiosk-mqtt.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    env = {**mod.read_env("/etc/ha-kiosk/kiosk.env"), **mod.read_env(mod.OVERRIDES)}
+    env = {**common.read_env("/etc/ha-kiosk/kiosk.env"), **common.read_env(mod.OVERRIDES)}
     if env.get("KIOSK_MQTT", "1").strip().lower() in ("0", "off", "false", "no"):
         print("bridge: MQTT off (KIOSK_MQTT=0; another tool publishes this panel)", flush=True)
         return
@@ -627,15 +632,7 @@ def start_photo_sync():
     spec = importlib.util.spec_from_file_location("ha_kiosk_photos", "/etc/ha-kiosk/ha-kiosk-photos.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    env = {}
-    for path in ("/etc/ha-kiosk/kiosk.env", "/var/lib/ha-kiosk/overrides.env"):
-        try:
-            for line in open(path, encoding="utf-8"):
-                if "=" in line and not line.lstrip().startswith("#"):
-                    k, v = line.split("=", 1)
-                    env[k.strip()] = v.strip().strip('"')
-        except OSError:
-            pass
+    env = common.read_settings()
     if env.get("PHOTO_SYNC_MINS", "30") in ("0", "off"):
         print("bridge: HA photo sync off", flush=True)
         return

@@ -33,6 +33,17 @@ import time
 
 import paho.mqtt.client as mqtt
 
+
+def _load_common():
+    """ha-kiosk-common.py (shared env parsing, discovery topic record), installed flat next to this file."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 STATE_DIR = "/run/ha-kiosk-display"
 SHADOW = "/run/ha-kiosk-shadow"
 OVERRIDES = "/var/lib/ha-kiosk/overrides.env"
@@ -85,41 +96,12 @@ def read(path, default=""):
         return default
 
 
-# The value rule is the one of BAD_VALUE in ha-kiosk-setup (which also rejects a single quote).
-BAD_VALUE = re.compile(r"[\"'`$\\\x00-\x1f\x7f]")
-MAX_VALUE_LEN = 1024
-
-
-def parse_env(text):
-    """kiosk.env / overrides.env text -> ({KEY: value}, [keys of rejected lines]).
-
-    The rules of parse_env in ha-kiosk-setup, line by line, so both read a file the same way: a
-    line is ``KEY=value`` (no spaces around the ``=``), one pair of matching quotes around the value
-    is removed, and ``#`` is an ordinary character inside a value (it only starts a comment at the
-    beginning of a line, as in the shell that sources these files). A value the setup tool would
-    reject (quotes, backtick, ``$``, backslash, control characters, over 1024 characters) rejects
-    its line; the last good assignment of a key wins. Unlike the tool this does not check key names.
-    """
-    out, rejected = {}, []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        m = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
-        if not m:
-            continue
-        key, val = m.group(1), m.group(2).strip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-            val = val[1:-1]
-        if BAD_VALUE.search(val) or len(val) > MAX_VALUE_LEN:
-            rejected.append(key)
-            continue
-        out[key] = val
-    return out, rejected
-
-
-def read_env(path):
-    return parse_env(read(path))[0]
+# Settings are read by the rules of ha-kiosk-setup's parse_env, shared with every other reader.
+common = _load_common()
+BAD_VALUE, MAX_VALUE_LEN = common.BAD_VALUE, common.MAX_VALUE_LEN
+parse_env, read_env = common.parse_env, common.read_env
+# Retained discovery configs this panel published, so ha-kiosk-setup can withdraw them (see below).
+topics = common.DiscoveryTopics()
 
 
 def discovery_payload(state, host, device_id, room):
@@ -193,7 +175,9 @@ class KioskMqtt:
         payload = {"unique_id": f"{self.node}_{key}", "object_id": f"{self.node}_{key}",
                    "availability_topic": f"{self.base}/availability", "device": self._device()}
         payload.update(extra)
-        self.c.publish(f"{self.disc}/{component}/{self.node}/{key}/config", json.dumps(payload), retain=True)
+        topic = f"{self.disc}/{component}/{self.node}/{key}/config"
+        topics.add(topic)               # recorded first: ha-kiosk-setup withdraws it on uninstall
+        self.c.publish(topic, json.dumps(payload), retain=True)
 
     # Entities another integration owns in KIOSK_MQTT=kiosk mode (component, key prefix).
     PANEL_OWNED = (("light", "load"), ("sensor", "load_power"), ("sensor", "load_temperature"),
@@ -209,7 +193,9 @@ class KioskMqtt:
             for n in self.gangboxes or [0]:
                 k = key + (gb_suffix(n)[0] if key in ("load_power", "load_temperature", "min_dim_level",
                                                       "max_dim_level", "dimming_edge", "dim_calibration") else "")
-                self.c.publish(f"{self.disc}/{comp}/{self.node}/{k}/config", "", retain=True)
+                topic = f"{self.disc}/{comp}/{self.node}/{k}/config"
+                self.c.publish(topic, "", retain=True)
+                topics.discard(topic)   # the other integration owns it now: never withdraw it again
 
     def publish_discovery(self):
         b = self.base

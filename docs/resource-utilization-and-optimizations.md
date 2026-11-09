@@ -80,8 +80,8 @@ shader work on a GPU that is already the UI's bottleneck:
 | `sky` | The same gradient and sun/moon colours, no motion | **about 4 %** | about 4 % |
 | `off` | Flat background | 0 | 0 |
 
-The code's default when the key is absent is `full` (`Sky.qml`); `config/kiosk.env.example` ships
-`WEATHER_FX=sky`, which is the recommended setting until the effects are cheaper. `full` is for
+The code's default when the key is absent is `sky` (`Sky.qml`; it was `full` until 2026-11-09) and
+`config/kiosk.env.example` ships `WEATHER_FX=sky` too. `full` is opt-in, for
 panels where the look matters more than headroom; it also raises the CPU temperature and, with
 `CPU_AWAKE_GOV=performance`, keeps the cores at 996 MHz for as long as the screen is awake. The
 screensaver and sleep states are unaffected (the Home tab is not drawn).

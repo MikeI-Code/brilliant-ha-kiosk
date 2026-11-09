@@ -43,6 +43,20 @@ import alsaaudio
 sys.path.insert(0, "/etc/ha-kiosk")
 
 ENV = os.environ
+_TOPICS = None
+
+
+def _topics():
+    """The shared record of published discovery configs (ha-kiosk-common.py, next to this file)."""
+    global _TOPICS
+    if _TOPICS is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _TOPICS = mod.DiscoveryTopics()
+    return _TOPICS
 RATE = 16000
 FRAME = 320                       # samples per packet (20 ms)
 PKT = FRAME * 2                   # bytes of PCM per packet
@@ -282,8 +296,10 @@ class IntercomMqtt:
                    "device": {"identifiers": [n], "name": f"{self.ic.room} Brilliant panel",
                               "manufacturer": "Brilliant", "model": "Brilliant Control (HA kiosk)"}}
         payload.update(extra or {})
-        self.c.publish(f"{self.disc}/{component}/{n}/{key}/config",
-                       json.dumps(payload) if extra is not None else "", retain=True)
+        topic = f"{self.disc}/{component}/{n}/{key}/config"
+        if extra is not None:           # an empty payload withdraws; only what we publish is recorded
+            _topics().add(topic)        # recorded first: ha-kiosk-setup withdraws it on uninstall
+        self.c.publish(topic, json.dumps(payload) if extra is not None else "", retain=True)
 
     def publish_entities(self):
         b = f"{self.base}/intercom"

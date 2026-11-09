@@ -409,11 +409,22 @@ the stock UI had to be restored (exit 6), not after a rollback (exit 5). The int
 manifest subscribes to `brilliant_kiosk/+/kiosk_state` and `brilliant_kiosk/+/discovery` and
 starts a discovery flow only for `state = active`.
 
-**Not withdrawn.** Neither the bridge nor the tool clears the retained
-`<prefix>/<component>/<node>/<key>/config` topics on `disable`, `uninstall` or `purge`; the
-entities stay in Home Assistant as unavailable until the operator removes the MQTT device or
-clears the retained topics. Switching to `KIOSK_MQTT=kiosk` is the only case where discovery is
-withdrawn (panel rows).
+**Withdrawal of discovery configs.** Every service that publishes discovery (the bridge's MQTT
+module, `ha-kiosk-voice.py`, `ha-kiosk-intercom.py`, `ha-kiosk-capture.py`) records each
+`<prefix>/<component>/<node>/<key>/config` topic it publishes, before publishing it, in
+`/var/lib/ha-kiosk/mqtt-discovery-topics` (one topic per line, a union over every run and every
+service; written atomically under a lock by the shared `ha-kiosk-common.py`). So the record follows
+the mode, the features and `MQTT_DISCOVERY_PREFIX` of the panel as they were when it published.
+On `disable`, `uninstall` and `purge` the tool, on the same connection as the notices above,
+publishes an empty retained payload on exactly the recorded topics (lines that are not
+`<prefix>/<component>/<node>/<key>/config`, or that hold a wildcard, are ignored) and then deletes
+the record; `enable` publishes and records them again. Not touched: a `failed` notice withdraws
+nothing, and a broker that is down leaves the record (best effort, as above). In `KIOSK_MQTT=kiosk`
+mode only the kiosk's own entities are ever recorded, and the panel entities withdrawn on connect
+are removed from the record, so the other integration's entities are never withdrawn by the tool.
+A service that is switched off while the kiosk stays installed (for example `KIOSK_VOICE=0`) keeps
+its recorded topics until the next `disable`, `uninstall` or `purge`. `install-local.sh
+--uninstall` run on its own has no MQTT client and withdraws nothing.
 
 ### 0.12 Display control
 
@@ -787,8 +798,8 @@ token and the panel's MQTT credentials after uninstall. The `uninstall`/`purge` 
 
 Turning the kiosk off in an integration maps to `uninstall`. `disable` is for temporary hand-back.
 
-* **Current state (0.3, 0.11):** `disable` keeps releases, settings and token and publishes
-  `kiosk_state=disabled` + `availability=offline`; `rollback` swaps `current` and `previous`
+* **Current state (0.3, 0.11):** `disable` keeps releases, settings and token, publishes
+  `kiosk_state=disabled` + `availability=offline` and withdraws the retained discovery configs; `rollback` swaps `current` and `previous`
   (`previous` is not nulled); `uninstall` deletes every secret and verifies that, keeps
   `overrides.env` and own photos in `/var/lib/ha-kiosk-keep` but **not** `layout.json`; `purge`
   removes the keep directory too; `install-local.sh --uninstall --purge` removes units, drop-in,

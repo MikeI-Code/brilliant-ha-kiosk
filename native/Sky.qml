@@ -3,7 +3,7 @@
 // condition and the sun phase; one 3 s cross-fade when it changes. Particles
 // (rain/snow/lightning) live in WeatherFx.qml behind a Loader so a missing
 // QtQuick.Particles module only drops the motion, never the sky.
-// kiosk.env: WEATHER_FX=off | sky | full (default full while in beta).
+// kiosk.env: WEATHER_FX=off | sky | full (default sky; full is opt-in, ~1 CPU core in bad weather).
 import QtQuick 2.15
 import "."
 
@@ -18,7 +18,7 @@ Item {
     signal tapped()
     readonly property string mode: {
         var m = /^\s*WEATHER_FX\s*=\s*"?(off|sky|full)/mi.exec(Ha.readFile("/etc/ha-kiosk/kiosk.env"));
-        return m ? m[1].toLowerCase() : "full";
+        return m ? m[1].toLowerCase() : "sky";
     }
     visible: mode !== "off"
 

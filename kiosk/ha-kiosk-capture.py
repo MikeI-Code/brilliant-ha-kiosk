@@ -41,6 +41,20 @@ from socketserver import ThreadingMixIn
 sys.path.insert(0, "/etc/ha-kiosk")
 
 ENV = os.environ
+_TOPICS = None
+
+
+def _topics():
+    """The shared record of published discovery configs (ha-kiosk-common.py, next to this file)."""
+    global _TOPICS
+    if _TOPICS is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _TOPICS = mod.DiscoveryTopics()
+    return _TOPICS
 RATE, CHUNK = 16000, 1024                      # 16 kHz mono S16_LE, 64 ms chunks
 PORT = int(ENV.get("CAPTURE_PORT", "10720"))
 _DENY = ("0", "off", "false", "no")
@@ -545,7 +559,9 @@ class CaptureMqtt:
                    "device": {"identifiers": [self.node], "name": f"{self.room} Brilliant panel",
                               "manufacturer": "Brilliant", "model": "Brilliant Control (HA kiosk)"}}
         payload.update(extra)
-        self.c.publish(f"{self.disc}/{component}/{self.node}/{key}/config", json.dumps(payload), retain=True)
+        topic = f"{self.disc}/{component}/{self.node}/{key}/config"
+        _topics().add(topic)            # recorded first: ha-kiosk-setup withdraws it on uninstall
+        self.c.publish(topic, json.dumps(payload), retain=True)
 
     def _on_connect(self, client, userdata, flags, reason, props=None):
         if reason.is_failure:

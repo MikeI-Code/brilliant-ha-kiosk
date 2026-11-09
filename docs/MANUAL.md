@@ -878,7 +878,7 @@ file is `/etc/ha-kiosk/kiosk.env`, with the saved copy `ha-kiosk-setup` rebuilds
 | `HA_ZOOM` | `2.0` | number | Web mode only: page zoom. 2.0 makes the 720x1280 screen behave like a 360x640 phone. |
 | `TZ` | `EST5EDT,M3.2.0,M11.1.0` | POSIX TZ string | Time zone of the UI clock (the panel runs in UTC). |
 | `TZ_LOCAL` | `EST5EDT,M3.2.0,M11.1.0` | POSIX TZ string | Time zone of the display schedule (`SLEEP_START` / `SLEEP_END`). Set both the same. |
-| `WEATHER_FX` | `full` | `off`, `sky`, `full` | Animated sky behind the clock on Home (beta). `sky` = still sky that follows the weather and sun, about 4 % CPU. `full` adds rain, snow, clouds, fog, leaves and lightning and costs about one CPU core in bad weather, so the panel runs warm. **`sky` is recommended** (the example file sets it). |
+| `WEATHER_FX` | `sky` | `off`, `sky`, `full` | Animated sky behind the clock on Home (beta). `sky` = still sky that follows the weather and sun, about 4 % CPU. `full` adds rain, snow, clouds, fog, leaves and lightning and costs about one CPU core in bad weather, so the panel runs warm. `sky` is the default (and what the example file sets); `full` is opt-in. |
 | `CLIMATE_CONTROLLER` | (empty) | climate entity | A climate entity that drives your thermostats, such as a Flair "structure". Thermostat tiles then send mode and setpoint to it and only the fan to the thermostat. Empty = every tile controls its own entity. |
 | `CLIMATE_THERMOSTATS` | auto (those with fan modes) | comma-separated climate entities | Which climate entities count as thermostats for `CLIMATE_CONTROLLER`. |
 | `SECURITY_TAB` | `1` | `1`, `0` | `0` hides the Security tab on this panel. |
@@ -1143,7 +1143,11 @@ scripts/uninstall.sh panel1 --purge    # also delete all kiosk files, settings, 
 
 On the panel, `ha-kiosk-setup uninstall` removes the code and every secret and keeps photos and
 preferences; `ha-kiosk-setup purge` removes those too. Revoke the Home Assistant token and the
-MQTT login if the panel leaves your home. Deleting a panel in the Home Assistant integration does
+MQTT login if the panel leaves your home. `disable`, `uninstall` and `purge` also remove the
+panel's entities from Home Assistant: they clear every retained MQTT discovery config the kiosk
+published (the kiosk records them in `/var/lib/ha-kiosk/mqtt-discovery-topics`; see
+[INTEGRATION.md section 0.11](INTEGRATION.md#011-mqtt)), provided the MQTT broker is reachable. In
+`KIOSK_MQTT=kiosk` mode only the kiosk's own entities are removed. Deleting a panel in the Home Assistant integration does
 not uninstall the kiosk.
 
 ### Security notes
@@ -1179,7 +1183,7 @@ not uninstall the kiosk.
 | Panel doesn't appear in Home Assistant (MQTT) | Check `MQTT_HOST`, `MQTT_USER`, `MQTT_PASSWORD`. `journalctl -u ha-kiosk-bridge` shows `mqtt: connected` or the error. Home Assistant's MQTT integration must be set up. |
 | Duplicate entities for the wired light | brilliant-mqtt and the kiosk's built-in MQTT are both publishing. Set `KIOSK_MQTT=kiosk` and `MQTT_DEVICE_ID`, or stop brilliant-mqtt. |
 | A Home Assistant switch (screensaver, night, ...) "doesn't stick" | It is saved in `/var/lib/ha-kiosk/overrides.env` and wins over `kiosk.env`. Delete that file to go back to `kiosk.env`, or use the integration's `set_env`, which purges the override for keys it sets. |
-| The panel runs **warm** or the UI stutters | `WEATHER_FX=full` costs about one CPU core in bad weather. Set `WEATHER_FX=sky`. |
+| The panel runs **warm** or the UI stutters | `WEATHER_FX=full` (opt-in) costs about one CPU core in bad weather. Set `WEATHER_FX=sky` (the default). |
 | **Voice**: Home Assistant can't add the Wyoming device | `systemctl status ha-kiosk-voice` on the panel; is `KIOSK_VOICE=1` and `ALLOW_MIC` not `0`? The log shows `Wyoming satellite on <ip>:10700, accepting <HA ip>`. If Home Assistant connects from another address (a Docker host), set `VOICE_ALLOW`. |
 | **Voice**: Talk ends at once with `stt-stream-failed` | The pipeline's speech-to-text does not work (for example no Home Assistant Cloud subscription). Pick another engine in *Settings, Voice assistants*. |
 | **Intercom**: no microphone button | Needs `KIOSK_INTERCOM=1` **and** `INTERCOM_MIC=1` on this panel, MQTT, and another intercom panel online in the same group. `journalctl -u ha-kiosk-intercom` lists `peers: ...`. |

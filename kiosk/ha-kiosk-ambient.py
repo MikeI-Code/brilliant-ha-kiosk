@@ -21,16 +21,19 @@ import sys
 import urllib.request
 
 
+def _common():
+    """ha-kiosk-common.py (shared env parsing), installed flat next to this file."""
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def env(path="/etc/ha-kiosk/kiosk.env"):
-    out = {}
-    try:
-        for line in open(path, encoding="utf-8"):
-            m = re.match(r'\s*([A-Z_][A-Z0-9_]*)\s*=\s*"?([^"\n#]*)"?', line)
-            if m:
-                out[m.group(1)] = m.group(2).strip()
-    except OSError:
-        pass
-    return out
+    return _common().read_env(path)
 
 
 def main():

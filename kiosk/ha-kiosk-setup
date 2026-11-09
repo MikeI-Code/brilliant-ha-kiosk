@@ -44,6 +44,7 @@ CFG = f"{VAR}/config"
 KEEP = "/var/lib/ha-kiosk-keep"          # non-secret preferences kept by `uninstall`
 ETC = "/etc/ha-kiosk"
 HEARTBEAT = "/run/ha-kiosk/heartbeat.json"
+DISCOVERY_TOPICS = f"{VAR}/mqtt-discovery-topics"   # written by the services that publish discovery
 LOCK = "/run/ha-kiosk-setup.lock"
 LOG = f"{VAR}/setup.log"
 RESULT = "/run/ha-kiosk/setup-result.json"
@@ -188,11 +189,37 @@ def discovery_payload(state, host, device_id, room):
     return json.dumps(data, sort_keys=True)
 
 
+def recorded_discovery_topics():
+    """The retained discovery config topics the kiosk's services recorded (see ha-kiosk-common.py).
+
+    Only topics that look like ``<prefix>/<component>/<node>/<key>/config`` are returned: no
+    wildcards, blanks or empty levels, so a damaged file cannot make this publish anywhere else.
+    """
+    out = set()
+    try:
+        with open(DISCOVERY_TOPICS, encoding="utf-8") as f:
+            for line in f:
+                t = line.strip()
+                if (re.fullmatch(r"[^\s#+\x00-\x1f\x7f]+/config", t) and t.count("/") >= 4
+                        and "//" not in t):
+                    out.add(t)
+    except (OSError, UnicodeDecodeError):
+        pass
+    return sorted(out)
+
+
 def mqtt_state(state):
-    """Tell other integrations (retained <base>/kiosk_state) when the kiosk stops publishing."""
+    """Tell other integrations (retained <base>/kiosk_state) when the kiosk stops publishing.
+
+    On disable, uninstall and purge it also withdraws every retained discovery config the kiosk
+    published (an empty retained payload on each recorded topic), so Home Assistant drops the
+    entities instead of keeping them as unavailable. Only recorded topics are touched: in
+    KIOSK_MQTT=kiosk mode that is the kiosk's own entities, never the other integration's.
+    """
     base = read(f"{VAR}/mqtt_base")
     env, _ = parse_env(read(f"{CFG}/kiosk.env"))
-    if not base or not env.get("MQTT_HOST"):
+    withdraw = recorded_discovery_topics() if state in ("not_installed", "disabled") else []
+    if not env.get("MQTT_HOST") or not (base or withdraw):
         return
     try:
         import paho.mqtt.client as mqtt
@@ -201,14 +228,24 @@ def mqtt_state(state):
             c.username_pw_set(env["MQTT_USER"], env.get("MQTT_PASSWORD", ""))
         c.connect(env["MQTT_HOST"], int(env.get("MQTT_PORT") or 1883), 10)
         c.loop_start()
-        c.publish(f"{base}/kiosk_state", state, retain=True).wait_for_publish(5)
-        node = base.rsplit("/", 1)[-1]          # brilliant_<first 12 of the Brilliant device id>
-        if node.startswith("brilliant_"):       # the address and room are not known here
-            c.publish(f"{base}/discovery",
-                      discovery_payload(state, None, node[len("brilliant_"):], None),
-                      retain=True).wait_for_publish(5)
-        if state in ("not_installed", "disabled"):
-            c.publish(f"{base}/availability", "offline", retain=True).wait_for_publish(5)
+        if base:
+            c.publish(f"{base}/kiosk_state", state, retain=True).wait_for_publish(5)
+            node = base.rsplit("/", 1)[-1]      # brilliant_<first 12 of the Brilliant device id>
+            if node.startswith("brilliant_"):   # the address and room are not known here
+                c.publish(f"{base}/discovery",
+                          discovery_payload(state, None, node[len("brilliant_"):], None),
+                          retain=True).wait_for_publish(5)
+            if state in ("not_installed", "disabled"):
+                c.publish(f"{base}/availability", "offline", retain=True).wait_for_publish(5)
+        for topic in withdraw:
+            c.publish(topic, "", retain=True).wait_for_publish(5)
+        if withdraw:
+            for path in (DISCOVERY_TOPICS, DISCOVERY_TOPICS + ".lock"):
+                try:
+                    os.remove(path)             # `enable` publishes (and records) them again
+                except OSError:
+                    pass
+            log(f"withdrew {len(withdraw)} retained Home Assistant discovery config(s)")
         c.loop_stop()
         c.disconnect()
     except Exception as e:                 # best effort: never block an uninstall on the broker
