@@ -313,6 +313,12 @@ active subscription; without one, use local add-ons such as Whisper or Speech-to
   This needs a wake-word engine in HA (for example the openWakeWord add-on, set as the pipeline's
   wake word), and it sends room audio over the LAN continuously.
 
+**Microphone.** The far-field mics are ALSA card 2 (16 kHz, two nearly identical channels), shared
+through Brilliant's `dsnoop`, so the satellite runs alongside Brilliant's own listener. Measured on a
+panel in a quiet room: about −88 dBFS between words, normal speech across the room around −60 to
+−75 dBFS. That is enough contrast for speech-to-text, but quiet, so it needs about +30 dB of gain.
+`VOICE_MIC=default` gets that from Brilliant's capture chain (DC removal and a 30× amplifier).
+
 **Speaker and echo.** Replies and announcements play through Brilliant's shared `dmix_filtered`
 output. That output follows Brilliant's volume and has a 600 Hz high-pass filter, so it sounds thin,
 and music isn't the goal. There is no echo cancellation: the panel stops sending the microphone
