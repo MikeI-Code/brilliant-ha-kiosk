@@ -1,0 +1,26 @@
+# Weekly update pull requests for what CI runs and what the tests install.
+#
+# GitHub Actions are pinned to full commit SHAs with a "# vX.Y.Z" comment (see .github/workflows);
+# Dependabot rewrites both together. hassfest and hacs/action have no releases to follow: their
+# SHAs are branch heads (see the comments in integration.yml) and are bumped by hand.
+#
+# requirements_test.txt pins pytest-homeassistant-custom-component, whose release fixes the Home
+# Assistant version (hacs.json, quality_scale.yaml and this file's neighbours move with it), so a
+# bump there is reviewed, not merged blindly.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, github-actions]
+  - package-ecosystem: pip
+    directory: /lib/pybrilliantkiosk
+    schedule:
+      interval: weekly
+    labels: [dependencies, python]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels: [dependencies, python]
