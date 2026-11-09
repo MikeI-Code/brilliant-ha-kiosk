@@ -1,5 +1,11 @@
 # CI for the Home Assistant integration (custom_components/brilliant_kiosk) and its library
-# (lib/pybrilliantkiosk): ruff, mypy --strict, both pytest suites, hassfest and HACS validation.
+# (lib/pybrilliantkiosk): ruff (lint and format), mypy --strict, both pytest suites at 100 %
+# coverage, hassfest and HACS validation.
+#
+# Versions: the integration job installs requirements_test.txt, which pins
+# pytest-homeassistant-custom-component to the exact release for Home Assistant 2026.3.1. That is
+# also the minimum in hacs.json (2026.3 is the first release with local brand images), and it needs
+# Python 3.14. Raise all of them together.
 #
 # Strict typing: Home Assistant core registers strict modules in its own `.strict-typing` file,
 # which does not exist for custom integrations. The equivalent here is `mypy --strict` over the
@@ -12,7 +18,11 @@ on:
       - "custom_components/**"
       - "lib/pybrilliantkiosk/**"
       - "tests/**"
+      - "kiosk/**"
+      - "config/kiosk.env.example"
+      - "native/**"
       - "pyproject.toml"
+      - "requirements_test.txt"
       - "hacs.json"
       - ".github/workflows/integration.yml"
   pull_request:
@@ -20,7 +30,11 @@ on:
       - "custom_components/**"
       - "lib/pybrilliantkiosk/**"
       - "tests/**"
+      - "kiosk/**"
+      - "config/kiosk.env.example"
+      - "native/**"
       - "pyproject.toml"
+      - "requirements_test.txt"
       - "hacs.json"
       - ".github/workflows/integration.yml"
   schedule:
@@ -33,22 +47,29 @@ concurrency:
   cancel-in-progress: true
 jobs:
   library:
-    name: Library (pybrilliantkiosk)
+    name: Library (pybrilliantkiosk, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: lib/pybrilliantkiosk/pyproject.toml
-      - run: pip install -e "lib/pybrilliantkiosk[dev]"
+      # ruff and mypy: the same pins as requirements_test.txt, so both jobs format alike.
+      - run: pip install -e "lib/pybrilliantkiosk[dev]" ruff==0.17.4 mypy==2.4.1
       - name: Ruff
         run: ruff check lib/pybrilliantkiosk
+      - name: Ruff format
+        run: ruff format --check lib/pybrilliantkiosk
       - name: Mypy --strict
         working-directory: lib/pybrilliantkiosk
         run: mypy --strict src
-      - name: Tests (coverage gate in pyproject.toml, 95 %)
+      - name: Tests (coverage gate in pyproject.toml, 100 %)
         working-directory: lib/pybrilliantkiosk
         run: python -m pytest -q -p no:homeassistant
 
@@ -59,17 +80,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
           cache: pip
-          cache-dependency-path: pyproject.toml
-      - run: |
-          pip install pytest-homeassistant-custom-component ruff mypy
-          pip install -e lib/pybrilliantkiosk
+          cache-dependency-path: |
+            requirements_test.txt
+            lib/pybrilliantkiosk/pyproject.toml
+      - run: pip install -r requirements_test.txt
       - name: Ruff
         run: ruff check custom_components tests lib/pybrilliantkiosk
+      - name: Ruff format
+        run: ruff format --check custom_components tests lib/pybrilliantkiosk
       - name: Mypy --strict
         run: mypy --strict custom_components/brilliant_kiosk
-      - name: Tests (coverage gate in pyproject.toml, 95 %)
+      - name: Tests (coverage gate in pyproject.toml, 100 %)
         run: python -m pytest tests -q
 
   hassfest:
