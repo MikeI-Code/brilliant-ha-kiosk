@@ -1,0 +1,48 @@
+# Build and publish pybrilliantkiosk to PyPI from a tag, with PyPI trusted publishing (OIDC):
+# no API token is stored in the repository. Tag format: pybrilliantkiosk-vX.Y.Z (must match
+# lib/pybrilliantkiosk/pyproject.toml). One-time setup on PyPI: project pybrilliantkiosk →
+# Publishing → add a GitHub publisher: owner MikeI-Code, repo brilliant-ha-kiosk,
+# workflow publish-lib.yml, environment pypi.
+name: Publish pybrilliantkiosk
+
+on:
+  push:
+    tags: ["pybrilliantkiosk-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check the tag matches the package version
+        run: |
+          tag="${GITHUB_REF_NAME#pybrilliantkiosk-v}"
+          version="$(grep -m1 '^version = ' lib/pybrilliantkiosk/pyproject.toml | cut -d'"' -f2)"
+          test "$tag" = "$version" || { echo "tag $tag != pyproject version $version"; exit 1; }
+      - name: Test
+        working-directory: lib/pybrilliantkiosk
+        run: uv run --python 3.14 --with-editable '.[dev]' pytest -q
+      - name: Build
+        working-directory: lib/pybrilliantkiosk
+        run: uv build && uvx twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: lib/pybrilliantkiosk/dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
