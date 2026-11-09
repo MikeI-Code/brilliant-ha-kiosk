@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import (
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -30,6 +32,7 @@ from homeassistant.helpers.service_info.mqtt import MqttServiceInfo
 from pybrilliantkiosk import (
     AuthFailed,
     CannotConnect,
+    HostKeyInfo,
     HostKeyMismatch,
     InvalidArgument,
     Panel,
@@ -37,11 +40,13 @@ from pybrilliantkiosk import (
     Releases,
     SettingsRejected,
     SetupError,
+    fetch_host_key,
     kiosk_env_from_bundle,
 )
 
 from . import BrilliantKioskConfigEntry
 from .const import (
+    CONF_EXPECTED_FINGERPRINT,
     CONF_HA_URL,
     CONF_HOST_KEY,
     CONF_INSTALL,
@@ -65,6 +70,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 _DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +87,11 @@ class Probe:
 async def probe_panel(
     host: str, username: str, password: str, host_key: str | None = None
 ) -> Probe:
-    """Connect, read the state of the panel and close again. Raises library errors."""
+    """Connect, read the state of the panel and close again. Raises library errors.
+
+    Always pass ``host_key`` once the user confirmed it: the password is then only sent to a
+    panel presenting that key.
+    """
     panel = Panel(host, username=username, password=password, host_key=host_key)
     try:
         fingerprint = await panel.connect()
@@ -113,6 +123,20 @@ def _error_key(err: Exception) -> str:
     return "unknown"
 
 
+def _install_error(err: Exception) -> tuple[str, str]:
+    """(error key, text) for a failed install."""
+    if isinstance(err, InvalidArgument):
+        return "invalid_value", str(err)
+    if isinstance(err, SettingsRejected):
+        return "settings_rejected", str(err)
+    if isinstance(err, SetupError):
+        return "install_failed", str(err)
+    if isinstance(err, PanelError):
+        return _error_key(err), str(err)
+    _LOGGER.error("Unexpected error installing the kiosk", exc_info=err)
+    return "unknown", ""
+
+
 def _provider_of(settings: Mapping[str, str]) -> str:
     return (
         PROVIDER_BRILLIANT_MQTT
@@ -136,7 +160,11 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialise."""
         self._data: dict[str, Any] = {}
-        self._probe: Probe | None = None
+        self._user_input: dict[str, Any] = {}
+        self._host_info: HostKeyInfo | None = None
+        self._install_input: dict[str, Any] = {}
+        self._install_task: asyncio.Task[None] | None = None
+        self._install_error: tuple[str, str] = ("unknown", "")
 
     # -- discovery ----------------------------------------------------------------------
 
@@ -150,46 +178,97 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"name": parts[1]}
         return await self.async_step_user()
 
-    # -- user ---------------------------------------------------------------------------
+    # -- user: address, credentials, host key (trust on first use) -----------------------
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Ask for the panel's address and SSH credentials."""
+        """Ask for the panel's address and SSH credentials.
+
+        The host key is read first, without sending any credential; the password is only used
+        after the key was confirmed (or matched the fingerprint pasted here).
+        """
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                probe = await probe_panel(
-                    user_input[CONF_HOST], user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
-                )
+                info = await fetch_host_key(user_input[CONF_HOST])
             except PanelError as err:
                 errors["base"] = _error_key(err)
             except Exception:
-                _LOGGER.exception("Unexpected error connecting to %s", user_input[CONF_HOST])
+                _LOGGER.exception("Unexpected error reading the host key of the panel")
                 errors["base"] = "unknown"
             else:
-                await self.async_set_unique_id(probe.unique_id)
-                self._abort_if_unique_id_configured(updates={CONF_HOST: user_input[CONF_HOST]})
-                self._probe = probe
-                self._data = {
-                    **user_input,
-                    CONF_HOST_KEY: probe.fingerprint,
-                    CONF_NODE: probe.node,
-                }
-                if not probe.installed:
-                    return await self.async_step_install()
-                return self._create_entry(probe.settings)
+                expected = (user_input.get(CONF_EXPECTED_FINGERPRINT) or "").strip()
+                if expected and not info.matches(expected):
+                    errors["base"] = "host_key_mismatch"
+                else:
+                    self._user_input = user_input
+                    self._host_info = info
+                    if expected:  # verified up front: nothing left to confirm
+                        return await self._async_connect()
+                    return await self.async_step_host_key()
+        return self._show_user_form(user_input, errors)
+
+    def _show_user_form(
+        self, previous: Mapping[str, Any] | None, errors: dict[str, str]
+    ) -> ConfigFlowResult:
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_HOST): str,
+                vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+                vol.Required(CONF_PASSWORD): _PASSWORD,
+                vol.Optional(CONF_EXPECTED_FINGERPRINT): str,
+            }
+        )
+        suggested = {k: v for k, v in (previous or {}).items() if k != CONF_PASSWORD}
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): str,
-                    vol.Required(CONF_PASSWORD): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    ),
-                }
-            ),
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
             errors=errors,
         )
+
+    async def async_step_host_key(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the host key fingerprint; the password is not used before this is confirmed."""
+        assert self._host_info is not None
+        if user_input is not None:
+            return await self._async_connect()
+        return self.async_show_form(
+            step_id="host_key",
+            data_schema=vol.Schema({}),
+            description_placeholders={
+                "host": self._user_input[CONF_HOST],
+                "fingerprint": self._host_info.sha256,
+            },
+        )
+
+    async def _async_connect(self) -> ConfigFlowResult:
+        """Log in with the confirmed host key pinned, then add the panel or offer an install."""
+        assert self._host_info is not None
+        user_input = self._user_input
+        try:
+            probe = await probe_panel(
+                user_input[CONF_HOST],
+                user_input[CONF_USERNAME],
+                user_input[CONF_PASSWORD],
+                self._host_info.sha256,
+            )
+        except PanelError as err:
+            return self._show_user_form(user_input, {"base": _error_key(err)})
+        except Exception:
+            _LOGGER.exception("Unexpected error connecting to %s", user_input[CONF_HOST])
+            return self._show_user_form(user_input, {"base": "unknown"})
+        await self.async_set_unique_id(probe.unique_id)
+        self._abort_if_unique_id_configured(updates={CONF_HOST: user_input[CONF_HOST]})
+        self._data = {
+            CONF_HOST: user_input[CONF_HOST],
+            CONF_USERNAME: user_input[CONF_USERNAME],
+            CONF_PASSWORD: user_input[CONF_PASSWORD],
+            CONF_HOST_KEY: probe.fingerprint,
+            CONF_NODE: probe.node,
+        }
+        if not probe.installed:
+            return await self.async_step_install()
+        return self._create_entry(probe.settings)
 
     def _create_entry(self, settings: Mapping[str, str]) -> ConfigFlowResult:
         provider = _provider_of(settings)
@@ -203,33 +282,28 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             },
         )
 
-    # -- first install ------------------------------------------------------------------
+    # -- first install (long running: progress step with a background task) -------------
+
+    def _mqtt_broker(self) -> Mapping[str, Any]:
+        broker = next(iter(self.hass.config_entries.async_entries(MQTT_DOMAIN)), None)
+        return broker.data if broker else {}
 
     async def async_step_install(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Offer to install the latest stable kiosk release on a bare panel."""
-        errors: dict[str, str] = {}
-        placeholders = {"error": ""}
         if user_input is not None:
             if not user_input[CONF_INSTALL]:
                 return self._create_entry({})
-            try:
-                await self._install(user_input)
-            except InvalidArgument as err:
-                errors["base"], placeholders["error"] = "invalid_value", str(err)
-            except SettingsRejected as err:
-                errors["base"], placeholders["error"] = "settings_rejected", str(err)
-            except SetupError as err:
-                errors["base"], placeholders["error"] = "install_failed", str(err)
-            except PanelError as err:
-                errors["base"], placeholders["error"] = _error_key(err), str(err)
-            else:
-                return self._create_entry({"KIOSK_MQTT": PANEL_MQTT_FULL})
-        broker = next(iter(self.hass.config_entries.async_entries(MQTT_DOMAIN)), None)
-        mqtt = broker.data if broker else {}
+            self._install_input = user_input
+            self._install_task = self.hass.async_create_task(self._install(user_input))
+            return await self.async_step_installing()
+        return self._show_install_form({}, "")
+
+    def _show_install_form(self, errors: dict[str, str], error_text: str) -> ConfigFlowResult:
+        previous = self._install_input
+        mqtt = self._mqtt_broker()
         text = TextSelector()
-        password = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
         return self.async_show_form(
             step_id="install",
             data_schema=vol.Schema(
@@ -237,17 +311,55 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_INSTALL, default=True): bool,
                     vol.Required(
                         CONF_HA_URL,
-                        default=(user_input or {}).get(CONF_HA_URL) or _internal_url(self.hass),
+                        default=previous.get(CONF_HA_URL) or _internal_url(self.hass),
                     ): text,
-                    vol.Required(CONF_TOKEN): password,
-                    vol.Required(CONF_MQTT_HOST, default=mqtt.get("broker", "")): text,
-                    vol.Optional(CONF_MQTT_USER, default=mqtt.get("username") or ""): text,
-                    vol.Optional(CONF_MQTT_PASSWORD, default=mqtt.get("password") or ""): password,
+                    vol.Required(CONF_TOKEN): _PASSWORD,
+                    vol.Required(
+                        CONF_MQTT_HOST,
+                        default=previous.get(CONF_MQTT_HOST) or mqtt.get("broker", ""),
+                    ): text,
+                    vol.Optional(
+                        CONF_MQTT_USER,
+                        default=previous.get(CONF_MQTT_USER) or mqtt.get("username") or "",
+                    ): text,
+                    # Never pre-filled: a default would put the broker password into the form.
+                    vol.Optional(CONF_MQTT_PASSWORD): _PASSWORD,
                 }
             ),
             errors=errors,
-            description_placeholders=placeholders,
+            description_placeholders={"error": error_text},
         )
+
+    async def async_step_installing(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Progress while the release downloads and ha-kiosk-setup installs it."""
+        task = self._install_task
+        assert task is not None
+        if not task.done():
+            return self.async_show_progress(
+                step_id="installing", progress_action="installing", progress_task=task
+            )
+        self._install_task = None
+        try:
+            await task
+        except Exception as err:
+            self._install_error = _install_error(err)
+            return self.async_show_progress_done(next_step_id="install_failed")
+        return self.async_show_progress_done(next_step_id="install_done")
+
+    async def async_step_install_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Back to the install form with the reason."""
+        key, text = self._install_error
+        return self._show_install_form({"base": key}, text)
+
+    async def async_step_install_done(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """The kiosk is installed with the built-in MQTT mode; add the panel."""
+        return self._create_entry({"KIOSK_MQTT": PANEL_MQTT_FULL})
 
     async def _install(self, user_input: Mapping[str, Any]) -> None:
         """Download the latest stable release and install it with ha-kiosk-setup."""
@@ -261,11 +373,21 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             "KIOSK_MQTT": PANEL_MQTT_FULL,
             "MQTT_HOST": user_input[CONF_MQTT_HOST],
         }
-        if user_input.get(CONF_MQTT_USER):
-            overrides["MQTT_USER"] = user_input[CONF_MQTT_USER]
-        if user_input.get(CONF_MQTT_PASSWORD):
-            overrides["MQTT_PASSWORD"] = user_input[CONF_MQTT_PASSWORD]
-        env = kiosk_env_from_bundle(bundle, overrides)
+        user = user_input.get(CONF_MQTT_USER)
+        if user:
+            overrides["MQTT_USER"] = user
+        password = user_input.get(CONF_MQTT_PASSWORD)
+        broker = self._mqtt_broker()
+        if (
+            not password
+            and user
+            and user == broker.get("username")
+            and user_input[CONF_MQTT_HOST] == broker.get("broker")
+        ):
+            password = broker.get("password")  # reused server-side, never shown in the form
+        if password:
+            overrides["MQTT_PASSWORD"] = password
+        env = await self.hass.async_add_executor_job(kiosk_env_from_bundle, bundle, overrides)
         panel = Panel(
             self._data[CONF_HOST],
             username=self._data[CONF_USERNAME],
@@ -308,13 +430,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_PASSWORD): TextSelector(
-                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
-                    )
-                }
-            ),
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): _PASSWORD}),
             description_placeholders={"host": entry.data[CONF_HOST]},
             errors=errors,
         )
@@ -324,11 +440,15 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Change the panel's address (the pinned host key must still match)."""
+        """Change the panel's address; the host key there must be the pinned one."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
+                info = await fetch_host_key(user_input[CONF_HOST])
+                if not info.matches(entry.data[CONF_HOST_KEY]):
+                    # Never send the password to a host with a different key.
+                    return self.async_abort(reason="host_key_changed")
                 probe = await probe_panel(
                     user_input[CONF_HOST],
                     entry.data[CONF_USERNAME],
@@ -359,12 +479,15 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class BrilliantKioskOptionsFlow(OptionsFlow):
-    """Choose the panel's MQTT provider and whether this integration manages installs."""
+    """Choose the panel's MQTT provider and whether this integration manages installs.
+
+    The flow only validates and stores; the update listener applies the provider on the panel.
+    """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Show and apply the options."""
+        """Show and store the options."""
         entry: BrilliantKioskConfigEntry = self.config_entry
-        if not hasattr(entry, "runtime_data"):
+        if entry.state is not ConfigEntryState.LOADED:
             return self.async_abort(reason="not_loaded")
         errors: dict[str, str] = {}
         options = entry.options
@@ -374,19 +497,14 @@ class BrilliantKioskOptionsFlow(OptionsFlow):
             if provider == PROVIDER_BRILLIANT_MQTT and not _DEVICE_ID_RE.match(device_id):
                 errors[CONF_MQTT_DEVICE_ID] = "device_id_required"
             else:
-                try:
-                    await self._apply_provider(entry, provider, device_id)
-                except PanelError as err:
-                    errors["base"] = _error_key(err)
-                else:
-                    return self.async_create_entry(
-                        data={
-                            **options,
-                            CONF_MQTT_PROVIDER: provider,
-                            CONF_MQTT_DEVICE_ID: device_id,
-                            CONF_MANAGE_INSTALLS: user_input[CONF_MANAGE_INSTALLS],
-                        }
-                    )
+                return self.async_create_entry(
+                    data={
+                        **options,
+                        CONF_MQTT_PROVIDER: provider,
+                        CONF_MQTT_DEVICE_ID: device_id,
+                        CONF_MANAGE_INSTALLS: user_input[CONF_MANAGE_INSTALLS],
+                    }
+                )
         provider_now = options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN)
         return self.async_show_form(
             step_id="init",
@@ -410,19 +528,3 @@ class BrilliantKioskOptionsFlow(OptionsFlow):
             ),
             errors=errors,
         )
-
-    @staticmethod
-    async def _apply_provider(
-        entry: BrilliantKioskConfigEntry, provider: str, device_id: str
-    ) -> None:
-        """Set KIOSK_MQTT (and MQTT_DEVICE_ID) on the panel when it differs; never off."""
-        env = entry.runtime_data.data.env
-        panel = entry.runtime_data.panel
-        if provider == PROVIDER_BRILLIANT_MQTT:
-            changes = {"KIOSK_MQTT": PANEL_MQTT_KIOSK, "MQTT_DEVICE_ID": device_id}
-            delete: tuple[str, ...] = ()
-        else:
-            changes = {"KIOSK_MQTT": PANEL_MQTT_FULL}
-            delete = ("MQTT_DEVICE_ID",) if env.get("MQTT_DEVICE_ID") else ()
-        if await panel.set_env(changes, delete):
-            await panel.restart("ha-kiosk-bridge")

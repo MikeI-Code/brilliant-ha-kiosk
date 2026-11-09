@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
+import contextlib
 import re
 import shlex
 from collections.abc import Iterable, Mapping
@@ -13,6 +14,7 @@ from typing import Any, Self, cast
 import asyncssh
 
 from . import bus
+from .bundle import sha256_hex
 from .env import EnvFile, format_value, validate_key, validate_setting_key
 from .exceptions import (
     AuthFailed,
@@ -22,6 +24,7 @@ from .exceptions import (
     HostKeyMismatch,
     InvalidArgument,
     PanelError,
+    SetupBusy,
     SetupError,
 )
 from .models import (
@@ -41,19 +44,37 @@ from .setup import (
     EXIT_IN_PROGRESS,
     SETUP_PATH,
     SETUP_PYTHON,
+    STATE_IN_PROGRESS,
     SetupStatus,
     error_for_exit,
     parse_json_object,
     parse_status,
 )
 
-INSTALL_DIR = "/tmp/ha-kiosk-install"  # noqa: S108 - fixed path on the panel, not on this host
+#: Prefix of the per-install ``mktemp -d`` directory on the panel (never a fixed, guessable path).
+INSTALL_PREFIX = "/tmp/ha-kiosk-install"  # noqa: S108 - path on the panel, not on this host
+_INSTALL_DIR_RE = re.compile(r"^/tmp/ha-kiosk-install\.[A-Za-z0-9]{6,}$")
+#: The lock ``ha-kiosk-setup`` takes (``LOCK`` in kiosk/ha-kiosk-setup) for every changing command.
+SETUP_LOCK_PATH = "/run/ha-kiosk-setup.lock"
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_LOG_LINES = 5000
 SETTINGS_MARKER = "#--overrides--"
 SETUP_COMMANDS = ("reapply", "enable", "disable", "rollback", "uninstall", "purge")
 WAIT_TIMEOUT = 100
 WAIT_ROUNDS = 8
+
+
+#: Runs ``sys.argv[1]`` with ``sh -c`` while holding the setup tool's flock; exit 8 when busy.
+#: Python's fcntl is used because the panel's BusyBox may lack a ``flock`` applet.
+_LOCKED_RUNNER = (
+    "import fcntl, os, subprocess, sys\n"
+    f"fd = os.open({SETUP_LOCK_PATH!r}, os.O_CREAT | os.O_RDWR, 0o600)\n"
+    "try:\n"
+    "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "except OSError:\n"
+    "    sys.exit(8)\n"
+    "sys.exit(subprocess.call(['sh', '-c', sys.argv[1]]))\n"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +98,33 @@ def _health_script() -> str:
     lines += [f'echo "unit.{u}=$(systemctl is-active {u} 2>/dev/null)"' for u in UNITS]
     lines.append("true")
     return "\n".join(lines)
+
+
+def _write_env_script(purge: tuple[str, ...], write_base: bool) -> str:
+    """Shell script (run under the lock) that installs stdin as kiosk.env and purges overrides."""
+    script = "set -e\n"
+    if write_base:
+        script += (
+            "umask 077\n"
+            f"t={shlex.quote(ENV_PATH)}.tmp.$$\n"
+            'cat > "$t"\n'
+            f"for f in {CONFIG_ENV_PATH} {ENV_PATH}; do\n"
+            '  [ -d "$(dirname "$f")" ] || continue\n'
+            '  if [ -f "$f" ]; then cp -p "$f" "$f.bak"; chmod 600 "$f.bak"; fi\n'
+            '  cp "$t" "$f.new"; chmod 600 "$f.new"; mv "$f.new" "$f"\n'
+            "done\n"
+            'rm -f "$t"\n'
+        )
+    if purge:
+        expr = " ".join(f"-e '/^{key}=/d'" for key in purge)
+        script += (
+            "umask 022\n"
+            f"o={OVERRIDES_PATH}\n"
+            'if [ -f "$o" ]; then\n'
+            f'  sed {expr} "$o" > "$o.tmp.$$" && mv "$o.tmp.$$" "$o"\n'
+            "fi\n"
+        )
+    return script
 
 
 def _to_float(value: str | None) -> float | None:
@@ -126,30 +174,86 @@ def _normalise_fp(fingerprint: str) -> str:
     return fingerprint.strip().rstrip("=").lower()
 
 
+def _fingerprints_match(pinned: str, sha256: str, md5: str) -> bool:
+    candidates = {_normalise_fp(token) for token in pinned.split()}
+    sha, md = _normalise_fp(sha256), _normalise_fp(md5)
+    return sha in candidates or md in candidates or md.removeprefix("md5:") in candidates
+
+
 def fingerprint_matches(pinned: str, key: asyncssh.SSHKey) -> bool:
     """Whether a pinned fingerprint matches ``key``.
 
     ``pinned`` may be an OpenSSH ``SHA256:...`` or ``MD5:aa:bb:...`` fingerprint (as printed by
     ssh-keygen or plink), alone or embedded in text such as ``ssh-ed25519 255 SHA256:...``.
     """
-    candidates = {_normalise_fp(token) for token in pinned.split()}
-    sha = _normalise_fp(key.get_fingerprint("sha256"))
-    md5 = _normalise_fp(key.get_fingerprint("md5"))
-    return sha in candidates or md5 in candidates or md5.removeprefix("md5:") in candidates
+    return _fingerprints_match(pinned, key.get_fingerprint("sha256"), key.get_fingerprint("md5"))
+
+
+@dataclass(frozen=True, slots=True)
+class HostKeyInfo:
+    """A panel's SSH host key as seen before any credentials were sent."""
+
+    sha256: str
+    md5: str
+
+    def matches(self, pinned: str) -> bool:
+        """Whether ``pinned`` (SHA256 or MD5 fingerprint, see :func:`fingerprint_matches`) fits."""
+        return _fingerprints_match(pinned, self.sha256, self.md5)
 
 
 class _PinningClient(asyncssh.SSHClient):
-    """Validates the host key before authentication and records its fingerprint."""
+    """Validates the host key before authentication and records its fingerprint.
 
-    def __init__(self, pinned: str | None) -> None:
+    With ``scan_only`` the key is recorded and then *rejected*, so the connection ends before
+    any credential is sent (used to show a fingerprint for trust-on-first-use confirmation).
+    """
+
+    def __init__(self, pinned: str | None, *, scan_only: bool = False) -> None:
         self._pinned = pinned
+        self._scan_only = scan_only
         self.fingerprint: str | None = None
+        self.info: HostKeyInfo | None = None
 
     def validate_host_public_key(
         self, host: str, addr: str, port: int, key: asyncssh.SSHKey
     ) -> bool:
         self.fingerprint = key.get_fingerprint("sha256")
+        self.info = HostKeyInfo(self.fingerprint, key.get_fingerprint("md5"))
+        if self._scan_only:
+            return False
         return self._pinned is None or fingerprint_matches(self._pinned, key)
+
+
+async def fetch_host_key(
+    host: str, *, port: int = 22, connect_timeout: float = 15.0
+) -> HostKeyInfo:
+    """Read a panel's SSH host key without authenticating (no password or key is sent).
+
+    The key exchange completes, the key is recorded and the connection is then refused, so a
+    password typed into a config flow only ever goes to a host whose fingerprint the user
+    confirmed (trust on first use). Raises :class:`CannotConnect` if the host is unreachable.
+    """
+    client = _PinningClient(None, scan_only=True)
+    try:
+        conn = await asyncssh.connect(
+            host,
+            port=port,
+            client_factory=lambda: client,
+            known_hosts=cast(Any, ([], [], [])),
+            config=[],
+            agent_path=None,
+            client_keys=[],
+            connect_timeout=connect_timeout,
+            login_timeout=connect_timeout,
+        )
+    except asyncssh.HostKeyNotVerifiable:
+        if client.info is None:  # pragma: no cover - defensive: rejected before a key was seen
+            raise CannotConnect(f"{host} did not present an SSH host key") from None
+        return client.info
+    except (OSError, asyncssh.Error, TimeoutError) as err:
+        raise CannotConnect(f"cannot connect to {host}: {err}") from err
+    conn.close()  # pragma: no cover - the scan always rejects the key
+    raise CannotConnect(f"unexpected SSH session to {host}")  # pragma: no cover
 
 
 class Panel:
@@ -179,6 +283,9 @@ class Panel:
         self._connect_timeout = connect_timeout
         self._conn: asyncssh.SSHClientConnection | None = None
         self._fingerprint: str | None = None
+        self._connect_lock = asyncio.Lock()
+        #: Serialises install / setup commands / set_env of this panel.
+        self._op_lock = asyncio.Lock()
 
     # -- connection ---------------------------------------------------------------------
 
@@ -204,11 +311,15 @@ class Panel:
 
         With ``host_key=None`` any key is accepted so a config flow can show and pin the returned
         fingerprint; otherwise a different key raises :class:`HostKeyMismatch` before any
-        credentials are sent.
+        credentials are sent. Concurrent callers share one connection attempt.
         """
-        if self._conn is not None:
-            assert self._fingerprint is not None
-            return self._fingerprint
+        async with self._connect_lock:
+            if self._conn is not None:
+                assert self._fingerprint is not None
+                return self._fingerprint
+            return await self._open()
+
+    async def _open(self) -> str:
         client_keys: list[asyncssh.SSHKey] = []
         if self._private_key:
             try:
@@ -249,9 +360,17 @@ class Panel:
 
     async def close(self) -> None:
         """Close the connection (safe to call repeatedly)."""
-        conn, self._conn = self._conn, None
-        if conn is not None:
-            conn.close()
+        async with self._connect_lock:
+            conn = self._conn
+            if conn is not None:
+                await self._drop(conn)
+
+    async def _drop(self, conn: asyncssh.SSHClientConnection) -> None:
+        """Forget ``conn`` (if still current) and close it, so the socket is not leaked."""
+        if self._conn is conn:
+            self._conn = None
+        conn.close()
+        with contextlib.suppress(OSError, asyncssh.Error):
             await conn.wait_closed()
 
     async def _run(
@@ -264,7 +383,8 @@ class Panel:
     ) -> _Result:
         await self.connect()
         conn = self._conn
-        assert conn is not None
+        if conn is None:  # dropped by a concurrent failure between connect() and here
+            raise CannotConnect(f"connection to {self.host} lost")
         # Without input, close stdin right away so nothing waits on it.
         stdin_args: dict[str, Any] = (
             {"stdin": asyncssh.DEVNULL} if stdin is None else {"input": stdin}
@@ -280,7 +400,7 @@ class Panel:
         except TimeoutError as err:
             raise CannotConnect(f"command timed out on {self.host}") from err
         except (OSError, asyncssh.Error) as err:
-            self._conn = None
+            await self._drop(conn)
             raise CannotConnect(f"connection to {self.host} lost: {err}") from err
         result = _Result(_decode(done.stdout), _decode(done.stderr), done.exit_status)
         if check and result.exit_status != 0:
@@ -306,6 +426,29 @@ class Panel:
         env = await self._read_env()
         return env.masked_values() if mask_secrets else env.values()
 
+    async def _read_config(self) -> tuple[EnvFile, dict[str, str]]:
+        """The settings file and the runtime overrides (restricted to ``OVERRIDE_KEYS``)."""
+        result = await self._run(
+            f"if [ -f {CONFIG_ENV_PATH} ]; then cat {CONFIG_ENV_PATH}; else cat {ENV_PATH}; fi"
+            f" 2>/dev/null; echo; echo {SETTINGS_MARKER}; "
+            f"cat {OVERRIDES_PATH} 2>/dev/null; true"
+        )
+        base_text, _, over_text = result.stdout.partition(SETTINGS_MARKER)
+        base_text = base_text.removesuffix("\n")  # the separator ``echo`` added after the file
+        over = EnvFile.parse(over_text).values()
+        return EnvFile.parse(base_text), {k: v for k, v in over.items() if k in OVERRIDE_KEYS}
+
+    async def _ensure_idle(self) -> None:
+        """Refuse to touch the panel's settings or install while ``ha-kiosk-setup`` is working."""
+        try:
+            status = await self.setup_status()
+        except SetupBusy:
+            raise
+        except SetupError:
+            return  # a broken or missing tool is not "busy"; the flock still guards the write
+        if status.state == STATE_IN_PROGRESS:
+            raise SetupBusy("ha-kiosk-setup is running a job on the panel; try again when it ends")
+
     async def set_env(
         self,
         changes: Mapping[str, str],
@@ -317,10 +460,22 @@ class Panel:
 
         ``ha-kiosk-setup`` v1.4.0 has no merge command, so this edits both copies it keeps
         (``/var/lib/ha-kiosk/config/kiosk.env`` and the running ``/etc/ha-kiosk/kiosk.env``),
-        validating keys against setup's allowlist and values against its charset rules, and drops
-        runtime overrides (``overrides.env``) for the keys it changes, as ``--config`` does.
-        Comments and ordering are preserved. Returns the keys whose effective value changed; when
-        nothing changed nothing is written. ``restart`` restarts ``ha-kiosk.service`` after a write.
+        validating keys against setup's allowlist and values against its charset rules; values
+        are written ``KEY="value"`` like setup does, because the files are sourced by root shell
+        scripts. Comments and ordering are preserved.
+
+        Runtime overrides (``overrides.env``, written by ``ha-kiosk-mqtt.py``) win over
+        ``kiosk.env``, so the change is evaluated against the *effective* view (overrides merged
+        in), and every override for a key passed in ``changes`` or ``delete`` is purged, as
+        ``--config`` does. Returns the keys whose effective value changed; when neither the
+        effective values nor the overrides need to change nothing is written. ``restart``
+        restarts ``ha-kiosk.service`` after a write.
+
+        The panel-side script holds the ``ha-kiosk-setup`` flock, so it cannot interleave with a
+        setup run (:class:`SetupBusy`); calls on one :class:`Panel` are serialised. KNOWN RACE:
+        ``ha-kiosk-mqtt.py`` rewrites ``overrides.env`` (read, modify, ``os.replace``) without
+        that lock; a switch toggled in Home Assistant in the same few milliseconds as the purge
+        can be lost (the purge itself is an atomic rename, so the file is never torn).
         """
         delete = tuple(delete)
         for key in (*changes, *delete):
@@ -329,50 +484,43 @@ class Panel:
             validate_setting_key(key)
         for value in changes.values():
             format_value(value)
-        old = await self._read_env()
-        new = old.apply(changes, delete)
-        before, after = old.values(), new.values()
-        changed = tuple(
-            k for k in dict.fromkeys((*before, *after)) if before.get(k) != after.get(k)
-        )
-        if not changed:
-            return ()
-        script = (
-            "set -e\n"
-            "umask 077\n"
-            f"t={shlex.quote(ENV_PATH)}.tmp\n"
-            'cat > "$t"\n'
-            f"for f in {CONFIG_ENV_PATH} {ENV_PATH}; do\n"
-            '  [ -d "$(dirname "$f")" ] || continue\n'
-            '  if [ -f "$f" ]; then cp -p "$f" "$f.bak"; chmod 600 "$f.bak"; fi\n'
-            '  cp "$t" "$f.new"; chmod 600 "$f.new"; mv "$f.new" "$f"\n'
-            "done\n"
-            'rm -f "$t"\n'
-        )
-        cleared = [k for k in changed if k in OVERRIDE_KEYS]
-        if cleared:
-            expr = ";".join(f"/^{k}=/d" for k in cleared)
-            script += f"[ -f {OVERRIDES_PATH} ] && sed -i '{expr}' {OVERRIDES_PATH} || true\n"
-        await self._run(script, stdin=new.serialize())
-        if restart:
-            await self.restart("ha-kiosk")
-        return changed
+        async with self._op_lock:
+            await self._ensure_idle()
+            old, overrides = await self._read_config()
+            new = old.apply(changes, delete)
+            passed = tuple(dict.fromkeys((*changes, *delete)))
+            purge = tuple(k for k in passed if k in overrides)
+            before = {**old.values(), **overrides}
+            after = {**new.values(), **{k: v for k, v in overrides.items() if k not in purge}}
+            changed = tuple(
+                k for k in dict.fromkeys((*before, *after)) if before.get(k) != after.get(k)
+            )
+            write_base = old.values() != new.values()
+            if not write_base and not purge:
+                return ()
+            await self._locked(_write_env_script(purge, write_base), stdin=new.serialize())
+            if restart and changed:
+                await self.restart("ha-kiosk")
+            return changed
 
     async def get_settings(self, *, mask_secrets: bool = True) -> dict[str, str]:
         """Effective settings: ``kiosk.env`` with the runtime ``overrides.env`` applied on top.
 
         Missing files count as empty, so an uninstalled panel returns ``{}``.
         """
-        result = await self._run(
-            f"if [ -f {CONFIG_ENV_PATH} ]; then cat {CONFIG_ENV_PATH}; else cat {ENV_PATH}; fi"
-            f" 2>/dev/null; echo; echo {SETTINGS_MARKER}; "
-            f"cat {OVERRIDES_PATH} 2>/dev/null; true"
-        )
-        base_text, _, over_text = result.stdout.partition(SETTINGS_MARKER)
-        base = EnvFile.parse(base_text)
+        base, over = await self._read_config()
         values = base.masked_values() if mask_secrets else base.values()
-        over = EnvFile.parse(over_text).values()
-        return {**values, **{k: v for k, v in over.items() if k in OVERRIDE_KEYS}}
+        return {**values, **over}
+
+    async def _locked(self, script: str, *, stdin: str | None = None) -> _Result:
+        """Run a shell script on the panel under ``ha-kiosk-setup``'s flock."""
+        command = f"{SETUP_PYTHON} -c {shlex.quote(_LOCKED_RUNNER)} {shlex.quote(script)}"
+        result = await self._run(command, stdin=stdin, check=False)
+        if result.exit_status == SetupBusy.code:
+            raise SetupBusy("ha-kiosk-setup holds the panel lock; try again when it ends")
+        if result.exit_status != 0:
+            raise CommandFailed(script, result.exit_status, result.stderr)
+        return result
 
     # -- units --------------------------------------------------------------------------
 
@@ -464,10 +612,12 @@ class Panel:
         """Run reapply, enable, disable, rollback, uninstall or purge, detached, and wait."""
         if command not in SETUP_COMMANDS:
             raise InvalidArgument(f"setup command not allowed: {command!r}")
-        started = await self._setup_run(f"{command} --detach")
-        if started.exit_status != 0:
-            raise error_for_exit(started.exit_status or 1, started.stdout)
-        return await self._setup_wait(SETUP_PATH)
+        async with self._op_lock:
+            await self._ensure_idle()
+            started = await self._setup_run(f"{command} --detach")
+            if started.exit_status != 0:
+                raise error_for_exit(started.exit_status or 1, started.stdout)
+            return await self._setup_wait(SETUP_PATH)
 
     async def _setup_wait(self, tool: str) -> SetupStatus:
         """Poll ``wait --timeout 100`` until the detached job ends (exit != 9)."""
@@ -504,51 +654,64 @@ class Panel:
         if not _SHA256_RE.match(sha256):
             raise InvalidArgument("sha256 must be 64 hex characters")
         expected = sha256.lower()
-        if hashlib.sha256(bundle).hexdigest() != expected:
+        if await asyncio.to_thread(sha256_hex, bundle) != expected:
             raise ChecksumMismatch("bundle does not match the expected sha256")
-        remote = f"{INSTALL_DIR}/bundle.tar.gz"
-        tool = f"{INSTALL_DIR}/ha-kiosk-setup"
-        await self._run(f"rm -rf {INSTALL_DIR} && mkdir -m 700 {INSTALL_DIR}")
-        try:
-            await self._upload(bundle, remote)
-            check = await self._run(f"sha256sum {remote}")
-            remote_sha = check.stdout.split()[0].lower() if check.stdout.split() else ""
-            if remote_sha != expected:
-                raise ChecksumMismatch("bundle checksum on the panel does not match")
-            await self._run(
-                f"cd {INSTALL_DIR} && m=$(tar -tzf bundle.tar.gz | grep -E '^[^/]+/ha-kiosk-setup$'"
-                f' | head -n 1) && [ -n "$m" ] && tar -xzOf bundle.tar.gz "$m" > ha-kiosk-setup'
+        async with self._op_lock:
+            await self._ensure_idle()
+            made = await self._run(
+                f"d=$(mktemp -d {INSTALL_PREFIX}.XXXXXXXX) && chmod 700 \"$d\" && echo \"$d\""
             )
-            args = f"install --bundle {remote} --sha256 {expected} --size {len(bundle)} --detach"
-            for name, text, flag in (("env", env, "--env"), ("token", token, "--token")):
-                if text is not None:
-                    path = f"{INSTALL_DIR}/{name}"
-                    await self._run(f"umask 077; cat > {path}", stdin=text)
-                    args += f" {flag} {path}"
-            started = await self._setup_run(args, tool=tool)
-            if started.exit_status != 0:
-                raise error_for_exit(started.exit_status or 1, started.stdout)
-            return await self._setup_wait(tool)
-        finally:
-            await self._cleanup_install()
+            workdir = made.stdout.strip()
+            if not _INSTALL_DIR_RE.match(workdir):
+                raise CommandFailed("mktemp -d", made.exit_status, f"unexpected output {workdir!r}")
+            try:
+                return await self._install_in(workdir, bundle, expected, env, token)
+            finally:
+                await self._cleanup_install(workdir)
 
-    async def _cleanup_install(self) -> None:
+    async def _install_in(
+        self, workdir: str, bundle: bytes, expected: str, env: str | None, token: str | None
+    ) -> SetupStatus:
+        remote = f"{workdir}/bundle.tar.gz"
+        tool = f"{workdir}/ha-kiosk-setup"
+        await self._upload(bundle, remote)
+        check = await self._run(f"sha256sum {remote}")
+        remote_sha = check.stdout.split()[0].lower() if check.stdout.split() else ""
+        if remote_sha != expected:
+            raise ChecksumMismatch("bundle checksum on the panel does not match")
+        await self._run(
+            f"cd {workdir} && m=$(tar -tzf bundle.tar.gz | grep -E '^[^/]+/ha-kiosk-setup$'"
+            f' | head -n 1) && [ -n "$m" ] && tar -xzOf bundle.tar.gz "$m" > ha-kiosk-setup'
+        )
+        args = f"install --bundle {remote} --sha256 {expected} --size {len(bundle)} --detach"
+        for name, text, flag in (("env", env, "--env"), ("token", token, "--token")):
+            if text is not None:
+                path = f"{workdir}/{name}"
+                await self._run(f"umask 077; cat > {path}", stdin=text)
+                args += f" {flag} {path}"
+        started = await self._setup_run(args, tool=tool)
+        if started.exit_status != 0:
+            raise error_for_exit(started.exit_status or 1, started.stdout)
+        return await self._setup_wait(tool)
+
+    async def _cleanup_install(self, workdir: str) -> None:
         try:
-            await self._run(f"rm -rf {INSTALL_DIR}")
+            await self._run(f"rm -rf {workdir}")
         except PanelError:
             return
 
     async def _upload(self, data: bytes, remote: str) -> None:
         """SFTP upload; falls back to ``cat >`` when the panel has no sftp subsystem."""
         conn = self._conn
-        assert conn is not None
+        if conn is None:
+            raise CannotConnect(f"connection to {self.host} lost")
         try:
             async with conn.start_sftp_client() as sftp, sftp.open(remote, "wb") as handle:
                 await handle.write(data)
         except (asyncssh.SFTPError, asyncssh.ChannelOpenError):
             await self._run(f"cat > {shlex.quote(remote)}", stdin=data, time_limit=300)
         except (OSError, asyncssh.Error) as err:
-            self._conn = None
+            await self._drop(conn)
             raise CannotConnect(f"upload to {self.host} failed: {err}") from err
 
 
@@ -560,4 +723,11 @@ def _decode(value: str | bytes | None) -> str:
     return value
 
 
-__all__ = ["INSTALL_DIR", "Panel", "fingerprint_matches", "parse_health"]
+__all__ = [
+    "INSTALL_PREFIX",
+    "HostKeyInfo",
+    "Panel",
+    "fetch_host_key",
+    "fingerprint_matches",
+    "parse_health",
+]

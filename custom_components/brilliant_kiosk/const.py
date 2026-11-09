@@ -56,3 +56,7 @@ CONF_MANAGE_INSTALLS: Final = "manage_installs"
 PANEL_MQTT_KIOSK: Final = "kiosk"
 PANEL_MQTT_FULL: Final = "1"
 MQTT_DISABLED_VALUES: Final = ("", "0", "off", "false", "no")
+
+CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
+#: hass.data key of the ReleasesCoordinator shared by all panels (GitHub allows 60 requests/h).
+DATA_RELEASES: Final = "releases"

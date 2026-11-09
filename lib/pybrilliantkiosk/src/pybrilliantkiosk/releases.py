@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
+import asyncio
 import re
 from datetime import datetime
 from typing import Any
 
 import aiohttp
 
+from .bundle import sha256_hex
 from .exceptions import ChecksumMismatch, ReleaseError
 from .models import Release
 
 DEFAULT_REPO = "MikeI-Code/brilliant-ha-kiosk"
 _HEX64 = re.compile(r"\b[0-9a-fA-F]{64}\b")
+#: Bundle asset name of scripts/build-bundle.sh: the part between prefix and suffix is VERSION.
+_BUNDLE_NAME = re.compile(r"^brilliant-ha-kiosk-(?P<version>.+)\.tar\.gz$")
 
 
 class Releases:
@@ -69,7 +72,7 @@ class Releases:
             bundle = await (await self._fetch(release.bundle_url)).read()
         except (aiohttp.ClientError, TimeoutError) as err:
             raise ReleaseError(f"download failed: {err}") from err
-        actual = hashlib.sha256(bundle).hexdigest()
+        actual = await asyncio.to_thread(sha256_hex, bundle)
         if actual != expected:
             raise ChecksumMismatch(f"bundle sha256 {actual} != expected {expected}")
         return bundle, actual
@@ -80,6 +83,7 @@ def _parse_release(item: Any) -> Release | None:
         return None
     bundle_url: str | None = None
     sha_url: str | None = None
+    version: str | None = None
     for asset in item.get("assets") or []:
         name = str(asset.get("name", ""))
         url = asset.get("browser_download_url")
@@ -89,6 +93,8 @@ def _parse_release(item: Any) -> Release | None:
             sha_url = url
         elif name.endswith(".tar.gz"):
             bundle_url = url
+            named = _BUNDLE_NAME.match(name)
+            version = named["version"] if named else None
     tag = item.get("tag_name")
     if bundle_url is None or not isinstance(tag, str):
         return None
@@ -106,4 +112,5 @@ def _parse_release(item: Any) -> Release | None:
         body=str(item.get("body") or ""),
         bundle_url=bundle_url,
         sha256_url=sha_url,
+        version=version,
     )

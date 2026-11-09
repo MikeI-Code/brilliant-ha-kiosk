@@ -12,7 +12,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from pybrilliantkiosk import CannotConnect, InvalidArgument, SettingsRejected
 
-from .conftest import NIGHTLY, STABLE, entity_id, make_entry, setup_entry
+from .conftest import HEALTH, NIGHTLY, OLD, STABLE, entity_id, make_entry, setup_entry
 
 
 async def _enable_all(hass: HomeAssistant, entry) -> None:
@@ -174,7 +174,7 @@ async def test_channel_select_and_update(
     )
     await hass.async_block_till_done()
     assert entry.options["channel"] == "nightly"
-    assert hass.states.get(update).attributes["latest_version"] == NIGHTLY.tag
+    assert hass.states.get(update).attributes["latest_version"] == NIGHTLY.version
     assert hass.states.get(update).attributes["release_summary"] is None
 
 
@@ -191,6 +191,12 @@ async def test_update_install_latest_and_specific(
         "update", "install", {ATTR_ENTITY_ID: update, "version": NIGHTLY.tag}, blocking=True
     )
     releases.download.assert_awaited_with(NIGHTLY)
+
+    # The bundle version works as well as the tag.
+    await hass.services.async_call(
+        "update", "install", {ATTR_ENTITY_ID: update, "version": OLD.version}, blocking=True
+    )
+    releases.download.assert_awaited_with(OLD)
 
     with pytest.raises(HomeAssistantError, match="No kiosk release"):
         await hass.services.async_call(
@@ -246,8 +252,105 @@ async def test_release_notes_empty(
     client = await hass_ws_client(hass)
     await client.send_json_auto_id({"type": "update/release_notes", "entity_id": update})
     msg = await client.receive_json()
-    assert not msg["success"] or msg["result"] is None
+    assert msg["success"] is True
+    assert msg["result"] is None
 
 
-def test_domain_constant() -> None:
-    assert DOMAIN == "brilliant_kiosk"
+# -- update entity: versions come from the bundle, never offer a downgrade ----------------------
+
+NIGHTLY_INSTALLED = "v1.5.0-nightly.20261108.g89ec239"  # exactly what nightly.yml writes to VERSION
+
+
+async def _update_state(hass, panel, installed: str, *, channel: str = "stable", **kwargs):
+    from dataclasses import replace
+
+    panel.health.return_value = replace(HEALTH, version=installed)
+    await setup_entry(hass, make_entry(channel=channel))
+    return hass.states.get(entity_id(hass, "update", "kiosk"))
+
+
+async def test_installed_nightly_equals_its_release_despite_the_different_tag(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    """Tag nightly-20261108 vs VERSION v1.5.0-nightly.20261108.g...: same build, no update."""
+    state = await _update_state(hass, panel, NIGHTLY_INSTALLED, channel="nightly")
+    assert state.state == STATE_OFF
+    assert state.attributes["latest_version"] == NIGHTLY_INSTALLED
+    assert state.attributes["release_url"] is None
+
+
+async def test_stable_channel_never_downgrades_a_nightly(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    # Installed nightly is newer than the newest stable (v1.5.0) it was built on.
+    state = await _update_state(hass, panel, NIGHTLY_INSTALLED, channel="stable")
+    assert state.state == STATE_OFF
+    assert state.attributes["latest_version"] == NIGHTLY_INSTALLED
+    update = entity_id(hass, "update", "kiosk")
+    with pytest.raises(HomeAssistantError, match="No update available"):
+        await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: update}, blocking=True)
+    releases.download.assert_not_awaited()
+
+
+async def test_stable_channel_offers_stable_not_nightly(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    state = await _update_state(hass, panel, "v1.4.0", channel="stable")
+    assert state.state == STATE_ON
+    assert state.attributes["latest_version"] == STABLE.version
+
+
+async def test_nightly_channel_offers_the_newest_build_of_either_kind(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    # A nightly built after v1.5.0 is newer than v1.5.0 itself.
+    state = await _update_state(hass, panel, "v1.4.0", channel="nightly")
+    assert state.state == STATE_ON
+    assert state.attributes["latest_version"] == NIGHTLY.version
+    update = entity_id(hass, "update", "kiosk")
+    await hass.services.async_call("update", "install", {ATTR_ENTITY_ID: update}, blocking=True)
+    releases.download.assert_awaited_with(NIGHTLY)
+
+
+async def test_older_nightly_updates_to_a_newer_nightly_by_date(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    state = await _update_state(hass, panel, "v1.5.0-nightly.20261101.gabc1234", channel="nightly")
+    assert state.state == STATE_ON
+    assert state.attributes["latest_version"] == NIGHTLY.version
+
+
+async def test_stable_release_after_a_nightly_is_an_update_for_both_channels(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    state = await _update_state(hass, panel, "v1.4.0-nightly.20261020.gabc1234", channel="stable")
+    assert state.state == STATE_ON  # v1.5.0 is newer than any v1.4.0 nightly
+    assert state.attributes["latest_version"] == STABLE.version
+
+
+async def test_unknown_installed_version_is_never_updated_blindly(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    state = await _update_state(hass, panel, "weird-build")
+    assert state.state == STATE_OFF
+    assert state.attributes["latest_version"] == "weird-build"
+
+
+async def test_releases_without_a_usable_version_are_skipped(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    from dataclasses import replace
+
+    unusable = replace(NIGHTLY, version=None)  # tag nightly-... is not a version either
+    plain_tag = replace(STABLE, version=None)  # but a plain vX.Y.Z tag is
+    releases.list = AsyncMock(return_value=(unusable, plain_tag, OLD))
+    state = await _update_state(hass, panel, "v1.4.0", channel="nightly")
+    assert state.attributes["latest_version"] == "v1.5.0"  # from plain_tag's tag
+
+    releases.list = AsyncMock(return_value=(unusable,))
+    hass.config_entries.async_entries(DOMAIN)  # same entry; refresh the shared list
+    await hass.config_entries.async_reload(hass.config_entries.async_entries(DOMAIN)[0].entry_id)
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id(hass, "update", "kiosk"))
+    assert state.state == STATE_OFF
+    assert state.attributes["latest_version"] == "v1.4.0"

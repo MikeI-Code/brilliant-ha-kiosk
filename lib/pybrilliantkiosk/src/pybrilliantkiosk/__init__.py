@@ -29,9 +29,10 @@ from .models import (
     PanelHealth,
     Release,
 )
-from .panel import Panel
+from .panel import HostKeyInfo, Panel, fetch_host_key
 from .releases import Releases
 from .setup import SetupStatus
+from .versions import KioskVersion, is_newer, parse_version
 
 __version__ = "0.1.0"
 
@@ -47,8 +48,10 @@ __all__ = [
     "ChecksumMismatch",
     "CommandFailed",
     "EnvFile",
+    "HostKeyInfo",
     "HostKeyMismatch",
     "InvalidArgument",
+    "KioskVersion",
     "NotInstalled",
     "Panel",
     "PanelError",
@@ -63,9 +66,12 @@ __all__ = [
     "StockUIRestored",
     "VerificationFailed",
     "__version__",
+    "fetch_host_key",
+    "is_newer",
     "is_secret",
     "kiosk_env_from_bundle",
     "parse_listing",
     "parse_set_result",
     "parse_variables",
+    "parse_version",
 ]

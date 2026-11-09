@@ -22,6 +22,7 @@ SETUP_PATH = "/var/lib/ha-kiosk/ha-kiosk-setup"
 EXIT_IN_PROGRESS = 9
 STATE_NOT_INSTALLED = "not_installed"
 STATE_ACTIVE = "active"
+STATE_IN_PROGRESS = "in_progress"
 
 _EXIT_ERRORS: dict[int, type[SetupError]] = {
     3: VerificationFailed,

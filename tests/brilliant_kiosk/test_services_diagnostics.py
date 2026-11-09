@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from custom_components.brilliant_kiosk.const import DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import config_validation as cv
-from pybrilliantkiosk import BusVariable, CannotConnect, HostKeyMismatch
+from pybrilliantkiosk import BusVariable, CannotConnect, HostKeyMismatch, SetupBusy
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.components.diagnostics import (
     get_diagnostics_for_config_entry,
@@ -49,12 +48,32 @@ async def test_set_env(hass: HomeAssistant, panel: MagicMock, releases: MagicMoc
     )
 
 
-async def test_set_env_no_change_skips_refresh(
+async def test_set_env_refreshes_only_when_something_changed(
     hass: HomeAssistant, panel: MagicMock, releases: MagicMock
 ) -> None:
     entry = await loaded(hass, panel, releases)
+    refresh = AsyncMock()
+    entry.runtime_data.async_request_refresh = refresh
+
     panel.set_env.return_value = ()
     await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}})
+    panel.set_env.assert_awaited_once()
+    refresh.assert_not_awaited()
+
+    panel.set_env.return_value = ("DAY_LEVEL",)
+    await call(hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 8}})
+    refresh.assert_awaited_once()
+
+
+async def test_busy_panel_is_reported_as_a_translated_error(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    panel.set_env.side_effect = SetupBusy("a job is running")
+    with pytest.raises(HomeAssistantError, match="busy running ha-kiosk-setup: a job is running"):
+        await call(
+            hass, "set_env", {"config_entry_id": entry.entry_id, "values": {"DAY_LEVEL": 9}}
+        )
 
 
 @pytest.mark.parametrize("value", ["0", "off", "OFF", "false", "no", ""])
@@ -182,7 +201,6 @@ async def test_unknown_and_unloaded_entries(
     await hass.config_entries.async_unload(entry.entry_id)
     with pytest.raises(ServiceValidationError, match="is not loaded"):
         await call(hass, "get_env", {"config_entry_id": entry.entry_id}, response=True)
-    assert cv.string  # keep the import used for schema helpers
 
 
 async def test_diagnostics_are_redacted(

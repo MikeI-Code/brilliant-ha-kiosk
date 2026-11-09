@@ -1,25 +1,28 @@
+# Honest self-assessment. The manifest carries no `quality_scale` tier: bronze still has open rules
+# (brand images are done, but dependency-transparency and the four bronze docs rules are todo).
+# The highest tier whose rules are ALL done or exempt is the one to put in manifest.json.
 rules:
   # Bronze
   action-setup: done
   appropriate-polling:
     status: done
-    comment: One coordinator polls health, settings and setup status every 60 s over a single SSH connection; releases every 6 h.
+    comment: One coordinator polls health, settings and setup status every 60 s over a single SSH connection; releases every 6 h, one shared coordinator for all panels (GitHub allows 60 anonymous requests per hour).
   brands:
-    status: todo
-    comment: Needs a PR to home-assistant/brands (custom integrations ship brand images there or in a brand folder).
+    status: done
+    comment: Shipped in custom_components/brilliant_kiosk/brand/ (icon.png, icon@2x.png). Local brand images are supported from Home Assistant 2026.3 (hacs.json requires 2026.3.0); older versions would need a home-assistant/brands PR.
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done
   dependency-transparency:
     status: todo
-    comment: pybrilliantkiosk==0.1.0 is pinned in manifest.json but not yet published to PyPI (open question 2 of the spec).
+    comment: pybrilliantkiosk==0.1.0 is pinned in manifest.json but not yet published to PyPI (open question 2 of the spec), so its source and build are not yet publicly traceable.
   docs-actions: todo
   docs-high-level-description: todo
   docs-installation-instructions: todo
   docs-removal-instructions: todo
   entity-event-setup:
-    status: exempt
-    comment: Entities are plain CoordinatorEntity subclasses; the update entity subscribes to the releases coordinator in async_added_to_hass and unsubscribes with async_on_remove.
+    status: done
+    comment: The update entity subscribes to the shared releases coordinator in async_added_to_hass and unsubscribes with async_on_remove. Other entities are plain CoordinatorEntity subclasses.
   entity-unique-id: done
   has-entity-name: done
   runtime-data: done
@@ -44,14 +47,17 @@ rules:
   # Gold
   devices:
     status: done
-    comment: Entities join the panel's MQTT device (brilliant-mqtt or the kiosk's built-in MQTT) and fall back to an own device.
+    comment: Each panel is its own device, identified by (brilliant_kiosk, unique_id) and linked with via_device to the panel's MQTT device (built-in MQTT id brilliant_<devid12>, or brilliant-mqtt's MQTT_DEVICE_ID) as soon as that device exists; re-checked on every coordinator update.
   diagnostics: done
   discovery-update-info:
-    status: done
-    comment: The MQTT discovery topic carries only the node id, not a host; a re-discovered panel keeps its entry and a changed address is fixed through reconfigure.
+    status: exempt
+    comment: The MQTT discovery payload carries only the node id (topic <base>/<node>/kiosk_state), never an address, so there is nothing to update a stored host from. A changed address is handled by the reconfigure flow, which also verifies the pinned SSH host key.
   discovery:
     status: done
-    comment: MQTT discovery on the retained <base>/<node>/kiosk_state topic, which the kiosk publishes in both MQTT modes.
+    comment: |
+      MQTT discovery on the retained brilliant_kiosk/+/kiosk_state topic, which the kiosk publishes in both MQTT modes.
+      Known limitation: manifest.json topics are static, so a panel with a custom MQTT_BASE is not discovered; add it manually.
+      manifest.json keeps `dependencies: ["mqtt"]` (not after_dependencies) because the Home Assistant manifest docs require mqtt in `dependencies` for an integration that declares mqtt discovery topics.
   docs-data-update: todo
   docs-examples: todo
   docs-known-limitations: todo
@@ -70,15 +76,17 @@ rules:
   icon-translations: done
   reconfiguration-flow: done
   repair-issues:
-    status: todo
-    comment: The voice-without-Wyoming issue exists; host key changed, install failed and env drift are still to do.
+    status: done
+    comment: Repairs for the voice satellite missing from Wyoming (hostnames are resolved before flagging), a changed SSH host key and an MQTT provider change that could not be applied. Failed installs surface in the config flow and as action errors; env drift has no repair.
   stale-devices:
     status: exempt
     comment: One device per config entry; it is removed with the entry.
 
   # Platinum
   async-dependency: done
-  inject-websession: done
+  inject-websession:
+    status: done
+    comment: Release listing and download use Home Assistant's shared aiohttp session. SSH uses asyncssh's own connection, which has no aiohttp equivalent.
   strict-typing:
-    status: todo
-    comment: mypy --strict passes locally; .strict-typing registration and CI wiring come with phase 5.
+    status: done
+    comment: mypy --strict passes for the integration and for pybrilliantkiosk and is enforced in .github/workflows/integration.yml. Registration in HA core's .strict-typing file does not apply to a custom integration.

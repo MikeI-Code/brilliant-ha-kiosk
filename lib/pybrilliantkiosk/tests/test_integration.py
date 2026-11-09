@@ -37,6 +37,8 @@ async def _handle(process: Any) -> None:
     elif cmd.startswith("sha256sum"):
         path = cmd.split()[1]
         process.stdout.write(f"{hashlib.sha256(stored[path]).hexdigest()}  {path}\n".encode())
+    elif cmd.startswith("d=$(mktemp"):
+        process.stdout.write(b"/tmp/ha-kiosk-install.RealTest1\n")
     elif "ha-kiosk-setup install" in cmd:
         process.stdout.write(b'{"state": "in_progress"}\n')
     elif "ha-kiosk-setup wait" in cmd:

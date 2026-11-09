@@ -15,6 +15,7 @@ from pybrilliantkiosk import (
     InvalidArgument,
     PanelError,
     ReleaseError,
+    SetupBusy,
 )
 
 from .const import DOMAIN
@@ -31,6 +32,7 @@ def to_ha_error(err: PanelError) -> HomeAssistantError:
     keys: tuple[tuple[type[PanelError], str], ...] = (
         (AuthFailed, "invalid_auth"),
         (HostKeyMismatch, "host_key_mismatch"),
+        (SetupBusy, "setup_busy"),
         (CannotConnect, "cannot_connect"),
         (ChecksumMismatch, "checksum_mismatch"),
         (ReleaseError, "release_error"),

@@ -3,6 +3,13 @@
 Format: ``KEY=VALUE`` lines, ``#`` comments, blank lines; the last assignment of a key wins
 (like systemd's EnvironmentFile). Unmodified lines are preserved verbatim, so comments and
 ordering survive an edit.
+
+SECURITY: ``kiosk.env`` is *sourced by root shell scripts* on the panel
+(``. /etc/ha-kiosk/kiosk.env`` in ``kiosk/ha-kiosk-display.sh`` and ``ha-kiosk-swap.sh``).
+Every line this module writes is therefore rendered exactly like ``render_env`` in
+``kiosk/ha-kiosk-setup``: ``KEY="value"``, with values restricted to a charset in which a double
+quoted shell string is inert (no ``"``, `` ` ``, ``$``, backslash or control character). A bare
+``KEY=a;b`` would run ``b`` as root when sourced.
 """
 
 from __future__ import annotations
@@ -132,7 +139,12 @@ def _unquote(raw: str) -> str:
 
 
 def format_value(value: str) -> str:
-    """Validate a value for ``kiosk.env``; it is written bare (the setup tool rejects quotes)."""
+    """Validate a value for ``kiosk.env`` and return it unchanged.
+
+    The setup tool rejects ``"``, `` ` ``, ``$``, backslash and control characters in values (and
+    ``'`` separately); anything else, including spaces and ``; | & > ( )``, is accepted because
+    :func:`render_line` writes the value inside double quotes, where those are inert.
+    """
     if _BAD_VALUE_RE.search(value):
         raise InvalidArgument(
             "env values must not contain quotes, backslash, $, backtick or control characters"
@@ -140,6 +152,11 @@ def format_value(value: str) -> str:
     if len(value) > MAX_VALUE_LEN:
         raise InvalidArgument("env value is too long")
     return value
+
+
+def render_line(key: str, value: str) -> str:
+    """One ``KEY="value"`` line, as ``ha-kiosk-setup`` renders it (safe to ``.``-source)."""
+    return f'{validate_key(key)}="{format_value(value)}"'
 
 
 def validate_setting_key(key: str) -> str:
@@ -201,7 +218,7 @@ class EnvFile:
     def set(self, key: str, value: str) -> EnvFile:
         """Return a copy with ``key`` set (last occurrence updated in place, or appended)."""
         validate_key(key)
-        new = _Line(f"{key}={format_value(value)}", key, value)
+        new = _Line(render_line(key, value), key, value)
         lines = list(self.lines)
         for idx in range(len(lines) - 1, -1, -1):
             if lines[idx].key == key:

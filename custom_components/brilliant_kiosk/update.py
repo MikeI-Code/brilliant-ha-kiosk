@@ -11,7 +11,7 @@ from homeassistant.components.update import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from pybrilliantkiosk import Release
+from pybrilliantkiosk import Release, is_newer, parse_version
 
 from . import BrilliantKioskConfigEntry
 from .const import CHANNEL_NIGHTLY, CHANNEL_STABLE, CONF_CHANNEL, DOMAIN
@@ -31,8 +31,15 @@ async def async_setup_entry(
     async_add_entities([KioskUpdate(entry.runtime_data)])
 
 
-def _norm(version: str | None) -> str | None:
-    return version.removeprefix("v") if version else None
+def _version_of(release: Release) -> str | None:
+    """The bundle version of a release: its asset name, else a plain ``vX.Y.Z`` tag.
+
+    A nightly's tag (``nightly-YYYYMMDD``) is not its version; the bundle VERSION
+    (``v1.4.0-nightly.YYYYMMDD.g<sha>``) comes from the asset name.
+    """
+    if release.version:
+        return release.version
+    return release.tag if parse_version(release.tag) else None
 
 
 class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
@@ -61,10 +68,23 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
 
     @property
     def _latest(self) -> Release | None:
-        releases = self.coordinator.releases.data or ()
-        if self._channel == CHANNEL_NIGHTLY:
-            return releases[0] if releases else None
-        return next((r for r in releases if not r.prerelease), None)
+        """The newest release of the channel, only if it is newer than the installed version.
+
+        Never a downgrade: a nightly is newer than the stable it was built on, so a stable
+        channel does not offer an older stable over an installed nightly. Unknown installed or
+        release versions are never offered.
+        """
+        installed = self.installed_version
+        candidates = [
+            (key, release)
+            for release in self.coordinator.releases.data or ()
+            if (self._channel == CHANNEL_NIGHTLY or not release.prerelease)
+            and (key := parse_version(_version_of(release))) is not None
+        ]
+        if not candidates:
+            return None
+        _, best = max(candidates, key=lambda pair: pair[0])
+        return best if is_newer(_version_of(best), installed) else None
 
     @property
     def installed_version(self) -> str | None:
@@ -73,11 +93,16 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
 
     @property
     def latest_version(self) -> str | None:
-        """The newest release of the channel (the installed one when none is newer)."""
+        """The offered release's version, or the installed one when nothing newer exists."""
         latest = self._latest
-        if latest is None or _norm(latest.tag) == _norm(self.installed_version):
-            return self.installed_version
-        return latest.tag
+        return _version_of(latest) if latest else self.installed_version
+
+    def version_is_newer(self, latest_version: str, installed_version: str) -> bool:
+        """Use the kiosk's own ordering (nightly dates), not HA's generic version compare.
+
+        The generic compare ranks ``...g89ec239`` below ``...gabc1234`` by their commit hashes.
+        """
+        return is_newer(latest_version, installed_version)
 
     @property
     def release_url(self) -> str | None:
@@ -99,7 +124,11 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:
         """Download and install a release."""
         releases = self.coordinator.releases.data or ()
-        target = next((r for r in releases if r.tag == version), None) if version else self._latest
+        target = (
+            next((r for r in releases if version in (r.tag, r.version)), None)
+            if version
+            else self._latest
+        )
         if target is None:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,

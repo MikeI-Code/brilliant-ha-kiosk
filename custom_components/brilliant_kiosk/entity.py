@@ -2,36 +2,34 @@
 
 from __future__ import annotations
 
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NODE, DOMAIN, MQTT_DOMAIN
+from .const import DOMAIN, MQTT_DOMAIN
 from .coordinator import BrilliantKioskCoordinator
 
 
-def mqtt_identifiers(coordinator: BrilliantKioskCoordinator) -> list[str]:
-    """Candidate identifiers of the panel's MQTT device (brilliant-mqtt's id first)."""
-    env = coordinator.data.env if coordinator.data else {}
-    found = [env.get("MQTT_DEVICE_ID"), coordinator.config_entry.data.get(CONF_NODE)]
-    return [str(ident) for ident in found if ident]
-
-
 def build_device_info(coordinator: BrilliantKioskCoordinator) -> DeviceInfo:
-    """Join the panel's MQTT device when it exists (both MQTT providers), else own a device."""
+    """The panel's own device, linked to its MQTT device (``via_device``) when that exists.
+
+    The identifier is always ``(DOMAIN, unique_id)``: this integration never claims the MQTT
+    integration's identifiers. When the MQTT device appears later, the coordinator links it on
+    its next update.
+    """
     entry = coordinator.config_entry
-    registry = dr.async_get(coordinator.hass)
-    for ident in mqtt_identifiers(coordinator):
-        if registry.async_get_device(identifiers={(MQTT_DOMAIN, ident)}):
-            return DeviceInfo(identifiers={(MQTT_DOMAIN, ident)})
     health = coordinator.data.health if coordinator.data else None
-    return DeviceInfo(
+    info = DeviceInfo(
         identifiers={(DOMAIN, str(entry.unique_id))},
         name=entry.title,
         manufacturer="Brilliant",
         model="Brilliant Control (HA kiosk)",
         sw_version=health.version if health else None,
     )
+    mqtt_device = coordinator.find_mqtt_device()
+    if mqtt_device is not None:
+        mqtt_id = next(ident for domain, ident in mqtt_device.identifiers if domain == MQTT_DOMAIN)
+        info["via_device"] = (MQTT_DOMAIN, mqtt_id)
+    return info
 
 
 class BrilliantKioskEntity(CoordinatorEntity[BrilliantKioskCoordinator]):

@@ -23,6 +23,7 @@ from pybrilliantkiosk import (
     BusListing,
     BusPeripheral,
     BusVariable,
+    HostKeyInfo,
     PanelHealth,
     Release,
     SetupStatus,
@@ -31,6 +32,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 HOST = "192.168.1.50"
 FINGERPRINT = "SHA256:abcdef"
+MD5_FINGERPRINT = "MD5:aa:bb:cc:dd"
 DEVICE_ID = "0123456789abcdef0123"
 NODE = "brilliant_0123456789ab"
 UNIQUE_ID = NODE
@@ -60,6 +62,7 @@ STABLE = Release(
     body="Stable notes " + "x" * 300,
     bundle_url="https://example.invalid/stable.tar.gz",
     sha256_url="https://example.invalid/stable.tar.gz.sha256",
+    version="v1.5.0",
 )
 NIGHTLY = Release(
     tag="nightly-20261108",
@@ -68,6 +71,7 @@ NIGHTLY = Release(
     body="",
     bundle_url="https://example.invalid/nightly.tar.gz",
     sha256_url=None,
+    version="v1.5.0-nightly.20261108.g89ec239",
 )
 OLD = Release(
     tag="v1.4.0",
@@ -76,6 +80,7 @@ OLD = Release(
     body="old",
     bundle_url="https://example.invalid/old.tar.gz",
     sha256_url=None,
+    version="v1.4.0",
 )
 
 
@@ -104,10 +109,16 @@ def make_panel() -> MagicMock:
 def panel() -> Generator[MagicMock]:
     """The one Panel double used by the coordinator and the config flow."""
     instance = make_panel()
+    scan = AsyncMock(return_value=HostKeyInfo(FINGERPRINT, MD5_FINGERPRINT))
     with (
         patch("custom_components.brilliant_kiosk.coordinator.Panel", return_value=instance),
-        patch("custom_components.brilliant_kiosk.config_flow.Panel", return_value=instance),
+        patch(
+            "custom_components.brilliant_kiosk.config_flow.Panel", return_value=instance
+        ) as flow_panel,
+        patch("custom_components.brilliant_kiosk.config_flow.fetch_host_key", scan),
     ):
+        instance.fetch_host_key = scan  # the credential-less host key scan of the config flow
+        instance.flow_panel_cls = flow_panel  # how the config flow built its (credentialed) Panel
         yield instance
 
 

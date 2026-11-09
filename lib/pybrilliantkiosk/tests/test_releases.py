@@ -171,3 +171,51 @@ async def test_download_errors():
     }
     with pytest.raises(ReleaseError):
         await releases_api(FakeSession(routes)).download(release())
+
+
+def bundle_release(tag: str, version: str, *, prerelease: bool = False) -> dict[str, Any]:
+    name = f"brilliant-ha-kiosk-{version}.tar.gz"
+    base = f"https://github.com/x/y/releases/download/{tag}/{name}"
+    return {
+        "tag_name": tag,
+        "prerelease": prerelease,
+        "published_at": "2026-11-08T06:00:00Z",
+        "body": "",
+        "assets": [
+            {"name": name, "browser_download_url": base},
+            {"name": name + ".sha256", "browser_download_url": base + ".sha256"},
+        ],
+    }
+
+
+async def test_release_version_comes_from_the_bundle_asset_name_not_the_tag():
+    payload = [
+        bundle_release("nightly-20261108", "v1.4.0-nightly.20261108.g89ec239", prerelease=True),
+        bundle_release("v1.4.0", "v1.4.0"),
+        gh_release("odd-asset-name"),  # asset not called brilliant-ha-kiosk-<VERSION>.tar.gz
+    ]
+    releases = await releases_api(FakeSession({URL: ok(payload)})).list()
+    assert [(r.tag, r.version) for r in releases] == [
+        ("nightly-20261108", "v1.4.0-nightly.20261108.g89ec239"),
+        ("v1.4.0", "v1.4.0"),
+        ("odd-asset-name", None),
+    ]
+
+
+async def test_download_hashes_off_the_event_loop(monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    from pybrilliantkiosk import releases as releases_module
+
+    threads: list[str] = []
+    real = releases_module.sha256_hex
+
+    def spy(data: bytes) -> str:
+        threads.append(threading.current_thread().name)
+        return real(data)
+
+    monkeypatch.setattr(releases_module, "sha256_hex", spy)
+    routes = {"https://x/b.sha256": ok(SHA.encode()), "https://x/b.tar.gz": ok(BUNDLE)}
+    await releases_api(FakeSession(routes)).download(release())
+    assert threads
+    assert threading.main_thread().name not in threads

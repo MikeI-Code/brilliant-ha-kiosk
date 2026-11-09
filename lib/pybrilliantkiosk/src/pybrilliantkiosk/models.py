@@ -97,3 +97,6 @@ class Release:
     body: str
     bundle_url: str
     sha256_url: str | None
+    #: Bundle VERSION, taken from the asset name ``brilliant-ha-kiosk-<VERSION>.tar.gz``
+    #: (a nightly's tag ``nightly-YYYYMMDD`` is not its version).
+    version: str | None = None

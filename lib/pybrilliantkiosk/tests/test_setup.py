@@ -14,6 +14,7 @@ from pybrilliantkiosk import (
     InvalidArgument,
     NotInstalled,
     Panel,
+    PanelError,
     ReleaseError,
     SettingsRejected,
     SetupBusy,
@@ -22,12 +23,13 @@ from pybrilliantkiosk import (
     VerificationFailed,
     kiosk_env_from_bundle,
 )
-from pybrilliantkiosk.panel import INSTALL_DIR
+from pybrilliantkiosk.panel import INSTALL_PREFIX
 from pybrilliantkiosk.setup import error_for_exit, parse_json_object, parse_status
 from test_panel import FakeSFTP, Net, out
 
 BUNDLE = b"tarball"
 SHA = hashlib.sha256(BUNDLE).hexdigest()
+WORKDIR = f"{INSTALL_PREFIX}.AbC123xYz"
 
 STATUS = {
     "state": "active",
@@ -147,20 +149,30 @@ async def test_setup_command_detaches_and_waits(net: Net):
         if "wait" in cmd:
             code = next(waits)
             return out(json.dumps(STATUS), code)
-        return out('{"state": "in_progress"}')
+        if "--detach" in cmd:
+            return out('{"state": "in_progress"}')
+        return out('{"state": "active"}')  # the idle probe
 
     net.conn.handler = handler
     status = await Panel("h").setup_command("rollback")
     assert status.state == "active"
-    assert cmds[0].endswith("ha-kiosk-setup rollback --detach")
-    assert [c.endswith("wait --timeout 100") for c in cmds[1:]] == [True] * 3
+    assert cmds[0].endswith("ha-kiosk-setup status") or " status;" in cmds[0]  # idle check first
+    assert cmds[1].endswith("ha-kiosk-setup rollback --detach")
+    assert [c.endswith("wait --timeout 100") for c in cmds[2:]] == [True] * 3
 
 
 async def test_setup_command_errors(net: Net):
     with pytest.raises(InvalidArgument):
         await Panel("h").setup_command("rm -rf")
     net.conn.handler = lambda c, i: out('{"error": "busy", "exit": 8}', 8)
-    with pytest.raises(SetupBusy):
+    with pytest.raises(SetupBusy):  # the idle probe itself reports busy
+        await Panel("h").setup_command("reapply")
+
+    def busy_on_start(cmd: str, stdin: Any) -> Any:
+        return out('{"error": "busy", "exit": 8}', 8) if "--detach" in cmd else out()
+
+    net.conn.handler = busy_on_start  # a job began between the idle probe and the start
+    with pytest.raises(SetupBusy, match="busy"):
         await Panel("h").setup_command("reapply")
 
     def failing_wait(cmd: str, stdin: Any) -> Any:
@@ -187,8 +199,10 @@ def install_handler(
     def handler(cmd: str, stdin: Any) -> Any:
         if calls is not None:
             calls.append(cmd)
+        if cmd.startswith("d=$(mktemp -d"):
+            return out(f"{WORKDIR}\n")
         if cmd.startswith("sha256sum"):
-            return out(f"{remote_sha}  {INSTALL_DIR}/bundle.tar.gz\n")
+            return out(f"{remote_sha}  {WORKDIR}/bundle.tar.gz\n")
         if "ha-kiosk-setup install" in cmd:
             return out('{"state": "in_progress"}' if start == 0 else '{"error": "x"}', start)
         if "ha-kiosk-setup wait" in cmd:
@@ -204,19 +218,20 @@ async def test_install_via_setup_tool(net: Net):
     status = await Panel("h").install(BUNDLE, SHA.upper())
     assert status.version == "v1.4.0"
     assert net.conn.sftp.sink == [BUNDLE]
-    assert net.conn.sftp.paths == [f"{INSTALL_DIR}/bundle.tar.gz"]
-    assert cmds[0].startswith(f"rm -rf {INSTALL_DIR} && mkdir -m 700")
+    assert net.conn.sftp.paths == [f"{WORKDIR}/bundle.tar.gz"]
+    mktemp = next(c for c in cmds if "mktemp" in c)
+    assert mktemp == f'd=$(mktemp -d {INSTALL_PREFIX}.XXXXXXXX) && chmod 700 "$d" && echo "$d"'
     extract = next(c for c in cmds if "tar -xzOf" in c)
     assert "grep -E '^[^/]+/ha-kiosk-setup$'" in extract
     start = next(c for c in cmds if "ha-kiosk-setup install" in c)
     assert (
-        f"--bundle {INSTALL_DIR}/bundle.tar.gz --sha256 {SHA} --size {len(BUNDLE)} --detach"
+        f"--bundle {WORKDIR}/bundle.tar.gz --sha256 {SHA} --size {len(BUNDLE)} --detach"
         in start
     )
     assert "--env" not in start
     assert "--token" not in start
-    assert f"{INSTALL_DIR}/ha-kiosk-setup install" in start
-    assert cmds[-1] == f"rm -rf {INSTALL_DIR}"
+    assert f"{WORKDIR}/ha-kiosk-setup install" in start
+    assert cmds[-1] == f"rm -rf {WORKDIR}"
 
 
 async def test_install_passes_env_and_token_by_file(net: Net):
@@ -232,10 +247,10 @@ async def test_install_passes_env_and_token_by_file(net: Net):
     net.conn.handler = handler
     await Panel("h").install(BUNDLE, SHA, env="HA_URL=http://x\n", token="s3cr3t-value")
     start = next(c for c in cmds if "ha-kiosk-setup install" in c)
-    assert f"--env {INSTALL_DIR}/env --token {INSTALL_DIR}/token" in start
+    assert f"--env {WORKDIR}/env --token {WORKDIR}/token" in start
     assert stdins == [
-        (f"umask 077; cat > {INSTALL_DIR}/env", "HA_URL=http://x\n"),
-        (f"umask 077; cat > {INSTALL_DIR}/token", "s3cr3t-value"),
+        (f"umask 077; cat > {WORKDIR}/env", "HA_URL=http://x\n"),
+        (f"umask 077; cat > {WORKDIR}/token", "s3cr3t-value"),
     ]
     assert "s3cr3t-value" not in start
 
@@ -257,7 +272,7 @@ async def test_install_falls_back_to_cat(net: Net, error: BaseException):
 
     net.conn.handler = handler
     await Panel("h").install(BUNDLE, SHA)
-    assert cat_inputs == [(f"cat > {INSTALL_DIR}/bundle.tar.gz", BUNDLE)]
+    assert cat_inputs == [(f"cat > {WORKDIR}/bundle.tar.gz", BUNDLE)]
 
 
 async def test_install_upload_connection_error(net: Net):
@@ -279,10 +294,15 @@ async def test_install_rejects_bad_checksums(net: Net):
     net.conn.handler = install_handler(remote_sha="f" * 64, calls=cmds)
     with pytest.raises(ChecksumMismatch, match="panel"):
         await panel.install(BUNDLE, SHA)
-    assert cmds[-1] == f"rm -rf {INSTALL_DIR}"
+    assert cmds[-1] == f"rm -rf {WORKDIR}"
     assert not any("ha-kiosk-setup install" in c for c in cmds)
 
-    net.conn.handler = lambda c, i: out("") if c.startswith("sha256sum") else out()
+    def no_sha(cmd: str, stdin: Any) -> Any:
+        if cmd.startswith("d=$(mktemp"):
+            return out(f"{WORKDIR}\n")
+        return out("") if cmd.startswith("sha256sum") else out()
+
+    net.conn.handler = no_sha
     with pytest.raises(ChecksumMismatch):
         await panel.install(BUNDLE, SHA)
 
@@ -300,7 +320,7 @@ async def test_install_cleanup_failure_is_swallowed(net: Net):
     base = install_handler(remote_sha="e" * 64)
 
     def handler(cmd: str, stdin: Any) -> Any:
-        if cmd == f"rm -rf {INSTALL_DIR}":
+        if cmd == f"rm -rf {WORKDIR}":
             return out("", 1, "nope")
         return base(cmd, stdin)
 
@@ -338,11 +358,13 @@ def test_kiosk_env_from_bundle():
     bundle = make_bundle({"rel/kiosk.env.example": EXAMPLE, "rel/other": b"x"})
     text = kiosk_env_from_bundle(bundle, {"HA_URL": "http://ha:8123", "MQTT_HOST": "broker"})
     lines = text.splitlines()
-    assert "HA_URL=http://ha:8123" in lines
-    assert "MQTT_HOST=broker" in lines
-    assert "KIOSK_MODE=native" in lines
-    assert "GESTURE_2_TAP=load.toggle" in lines
-    assert "KIOSK_MQTT=1" in lines
+    # Rendered like ha-kiosk-setup's render_env: the panel sources this file as root.
+    assert 'HA_URL="http://ha:8123"' in lines
+    assert 'MQTT_HOST="broker"' in lines
+    assert 'KIOSK_MODE="native"' in lines
+    assert 'GESTURE_2_TAP="load.toggle"' in lines
+    assert 'KIOSK_MQTT="1"' in lines
+    assert not any("=" in line and not line.split("=", 1)[1].startswith('"') for line in lines)
     assert not any(line.startswith(("BAD_KEY", "EVIL", "DIM_LEVEL")) for line in lines)
     assert text.endswith("\n")
 
@@ -364,3 +386,118 @@ def test_kiosk_env_from_bundle_member_without_data(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(tarfile.TarFile, "extractfile", lambda self, member: None)
     with pytest.raises(ReleaseError, match=r"no kiosk.env.example"):
         kiosk_env_from_bundle(bundle, {})
+
+
+def test_kiosk_env_from_bundle_values_with_shell_metacharacters_stay_inert(tmp_path: Any):
+    import subprocess
+
+    bundle = make_bundle({"rel/kiosk.env.example": b"KIOSK_MODE=native\n"})
+    text = kiosk_env_from_bundle(bundle, {"HA_URL": "http://h/;touch pwned|id&x>y (z)"})
+    env_file = tmp_path / "kiosk.env"
+    env_file.write_text(text)
+    done = subprocess.run(  # noqa: S603
+        ["sh", "-c", '. "$1"; printf %s "$HA_URL"', "sh", str(env_file)],  # noqa: S607
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert done.stdout == "http://h/;touch pwned|id&x>y (z)"
+    assert not (tmp_path / "pwned").exists()
+
+
+# -- install / setup_command concurrency -----------------------------------------------------
+
+
+async def test_install_uses_a_fresh_directory_each_time_and_removes_it(net: Net):
+    cmds: list[str] = []
+    net.conn.handler = install_handler(calls=cmds)
+    await Panel("h").install(BUNDLE, SHA)
+    mktemps = [c for c in cmds if "mktemp" in c]
+    assert len(mktemps) == 1
+    assert "XXXXXXXX" in mktemps[0]  # a random suffix, never the old fixed path
+    assert f"{INSTALL_PREFIX} " not in " ".join(cmds)
+    assert cmds[-1] == f"rm -rf {WORKDIR}"
+
+
+async def test_install_rejects_unexpected_mktemp_output(net: Net):
+    cmds: list[str] = []
+    base = install_handler(calls=cmds)
+
+    def handler(cmd: str, stdin: Any) -> Any:
+        if cmd.startswith("d=$(mktemp"):
+            return out("/etc\n")  # must never be used (or deleted)
+        return base(cmd, stdin)
+
+    net.conn.handler = handler
+    with pytest.raises(PanelError, match="unexpected output"):
+        await Panel("h").install(BUNDLE, SHA)
+    assert not any(c.startswith("rm -rf") for c in cmds)
+    assert not any("ha-kiosk-setup install" in c for c in cmds)
+
+
+@pytest.mark.parametrize("operation", ["install", "reapply"])
+async def test_install_and_setup_command_refuse_while_a_job_runs(net: Net, operation: str):
+    cmds: list[str] = []
+
+    def handler(cmd: str, stdin: Any) -> Any:
+        cmds.append(cmd)
+        if cmd.endswith("ha-kiosk-setup status") or " status;" in cmd:
+            return out(json.dumps({"state": "in_progress"}))
+        return out()
+
+    net.conn.handler = handler
+    panel = Panel("h")
+    with pytest.raises(SetupBusy, match="running a job"):
+        if operation == "install":
+            await panel.install(BUNDLE, SHA)
+        else:
+            await panel.setup_command("reapply")
+    assert len(cmds) == 1  # only the status probe ran: nothing was uploaded or started
+
+
+async def test_upload_without_connection_is_an_error():
+    with pytest.raises(CannotConnect, match="lost"):
+        await Panel("h")._upload(b"x", WORKDIR + "/bundle.tar.gz")
+
+
+async def test_install_hashes_off_the_event_loop(net: Net, monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    from pybrilliantkiosk import panel as panel_module
+
+    threads: list[str] = []
+    real = panel_module.sha256_hex
+
+    def spy(data: bytes) -> str:
+        threads.append(threading.current_thread().name)
+        return real(data)
+
+    monkeypatch.setattr(panel_module, "sha256_hex", spy)
+    net.conn.handler = install_handler()
+    await Panel("h").install(BUNDLE, SHA)
+    assert threads
+    assert threading.main_thread().name not in threads
+
+
+async def test_concurrent_operations_on_one_panel_are_serialised(net: Net):
+    import asyncio
+
+    running = 0
+    peak = 0
+    base = install_handler()
+
+    async def slow_run(command: str, **kw: Any) -> Any:
+        nonlocal running, peak
+        if "ha-kiosk-setup reapply --detach" in command:
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+        result = base(command, kw.get("input"))
+        return result
+
+    net.conn.run = slow_run  # type: ignore[method-assign]
+    panel = Panel("h")
+    await asyncio.gather(panel.setup_command("reapply"), panel.setup_command("reapply"))
+    assert peak == 1
