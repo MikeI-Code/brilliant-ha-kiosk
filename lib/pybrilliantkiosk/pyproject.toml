@@ -9,13 +9,26 @@ description = "Async client for managing Brilliant smart-panel kiosks (ha-kiosk)
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.13"
+authors = [{ name = "Mike Ippolito" }]
+keywords = ["brilliant", "home-assistant", "kiosk", "ssh", "asyncio"]
 dependencies = ["asyncssh>=2.17", "aiohttp>=3.10"]
 classifiers = [
   "Framework :: AsyncIO",
   "License :: OSI Approved :: Apache Software License",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Home Automation",
   "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/MikeI-Code/brilliant-ha-kiosk"
+Source = "https://github.com/MikeI-Code/brilliant-ha-kiosk/tree/main/lib/pybrilliantkiosk"
+Issues = "https://github.com/MikeI-Code/brilliant-ha-kiosk/issues"
+Documentation = "https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/lib/pybrilliantkiosk/README.md"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-cov", "mypy", "ruff"]
