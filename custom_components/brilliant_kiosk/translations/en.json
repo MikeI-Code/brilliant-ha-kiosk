@@ -256,7 +256,37 @@
     },
     "mqtt_provider_not_applied": {
       "title": "The MQTT provider could not be applied",
-      "description": "Changing the MQTT provider of {host} needs a settings change on the panel, which failed: {error}. Save the options again once the panel is reachable."
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Apply the MQTT provider",
+            "description": "Changing the MQTT provider of {host} needs a settings change on the panel, which failed: {error}. Select Submit to apply the chosen provider ({provider}) again."
+          }
+        },
+        "error": {
+          "apply_failed": "The panel still refused the change. See the log for details, fix the cause and try again."
+        },
+        "abort": {
+          "not_loaded": "The panel is not loaded. Reload the integration first."
+        }
+      }
+    },
+    "env_drift": {
+      "title": "Panel settings differ between the running and the saved copy",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Reconcile the panel settings",
+            "description": "The running settings of {host} (/etc/ha-kiosk/kiosk.env) and the saved copy that a reinstall or reapply rebuilds them from differ in: {keys}. A reinstall would drop or change these. Select Submit to write the running values to both copies (nothing is restarted)."
+          }
+        },
+        "error": {
+          "reconcile_failed": "The panel refused the change: {error}"
+        },
+        "abort": {
+          "not_loaded": "The panel is not loaded. Reload the integration first."
+        }
+      }
     }
   },
   "services": {

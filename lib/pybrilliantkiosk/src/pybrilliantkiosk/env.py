@@ -14,8 +14,9 @@ quoted shell string is inert (no ``"``, `` ` ``, ``$``, backslash or control cha
 
 from __future__ import annotations
 
+import ast
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 
 from .exceptions import InvalidArgument
@@ -159,12 +160,54 @@ def render_line(key: str, value: str) -> str:
     return f'{validate_key(key)}="{format_value(value)}"'
 
 
-def validate_setting_key(key: str) -> str:
-    """Return the key if ``ha-kiosk-setup`` accepts it as a setting."""
+def validate_setting_key(key: str, allowed: Collection[str] | None = None) -> str:
+    """Return the key if ``ha-kiosk-setup`` accepts it as a setting.
+
+    ``allowed`` is the panel's own list (see :func:`parse_setup_keys`); the bundled
+    :data:`KNOWN_KEYS` is used when it is not known. Only the allowlist is dynamic: key and value
+    charset rules stay as strict as ever.
+    """
     validate_key(key)
-    if key not in KNOWN_KEYS and not _GESTURE_KEY_RE.match(key):
+    known = KNOWN_KEYS if allowed is None else allowed
+    if key not in known and not _GESTURE_KEY_RE.match(key):
         raise InvalidArgument(f"unknown setting: {key!r}")
     return key
+
+
+_SETTING_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def parse_setup_keys(source: str) -> frozenset[str] | None:
+    """The setting names in ``KEYS`` of a ``ha-kiosk-setup`` script, or None if not found.
+
+    The script is parsed (never run). ``KEYS`` may be any module-level expression made of string
+    literals: ``set("A B C".split())`` (a triple-quoted string in the tool today), ``{"A", "B"}``,
+    ``frozenset([...])``; every whitespace separated word of every literal in it counts, which
+    covers all of these. A word that is not an upper-case setting name is ignored.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value: ast.expr | None = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names, value = [node.target.id], node.value
+        else:
+            continue
+        if "KEYS" not in names or value is None:
+            continue
+        keys = {
+            word
+            for part in ast.walk(value)
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            for word in part.value.split()
+            if _SETTING_NAME_RE.match(word)
+        }
+        return frozenset(keys) if keys else None
+    return None
 
 
 def validate_key(key: str) -> str:
@@ -172,6 +215,37 @@ def validate_key(key: str) -> str:
     if not KEY_RE.match(key):
         raise InvalidArgument(f"invalid env key: {key!r}")
     return key
+
+
+def drift_keys(saved: EnvFile, running: EnvFile) -> tuple[str, ...]:
+    """Keys whose effective value differs between two copies (or that only one copy has)."""
+    a, b = saved.values(), running.values()
+    return tuple(k for k in dict.fromkeys((*a, *b)) if a.get(k) != b.get(k))
+
+
+def reconcile(saved: EnvFile, running: EnvFile) -> tuple[EnvFile, tuple[str, ...], tuple[str, ...]]:
+    """Merge two diverged copies: the saved copy plus what only the running copy has.
+
+    The running copy (``/etc/ha-kiosk/kiosk.env``) is what the panel actually uses, so its values
+    win for keys in both. Comments and order of the saved copy are kept; keys only the running
+    copy has are appended. Returns ``(merged, adopted, skipped)``: the keys taken from the
+    running copy, and those whose value could not be taken because it is not safe to write
+    (kept as in the saved copy, or left out).
+    """
+    merged = saved
+    saved_values = saved.values()
+    adopted: list[str] = []
+    skipped: list[str] = []
+    for key, value in running.values().items():
+        if saved_values.get(key) == value:
+            continue
+        try:
+            merged = merged.set(key, value)
+        except InvalidArgument:
+            skipped.append(key)
+        else:
+            adopted.append(key)
+    return merged, tuple(adopted), tuple(skipped)
 
 
 @dataclass(frozen=True, slots=True)

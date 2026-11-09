@@ -37,6 +37,8 @@ from .const import (
     CONF_NODE,
     DATA_RELEASES,
     DOMAIN,
+    ISSUE_ENV_DRIFT,
+    ISSUE_MQTT_PROVIDER,
     MQTT_DOMAIN,
     PANEL_MQTT_FULL,
     PANEL_MQTT_KIOSK,
@@ -61,6 +63,8 @@ class KioskData:
     health: PanelHealth
     env: Mapping[str, str]
     setup: SetupStatus
+    #: Keys that differ between the running and the saved copy of kiosk.env.
+    drift: tuple[str, ...] = ()
 
 
 class ReleasesCoordinator(DataUpdateCoordinator[tuple[Release, ...]]):
@@ -162,6 +166,10 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                 setup = await self.panel.setup_status()
             except SetupError:
                 setup = SetupStatus(state="unknown")
+            try:
+                drift = await self.panel.env_drift()
+            except CommandFailed:
+                drift = ()
         except AuthFailed as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN, translation_key="invalid_auth"
@@ -188,8 +196,9 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             ) from err
         ir.async_delete_issue(self.hass, DOMAIN, host_key_issue)
         await self._sync_voice_issue(env)
+        self._sync_drift_issue(drift)
         self._link_mqtt_device(env)
-        return KioskData(health=health, env=env, setup=setup)
+        return KioskData(health=health, env=env, setup=setup, drift=drift)
 
     # -- device registry ----------------------------------------------------------------
 
@@ -263,7 +272,39 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         else:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
 
+    @callback
+    def _sync_drift_issue(self, drift: tuple[str, ...]) -> None:
+        """Repair issue while the running and the saved copy of kiosk.env differ.
+
+        ``ha-kiosk-setup`` rebuilds the running copy from the saved one on install and reapply, so
+        settings applied only to the running copy would be dropped then.
+        """
+        issue_id = f"{ISSUE_ENV_DRIFT}_{self.config_entry.entry_id}"
+        if drift:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                data={"entry_id": self.config_entry.entry_id},
+                is_fixable=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=ISSUE_ENV_DRIFT,
+                translation_placeholders={
+                    "host": self.config_entry.data[CONF_HOST],
+                    "keys": ", ".join(drift),
+                },
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
     # -- actions ------------------------------------------------------------------------
+
+    async def async_reconcile_env(self) -> tuple[str, ...]:
+        """Make the running and the saved copy of kiosk.env identical; returns the keys fixed."""
+        with panel_errors():
+            keys = await self.panel.reconcile_env()
+        await self.async_request_refresh()
+        return keys
 
     async def async_set_settings(self, changes: Mapping[str, str]) -> None:
         """Merge settings into kiosk.env, restart the display service and refresh."""
@@ -280,22 +321,26 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             await self.panel.install(bundle, sha256)
         await self.async_request_refresh()
 
-    async def async_apply_mqtt_provider(self, provider: str, device_id: str) -> None:
+    async def async_apply_mqtt_provider(self, provider: str, device_id: str) -> bool:
         """Set KIOSK_MQTT (and MQTT_DEVICE_ID) on the panel when it differs; never switch off.
 
-        Called from the options update listener, not from the options flow. A failure raises a
-        repair issue instead of blocking the options dialog.
+        Called from the options update listener, not from the options flow, and by the repair
+        flow that re-applies it. A failure raises a (fixable) repair issue instead of blocking the
+        options dialog; returns whether the panel now has the provider.
+
+        A panel without ``KIOSK_MQTT`` already runs the built-in mode (setup's default), so
+        nothing is written for it when the built-in provider is wanted.
         """
-        issue_id = f"mqtt_provider_not_applied_{self.config_entry.entry_id}"
+        issue_id = f"{ISSUE_MQTT_PROVIDER}_{self.config_entry.entry_id}"
         env = self.data.env if self.data else {}
         if provider == PROVIDER_BRILLIANT_MQTT:
             changes = {"KIOSK_MQTT": PANEL_MQTT_KIOSK, "MQTT_DEVICE_ID": device_id}
             delete: tuple[str, ...] = ()
         else:
-            changes = {"KIOSK_MQTT": PANEL_MQTT_FULL}
+            changes = {"KIOSK_MQTT": PANEL_MQTT_FULL} if "KIOSK_MQTT" in env else {}
             delete = ("MQTT_DEVICE_ID",) if env.get("MQTT_DEVICE_ID") else ()
         try:
-            if await self.panel.set_env(changes, delete):
+            if (changes or delete) and await self.panel.set_env(changes, delete):
                 await self.panel.restart("ha-kiosk-bridge")
         except PanelError as err:
             _LOGGER.warning("Could not apply the MQTT provider to %s: %s", self.panel.host, err)
@@ -303,16 +348,18 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
                 self.hass,
                 DOMAIN,
                 issue_id,
-                is_fixable=False,
+                data={"entry_id": self.config_entry.entry_id},
+                is_fixable=True,
                 severity=ir.IssueSeverity.WARNING,
-                translation_key="mqtt_provider_not_applied",
+                translation_key=ISSUE_MQTT_PROVIDER,
                 translation_placeholders={
                     "host": self.config_entry.data[CONF_HOST],
                     "error": str(err),
                 },
             )
-            return
+            return False
         ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        return True
 
     async def async_shutdown(self) -> None:
         """Stop timers, close the SSH connection and drop the shared releases coordinator."""

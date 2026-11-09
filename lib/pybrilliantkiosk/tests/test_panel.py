@@ -46,6 +46,24 @@ def out(stdout: str | bytes = "", status: int | None = 0, err: str | bytes = "")
     return SimpleNamespace(stdout=enc(stdout), stderr=enc(err), exit_status=status)
 
 
+def state_out(
+    saved: str | None,
+    running: str | object | None = ...,
+    overrides: str = "",
+    prelude: str = "",
+) -> Any:
+    """What the one-round-trip settings read prints (``running`` defaults to ``saved``)."""
+    if running is ...:
+        running = saved
+    text = prelude + "#--kl:begin--\n"
+    for name, body in (("config", saved), ("running", running)):
+        if body is None:
+            text += f"#--kl:{name}:absent--\n"
+        else:
+            text += f"#--kl:{name}:present--\n{body}\n"
+    return out(text + f"#--kl:overrides--\n{overrides}")
+
+
 class FakeFile:
     def __init__(self, sink: list[bytes]) -> None:
         self.sink = sink
@@ -353,13 +371,14 @@ ENV_TEXT = "# comment\nDAY_LEVEL=15\nMQTT_PASSWORD=hunter2\nHA_URL=http://x:8123
 
 
 async def test_get_env(net: Net):
-    net.conn.handler = lambda c, i: out(ENV_TEXT)
+    net.conn.handler = lambda c, i: state_out(ENV_TEXT)
     panel = Panel("h")
     masked = await panel.get_env()
     assert masked["MQTT_PASSWORD"] != "hunter2"
     assert masked["DAY_LEVEL"] == "15"
     assert (await panel.get_env(mask_secrets=False))["MQTT_PASSWORD"] == "hunter2"
     assert "/var/lib/ha-kiosk/config/kiosk.env" in net.conn.calls[0][0]
+    assert "/etc/ha-kiosk/kiosk.env" in net.conn.calls[0][0]
 
 
 def env_handler(
@@ -368,16 +387,20 @@ def env_handler(
     state: str = "active",
     calls: list[tuple[str, Any]] | None = None,
     write_status: int = 0,
+    running: str | object | None = ...,
+    setup_tool: str | None = None,
 ) -> Any:
-    """Fake panel: status probe, config read (with overrides) and the locked write."""
+    """Fake panel: status probe, settings read (both copies, overrides), tool and locked write."""
 
     def handler(cmd: str, stdin: Any) -> Any:
         if calls is not None:
             calls.append((cmd, stdin))
         if "ha-kiosk-setup status" in cmd:
             return out(json.dumps({"state": state}))
-        if cmd.startswith("if [ -f /var/lib/ha-kiosk/config/kiosk.env"):
-            return out(f"{base}\n#--overrides--\n{overrides}")
+        if cmd.startswith("echo '#--kl:begin--'"):
+            return state_out(base, running, overrides)
+        if cmd.startswith("cat /var/lib/ha-kiosk/ha-kiosk-setup"):
+            return out(setup_tool or "", 0 if setup_tool else 1)
         if "fcntl.flock" in cmd:
             return out("", write_status)
         return out()
@@ -389,7 +412,8 @@ def locked_write(calls: list[tuple[str, Any]]) -> tuple[str, str, Any]:
     """(runner python code, inner shell script, stdin) of the one locked write in ``calls``."""
     writes = [(c, i) for c, i in calls if "fcntl.flock" in c]
     assert len(writes) == 1
-    command, stdin = writes[0]
+    command, raw = writes[0]
+    stdin = raw.decode() if isinstance(raw, bytes) else raw  # the wire carries UTF-8 bytes
     words = shlex.split(command)
     assert words[:2] == ["/data/switch-embedded/env/bin/python", "-c"]
     return words[2], words[3], stdin
@@ -624,8 +648,8 @@ async def test_bus(net: Net):
 
 
 async def test_get_settings_merges_overrides(net: Net):
-    net.conn.handler = lambda c, i: out(
-        "A=1\nDAY_LEVEL=15\nMQTT_PASSWORD=s\n\n#--overrides--\nDAY_LEVEL=9\nOTHER=1\n"
+    net.conn.handler = lambda c, i: state_out(
+        "A=1\nDAY_LEVEL=15\nMQTT_PASSWORD=s\n", overrides="DAY_LEVEL=9\nOTHER=1\n"
     )
     settings = await Panel("h").get_settings()
     assert settings["DAY_LEVEL"] == "9"
@@ -634,3 +658,391 @@ async def test_get_settings_merges_overrides(net: Net):
     assert settings["MQTT_PASSWORD"] != "s"
     assert (await Panel("h").get_settings(mask_secrets=False))["MQTT_PASSWORD"] == "s"
     assert "overrides.env" in net.conn.calls[0][0]
+    net.conn.handler = lambda c, i: out("garbage, no begin marker")
+    with pytest.raises(CommandFailed, match="unexpected output"):
+        await Panel("h").get_settings()
+
+
+# -- A: host key algorithms ---------------------------------------------------------------------
+
+
+async def test_host_key_algorithms_are_requested_in_openssh_order(net: Net):
+    from pybrilliantkiosk.panel import HOST_KEY_ALGS
+
+    assert HOST_KEY_ALGS[0] == "ssh-ed25519"  # the key ssh, ssh-keyscan and plink show first
+    assert HOST_KEY_ALGS.index("ssh-ed25519") < HOST_KEY_ALGS.index("rsa-sha2-512")
+    await fetch_host_key("h")
+    assert net.kwargs["server_host_key_algs"] == list(HOST_KEY_ALGS)
+    net.kwargs = {}
+    await Panel("h", password="pw").connect()
+    assert net.kwargs["server_host_key_algs"] == list(HOST_KEY_ALGS)
+
+
+async def test_host_key_info_carries_the_key_algorithm(net: Net):
+    info = await fetch_host_key("h")
+    assert info.algorithm == "ssh-ed25519"
+    assert info.label == "ED25519"
+    assert info.display == f"ED25519 {SHA_FP}"
+    assert info.matches(info.display)  # the shown text is accepted as a pin as well
+    from pybrilliantkiosk import HostKeyInfo
+
+    assert HostKeyInfo("SHA256:x", "MD5:y").display == "SHA256:x"  # unknown type: just the hash
+    labels = {
+        "ecdsa-sha2-nistp256": "ECDSA",
+        "rsa-sha2-512": "RSA",
+        "ssh-rsa": "RSA",
+        "ssh-dss": "DSA",
+        "sk-something": "SK-SOMETHING",
+    }
+    for alg, label in labels.items():
+        assert HostKeyInfo("SHA256:x", "MD5:y", alg).label == label
+
+
+# -- B: stdin and the kiosk.env write script ----------------------------------------------------
+
+
+def env_script_for(sha: str, tmp_path: Any) -> str:
+    """The generated write script with the panel paths pointed into ``tmp_path``."""
+    from pybrilliantkiosk.panel import _write_env_script
+
+    script = _write_env_script((), True, sha)
+    for src, dst in (
+        ("/var/lib/ha-kiosk/config/kiosk.env", tmp_path / "var" / "kiosk.env"),
+        ("/etc/ha-kiosk/kiosk.env", tmp_path / "etc" / "kiosk.env"),
+    ):
+        (dst.parent).mkdir(exist_ok=True)
+        script = script.replace(src, str(dst))
+    return script
+
+
+def run_script(script: str, stdin: bytes) -> Any:
+    import subprocess
+
+    return subprocess.run(  # noqa: S603
+        ["sh", "-c", script],  # noqa: S607
+        input=stdin,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_write_script_requires_a_hash():
+    from pybrilliantkiosk.panel import _write_env_script
+
+    with pytest.raises(InvalidArgument, match="sha256"):
+        _write_env_script((), True)
+    with pytest.raises(InvalidArgument, match="sha256"):
+        _write_env_script((), True, "not-a-hash")
+    assert _write_env_script(("A",), False).startswith("set -e")  # purge-only needs none
+
+
+@pytest.mark.parametrize("stdin", [b"", b"A=1\n", b"A=\"1\"\nB=\"2\""])
+def test_write_script_refuses_empty_or_wrong_input_and_keeps_the_files(
+    tmp_path: Any, stdin: bytes
+):
+    import hashlib
+
+    new = b'A="1"\nB="2"\n'
+    script = env_script_for(hashlib.sha256(new).hexdigest(), tmp_path)
+    for name in ("var", "etc"):
+        (tmp_path / name / "kiosk.env").write_bytes(b'ORIG="1"\n')
+    done = run_script(script, stdin)
+    assert done.returncode == 3
+    assert b"nothing changed" in done.stderr
+    for name in ("var", "etc"):
+        assert (tmp_path / name / "kiosk.env").read_bytes() == b'ORIG="1"\n'
+        assert not (tmp_path / name / "kiosk.env.bak").exists()
+    leftovers = {p.name for d in ("var", "etc") for p in (tmp_path / d).iterdir()}
+    assert leftovers == {"kiosk.env"}  # no temp file left behind
+
+
+def test_write_script_replaces_both_copies_for_the_right_input(tmp_path: Any):
+    import hashlib
+
+    new = b'A="1"\nB="2"\n'
+    script = env_script_for(hashlib.sha256(new).hexdigest().upper(), tmp_path)
+    for name in ("var", "etc"):
+        (tmp_path / name / "kiosk.env").write_bytes(b'ORIG="1"\n')
+    done = run_script(script, new)
+    assert done.returncode == 0, done.stderr
+    for name in ("var", "etc"):
+        assert (tmp_path / name / "kiosk.env").read_bytes() == new
+        assert (tmp_path / name / "kiosk.env.bak").read_bytes() == b'ORIG="1"\n'
+    assert not [p for p in tmp_path.rglob("*") if ".tmp." in p.name]
+
+
+async def test_incomplete_stdin_is_a_clear_error(net: Net):
+    from pybrilliantkiosk import ChecksumMismatch
+
+    net.conn.handler = env_handler(write_status=3)
+    with pytest.raises(ChecksumMismatch, match="did not arrive intact"):
+        await Panel("h").set_env({"DAY_LEVEL": "1"})
+
+
+async def test_set_env_sends_the_hash_of_exactly_what_it_sends(net: Net):
+    import hashlib
+
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(calls=calls)
+    await Panel("h").set_env({"DAY_LEVEL": "9"})
+    _, script, stdin = locked_write(calls)
+    assert hashlib.sha256(stdin.encode()).hexdigest() in script
+
+
+async def test_run_encodes_text_and_passes_bytes_through(net: Net):
+    panel = Panel("h")
+    await panel._run("cat", stdin="text \u00e9\n")
+    await panel._run("cat", stdin=b"\x00\xff")
+    await panel._run("cat")
+    inputs = [i for _, i in net.conn.calls]
+    assert inputs == ["text \u00e9\n".encode(), b"\x00\xff", None]
+
+
+# -- C: divergent copies ------------------------------------------------------------------------
+
+SAVED = '# saved\nDAY_LEVEL="9"\nKIOSK_MQTT="1"\n'
+RUNNING = '# Written by ha-kiosk-setup\nDAY_LEVEL="12"\nKIOSK_MQTT="1"\nHA_ZOOM="150"\n'
+
+
+async def test_env_drift_lists_differing_keys(net: Net):
+    net.conn.handler = lambda c, i: state_out(SAVED, RUNNING)
+    assert await Panel("h").env_drift() == ("DAY_LEVEL", "HA_ZOOM")
+    net.conn.handler = lambda c, i: state_out(SAVED, SAVED)
+    assert await Panel("h").env_drift() == ()
+    net.conn.handler = lambda c, i: state_out(SAVED, None)  # one copy only: nothing to compare
+    assert await Panel("h").env_drift() == ()
+    net.conn.handler = lambda c, i: state_out(None, RUNNING)
+    assert await Panel("h").env_drift() == ()
+
+
+async def test_set_env_reconciles_diverged_copies_instead_of_dropping_running_keys(
+    net: Net, caplog: pytest.LogCaptureFixture
+):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED, running=RUNNING, calls=calls)
+    panel = Panel("h")
+    with caplog.at_level("WARNING"):
+        changed = await panel.set_env({"DIM_LEVEL": "3"})
+    assert changed == ("DIM_LEVEL",)  # HA_ZOOM and DAY_LEVEL=12 were already in effect
+    _, _, stdin = locked_write(calls)
+    # saved copy + the key only /etc had, running value preferred, comments of the saved copy kept
+    assert stdin == '# saved\nDAY_LEVEL="12"\nKIOSK_MQTT="1"\nHA_ZOOM="150"\nDIM_LEVEL="3"\n'
+    assert panel.last_reconciled == ("DAY_LEVEL", "HA_ZOOM")
+    assert "kept the running value of DAY_LEVEL, HA_ZOOM" in caplog.text
+
+
+async def test_set_env_with_no_change_still_heals_the_drift(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED, running=RUNNING, calls=calls)
+    panel = Panel("h")
+    # Nothing effective changes, but the copies differ, so both are rewritten identically.
+    changed = await panel.set_env({"DAY_LEVEL": "12"}, restart=True)
+    assert changed == ()
+    _, _, stdin = locked_write(calls)
+    assert 'HA_ZOOM="150"' in stdin
+    assert not any("systemctl restart" in c for c, _ in calls)
+
+
+async def test_set_env_delete_applies_after_reconcile(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED, running=RUNNING, calls=calls)
+    assert await Panel("h").set_env({}, ["HA_ZOOM"]) == ("HA_ZOOM",)
+    _, _, stdin = locked_write(calls)
+    assert "HA_ZOOM" not in stdin
+
+
+async def test_config_only_keys_count_as_changed_when_written_to_the_running_copy(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(
+        base='DAY_LEVEL="9"\nHA_ZOOM="150"\n', running='DAY_LEVEL="9"\n', calls=calls
+    )
+    assert await Panel("h").set_env({"DIM_LEVEL": "3"}) == ("HA_ZOOM", "DIM_LEVEL")
+
+
+async def test_reconcile_env_writes_both_copies(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED, running=RUNNING, calls=calls)
+    assert await Panel("h").reconcile_env() == ("DAY_LEVEL", "HA_ZOOM")
+    _, _, stdin = locked_write(calls)
+    assert stdin == '# saved\nDAY_LEVEL="12"\nKIOSK_MQTT="1"\nHA_ZOOM="150"\n'
+
+
+async def test_reconcile_env_without_drift_writes_nothing(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=SAVED, calls=calls)
+    assert await Panel("h").reconcile_env() == ()
+    assert not any("fcntl.flock" in c for c, _ in calls)
+
+
+async def test_unsafe_running_values_are_left_out_and_block_reconcile(
+    net: Net, caplog: pytest.LogCaptureFixture
+):
+    calls: list[tuple[str, Any]] = []
+    unsafe = 'DAY_LEVEL="9"\nHA_URL="http://x/$(id)"\n'
+    net.conn.handler = env_handler(base=SAVED, running=unsafe, calls=calls)
+    with pytest.raises(InvalidArgument, match="HA_URL"):
+        await Panel("h").reconcile_env()
+    assert not any("fcntl.flock" in c for c, _ in calls)
+    with caplog.at_level("WARNING"):
+        await Panel("h").set_env({"DIM_LEVEL": "3"})
+    assert "left out unsafe values of HA_URL" in caplog.text
+    _, _, stdin = locked_write(calls)
+    assert "$(id)" not in stdin  # never written
+
+
+async def test_set_env_with_no_copies_creates_them(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=None, calls=calls)
+    assert await Panel("h").set_env({"DAY_LEVEL": "9"}) == ("DAY_LEVEL",)
+    _, _, stdin = locked_write(calls)
+    assert stdin == 'DAY_LEVEL="9"\n'
+    calls.clear()
+    assert await Panel("h").set_env({}, ["DAY_LEVEL"]) == ()  # nothing there, nothing to do
+    assert not any("fcntl.flock" in c for c, _ in calls)
+
+
+async def test_set_env_with_only_the_running_copy_uses_it_as_base(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=None, running=RUNNING, calls=calls)
+    await Panel("h").set_env({"DIM_LEVEL": "3"})
+    _, _, stdin = locked_write(calls)
+    assert stdin.startswith("# Written by ha-kiosk-setup\n")
+    assert 'HA_ZOOM="150"' in stdin
+
+
+# -- D: the allowlist comes from the panel's tool -------------------------------------------------
+
+TOOL = (
+    '"""tool"""\nimport re\nKEYS = set("""\nDAY_LEVEL DIM_LEVEL WEATHER_FX\n""".split())\n'
+)
+
+
+async def test_setting_allowlist_is_read_from_the_installed_tool(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(setup_tool=TOOL, calls=calls)
+    panel = Panel("h")
+    assert await panel.set_env({"WEATHER_FX": "full"}) == ("WEATHER_FX",)  # not in v1.4.0's list
+    with pytest.raises(InvalidArgument, match="unknown setting"):
+        await panel.set_env({"HA_ZOOM": "150"})  # in the bundled list, not in this tool
+    with pytest.raises(InvalidArgument, match="unknown setting"):
+        await panel.set_env({"TYPO_KEY": "1"})
+    assert await panel.set_env({"GESTURE_2_TAP": "x"})  # patterns stay allowed
+    tool_reads = [c for c, _ in calls if c.startswith("cat /var/lib/ha-kiosk/ha-kiosk-setup")]
+    assert len(tool_reads) == 1  # cached for the connection
+
+
+async def test_allowlist_cache_is_per_connection(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(setup_tool=TOOL, calls=calls)
+    panel = Panel("h")
+    await panel.set_env({"WEATHER_FX": "full"})
+    await panel.close()
+    net.conn = FakeConn(net.conn.handler)  # the next connection is a different object
+    await panel.set_env({"DIM_LEVEL": "2"})
+    assert len([c for c, _ in calls if c.startswith("cat /var/lib/ha-kiosk/ha-kiosk-setup")]) == 2
+
+
+@pytest.mark.parametrize("tool", [None, "def broken(:\n", "X = 1\n", 'KEYS = {"lower"}\n'])
+async def test_allowlist_falls_back_to_the_bundled_list(net: Net, tool: str | None):
+    net.conn.handler = env_handler(setup_tool=tool)
+    panel = Panel("h")
+    assert await panel.set_env({"HA_ZOOM": "150"}) == ("HA_ZOOM",)
+    with pytest.raises(InvalidArgument, match="unknown setting"):
+        await panel.set_env({"WEATHER_FX": "full"})
+
+
+async def test_charset_rules_stay_strict_with_a_dynamic_allowlist(net: Net):
+    net.conn.handler = env_handler(setup_tool=TOOL)
+    panel = Panel("h")
+    for bad in ('a"b', "a$b", "a`b", "a\\b", "a'b", "a\nb"):
+        with pytest.raises(InvalidArgument):
+            await panel.set_env({"WEATHER_FX": bad})
+    with pytest.raises(InvalidArgument):
+        await panel.set_env({"bad key": "x"})
+
+
+# -- E: blank lines -------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '# Written by ha-kiosk-setup\nA="1"\nB="2"\n',
+        "\nA=1\n",  # a blank first line that IS in the file stays
+        "A=1\n\n\nB=2\n\n",
+        "# only a comment\n",
+        'A="1"\n# trailing comment\n',
+    ],
+)
+async def test_round_trip_changes_only_what_was_asked(net: Net, text: str):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base=text, calls=calls)
+    await Panel("h").set_env({"DAY_LEVEL": "7"})
+    _, _, stdin = locked_write(calls)
+    assert stdin == text + 'DAY_LEVEL="7"\n'
+
+
+async def test_banner_output_before_the_settings_is_not_written_into_kiosk_env(net: Net):
+    calls: list[tuple[str, Any]] = []
+    base = env_handler(base='A="1"', calls=calls)
+
+    def handler(cmd: str, stdin: Any) -> Any:
+        if cmd.startswith("echo '#--kl:begin--'"):
+            return state_out('A="1"', prelude="\nWelcome to the panel\n\n")
+        return base(cmd, stdin)
+
+    net.conn.handler = handler
+    await Panel("h").set_env({"DAY_LEVEL": "7"})
+    _, _, stdin = locked_write(calls)
+    assert stdin == 'A="1"\nDAY_LEVEL="7"\n'
+
+
+async def test_file_without_trailing_newline_round_trips(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base="A=1", calls=calls)
+    await Panel("h").set_env({"DAY_LEVEL": "7"})
+    _, _, stdin = locked_write(calls)
+    assert stdin == 'A=1\nDAY_LEVEL="7"\n'
+
+
+async def test_no_op_round_trip_writes_nothing(net: Net):
+    calls: list[tuple[str, Any]] = []
+    net.conn.handler = env_handler(base="\n# c\nDAY_LEVEL=1\n", calls=calls)
+    assert await Panel("h").set_env({"DAY_LEVEL": "1"}) == ()
+    assert not any("fcntl.flock" in c for c, _ in calls)
+
+
+def run_sh_c(command: str, cwd: Any) -> str:
+    """Run ``sh -c`` like sshd does (no ``-e``)."""
+    import subprocess
+
+    done = subprocess.run(  # noqa: S603
+        ["sh", "-c", command],  # noqa: S607
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout
+
+
+def test_state_read_survives_real_sh_output(tmp_path: Any):
+    """Run the real read command with sh over files with awkward endings, then parse it."""
+    from pybrilliantkiosk.panel import _STATE_COMMAND, _parse_state
+
+    (tmp_path / "saved").write_bytes(b"\n# c\nA=1\n\n")
+    (tmp_path / "running").write_bytes(b"A=1\nB=2")  # no trailing newline
+    command = (
+        _STATE_COMMAND.replace("/var/lib/ha-kiosk/config/kiosk.env", str(tmp_path / "saved"))
+        .replace("/etc/ha-kiosk/kiosk.env", str(tmp_path / "running"))
+        .replace("/var/lib/ha-kiosk/overrides.env", str(tmp_path / "overrides"))
+    )
+    state = _parse_state(run_sh_c(command, tmp_path))
+    assert state.saved is not None
+    assert state.saved.serialize() == "\n# c\nA=1\n\n"
+    assert state.running is not None
+    assert state.running.serialize() == "A=1\nB=2\n"
+    assert state.drift == ("B",)
+    assert state.overrides == {}
+    (tmp_path / "saved").unlink()
+    assert _parse_state(run_sh_c(command, tmp_path)).saved is None

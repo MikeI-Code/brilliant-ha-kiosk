@@ -1,16 +1,26 @@
 """End-to-end against an in-process asyncssh server on loopback (no panel, no network)."""
 
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import asyncssh
 import pytest
 
-from pybrilliantkiosk import AuthFailed, CannotConnect, HostKeyMismatch, Panel
+from pybrilliantkiosk import (
+    AuthFailed,
+    CannotConnect,
+    HostKeyMismatch,
+    Panel,
+    fetch_host_key,
+)
+from pybrilliantkiosk import panel as panel_module
 
 SERVER_KEY = asyncssh.generate_private_key("ssh-ed25519")
+RSA_KEY = asyncssh.generate_private_key("ssh-rsa", key_size=2048)
+ECDSA_KEY = asyncssh.generate_private_key("ecdsa-sha2-nistp256")
 FP = SERVER_KEY.get_fingerprint("sha256")
+RSA_FP = RSA_KEY.get_fingerprint("sha256")
 BUNDLE = b"bundle"
 SHA = hashlib.sha256(BUNDLE).hexdigest()
 
@@ -43,8 +53,13 @@ async def _handle(process: Any) -> None:
         process.stdout.write(b'{"state": "in_progress"}\n')
     elif "ha-kiosk-setup wait" in cmd:
         process.stdout.write(b'{"state": "active", "version": "v9"}\n')
-    elif "kiosk.env" in cmd and cmd.startswith("if [ -f"):
-        process.stdout.write(b"A=1\n")
+    elif cmd.startswith("echo '#--kl:begin--'"):
+        process.stdout.write(
+            b"#--kl:begin--\n#--kl:config:present--\nA=1\n\n"
+            b"#--kl:running:absent--\n#--kl:overrides--\n"
+        )
+    elif cmd == "echo-stdin":
+        process.stdout.write(stdin)
     elif cmd == "fail":
         process.stderr.write(b"boom")
         process.exit(5)
@@ -58,7 +73,7 @@ async def port() -> AsyncIterator[int]:
         _Server,
         "127.0.0.1",
         0,
-        server_host_keys=[SERVER_KEY],
+        server_host_keys=[RSA_KEY, ECDSA_KEY, SERVER_KEY],  # RSA listed first on purpose
         process_factory=_handle,
         encoding=None,
         config=[],
@@ -98,3 +113,41 @@ async def test_real_install_without_sftp(port: int):
     async with Panel("127.0.0.1", port=port, password="pw") as panel:
         status = await panel.install(BUNDLE, SHA)
         assert (status.state, status.version) == ("active", "v9")
+
+
+async def test_real_pinned_ed25519_connects_to_a_server_with_several_host_keys(port: int):
+    # A panel offers ED25519, ECDSA and RSA keys; ssh, ssh-keyscan and plink pin the ED25519 one.
+    async with Panel("127.0.0.1", port=port, password="pw", host_key=FP) as panel:
+        assert panel.host_key_fingerprint == FP
+    info = await fetch_host_key("127.0.0.1", port=port)
+    assert info.sha256 == FP
+    assert info.algorithm == "ssh-ed25519"
+    assert info.display == f"ED25519 {FP}"
+
+
+async def test_real_rsa_pin_is_not_what_gets_negotiated(port: int):
+    with pytest.raises(HostKeyMismatch) as err:
+        await Panel("127.0.0.1", port=port, password="pw", host_key=RSA_FP).connect()
+    assert err.value.fingerprint == FP
+
+
+@pytest.fixture
+def rsa_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr(panel_module, "HOST_KEY_ALGS", ("rsa-sha2-512", "rsa-sha2-256"))
+    yield
+
+
+async def test_real_algorithm_order_decides_which_key_is_seen(port: int, rsa_only: None):
+    # Proves the loopback server really would hand out RSA, i.e. the test above is meaningful.
+    assert (await fetch_host_key("127.0.0.1", port=port)).sha256 == RSA_FP
+    assert (await fetch_host_key("127.0.0.1", port=port)).label == "RSA"
+
+
+@pytest.mark.parametrize(
+    "data", ["text \u00e9\u20ac\nline two\n", "", b"\x00\x01\xff binary\n", b""]
+)
+async def test_real_stdin_reaches_the_process_intact(port: int, data: str | bytes):
+    async with Panel("127.0.0.1", port=port, password="pw") as panel:
+        result = await panel._run("echo-stdin", stdin=data)
+    expected = data.encode() if isinstance(data, str) else data
+    assert result.stdout == expected.decode("utf-8", "replace")

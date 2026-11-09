@@ -62,10 +62,10 @@ from .const import (
     DOMAIN,
     MQTT_DOMAIN,
     PANEL_MQTT_FULL,
-    PANEL_MQTT_KIOSK,
     PROVIDER_BRILLIANT_MQTT,
     PROVIDER_BUILTIN,
     PROVIDERS,
+    provider_of,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -135,14 +135,6 @@ def _install_error(err: Exception) -> tuple[str, str]:
         return _error_key(err), str(err)
     _LOGGER.error("Unexpected error installing the kiosk", exc_info=err)
     return "unknown", ""
-
-
-def _provider_of(settings: Mapping[str, str]) -> str:
-    return (
-        PROVIDER_BRILLIANT_MQTT
-        if settings.get("KIOSK_MQTT", "").lower() == PANEL_MQTT_KIOSK
-        else PROVIDER_BUILTIN
-    )
 
 
 def _internal_url(hass: HomeAssistant) -> str:
@@ -237,7 +229,8 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({}),
             description_placeholders={
                 "host": self._user_input[CONF_HOST],
-                "fingerprint": self._host_info.sha256,
+                # "ED25519 SHA256:..." so it can be compared with ssh-keygen -l output.
+                "fingerprint": self._host_info.display,
             },
         )
 
@@ -271,7 +264,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         return self._create_entry(probe.settings)
 
     def _create_entry(self, settings: Mapping[str, str]) -> ConfigFlowResult:
-        provider = _provider_of(settings)
+        provider = provider_of(settings)
         return self.async_create_entry(
             title=f"Brilliant panel {self._data[CONF_HOST]}",
             data=self._data,
@@ -505,7 +498,8 @@ class BrilliantKioskOptionsFlow(OptionsFlow):
                         CONF_MANAGE_INSTALLS: user_input[CONF_MANAGE_INSTALLS],
                     }
                 )
-        provider_now = options.get(CONF_MQTT_PROVIDER, PROVIDER_BUILTIN)
+        # Entries without the option follow what the panel runs (no KIOSK_MQTT means built-in).
+        provider_now = options.get(CONF_MQTT_PROVIDER) or provider_of(entry.runtime_data.data.env)
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(

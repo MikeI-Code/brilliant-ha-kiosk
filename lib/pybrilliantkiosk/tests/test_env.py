@@ -179,3 +179,65 @@ def test_known_setting_keys(key):
 def test_unknown_setting_keys(key):
     with pytest.raises(InvalidArgument):
         validate_setting_key(key)
+
+
+def test_parse_setup_keys_forms():
+    from pybrilliantkiosk.env import parse_setup_keys
+
+    triple = 'import re\nKEYS = set("""\nA_B C1\nD\n""".split())\nOTHER = "NOT_KEYS"\n'
+    assert parse_setup_keys(triple) == {"A_B", "C1", "D"}
+    assert parse_setup_keys('KEYS = {"A", "B"}') == {"A", "B"}
+    assert parse_setup_keys('KEYS = frozenset(["A B", "C"])') == {"A", "B", "C"}
+    assert parse_setup_keys('KEYS: set[str] = {"A"} | {"B"}') == {"A", "B"}
+    assert parse_setup_keys('KEYS = {"A", "lower", "9X", "-"}') == {"A"}
+
+
+def test_parse_setup_keys_is_none_when_not_found():
+    from pybrilliantkiosk.env import parse_setup_keys
+
+    for text in (
+        "",
+        "def broken(:",
+        "KEYS = 5",
+        'KEYS = {"lower"}',
+        'OTHER = {"A"}',
+        'x.KEYS = {"A"}',
+        "KEYS: int",
+        'for KEYS in ["A"]: pass',
+    ):
+        assert parse_setup_keys(text) is None
+
+
+def test_parse_setup_keys_reads_the_real_tool():
+    from pathlib import Path
+
+    from pybrilliantkiosk.env import KNOWN_KEYS, parse_setup_keys
+
+    tool = Path(__file__).resolve().parents[3] / "kiosk" / "ha-kiosk-setup"
+    keys = parse_setup_keys(tool.read_text(encoding="utf-8"))
+    assert keys is not None
+    assert keys >= KNOWN_KEYS  # the bundled fallback list is never ahead of the tool in the repo
+
+
+def test_validate_setting_key_with_allowlist():
+    assert validate_setting_key("WEATHER_FX", {"WEATHER_FX"}) == "WEATHER_FX"
+    with pytest.raises(InvalidArgument):
+        validate_setting_key("HA_ZOOM", {"WEATHER_FX"})
+    assert validate_setting_key("GESTURE_2_TAP", set())  # the pattern rule always applies
+    with pytest.raises(InvalidArgument):
+        validate_setting_key("bad key", {"bad key"})
+
+
+def test_reconcile_and_drift_keys():
+    from pybrilliantkiosk.env import drift_keys, reconcile
+
+    saved = EnvFile.parse('# c\nA="1"\nB="2"\nONLY_SAVED="s"\n')
+    running = EnvFile.parse('A="1"\nB="3"\nC="4"\nBAD="$(x)"\n')
+    assert drift_keys(saved, running) == ("B", "ONLY_SAVED", "C", "BAD")
+    merged, adopted, skipped = reconcile(saved, running)
+    assert adopted == ("B", "C")
+    assert skipped == ("BAD",)
+    assert merged.serialize() == '# c\nA="1"\nB="3"\nONLY_SAVED="s"\nC="4"\n'
+    same, none, nothing = reconcile(saved, saved)
+    assert (same, none, nothing) == (saved, (), ())
+    assert drift_keys(saved, saved) == ()

@@ -130,7 +130,7 @@ async def test_setup_diagnostics(net: Net):
 async def test_check_env(net: Net):
     net.conn.handler = lambda c, i: out('{"ok": false, "errors": ["line 1: bad"]}', 4)
     assert await Panel("h").check_env("X=1\n") == ("line 1: bad",)
-    assert net.conn.calls[0][1] == "X=1\n"
+    assert net.conn.calls[0][1] == b"X=1\n"  # text goes out as UTF-8 bytes
     net.conn.handler = lambda c, i: out('{"ok": true, "errors": []}')
     assert await Panel("h").check_env("A=1\n") == ()
     net.conn.handler = lambda c, i: out('{"ok": true}')
@@ -249,8 +249,8 @@ async def test_install_passes_env_and_token_by_file(net: Net):
     start = next(c for c in cmds if "ha-kiosk-setup install" in c)
     assert f"--env {WORKDIR}/env --token {WORKDIR}/token" in start
     assert stdins == [
-        (f"umask 077; cat > {WORKDIR}/env", "HA_URL=http://x\n"),
-        (f"umask 077; cat > {WORKDIR}/token", "s3cr3t-value"),
+        (f"umask 077; cat > {WORKDIR}/env", b"HA_URL=http://x\n"),
+        (f"umask 077; cat > {WORKDIR}/token", b"s3cr3t-value"),
     ]
     assert "s3cr3t-value" not in start
 

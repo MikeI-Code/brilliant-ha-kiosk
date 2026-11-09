@@ -77,7 +77,7 @@ rules:
   reconfiguration-flow: done
   repair-issues:
     status: done
-    comment: Repairs for the voice satellite missing from Wyoming (hostnames are resolved before flagging), a changed SSH host key and an MQTT provider change that could not be applied. Failed installs surface in the config flow and as action errors; env drift has no repair.
+    comment: Repairs for the voice satellite missing from Wyoming (hostnames are resolved before flagging), a changed SSH host key, an MQTT provider change that could not be applied (fixable: re-applies it) and settings that differ between the running and the saved copy of kiosk.env (fixable: reconciles them). Failed installs surface in the config flow and as action errors.
   stale-devices:
     status: exempt
     comment: One device per config entry; it is removed with the entry.

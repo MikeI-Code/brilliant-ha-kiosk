@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Final
 
@@ -56,6 +57,21 @@ CONF_MANAGE_INSTALLS: Final = "manage_installs"
 PANEL_MQTT_KIOSK: Final = "kiosk"
 PANEL_MQTT_FULL: Final = "1"
 MQTT_DISABLED_VALUES: Final = ("", "0", "off", "false", "no")
+
+
+def provider_of(settings: Mapping[str, str]) -> str:
+    """The MQTT provider a panel's settings mean.
+
+    ``KIOSK_MQTT`` is absent on panels installed without setting it: ha-kiosk-setup then defaults
+    to ``1`` (built-in MQTT), so absent, ``1`` and anything but ``kiosk`` all mean built-in.
+    """
+    if settings.get("KIOSK_MQTT", "").lower() == PANEL_MQTT_KIOSK:
+        return PROVIDER_BRILLIANT_MQTT
+    return PROVIDER_BUILTIN
+
+#: Repair issue ids are ``<key>_<config entry id>``; the key is also the translation key.
+ISSUE_MQTT_PROVIDER: Final = "mqtt_provider_not_applied"
+ISSUE_ENV_DRIFT: Final = "env_drift"
 
 CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
 #: hass.data key of the ReleasesCoordinator shared by all panels (GitHub allows 60 requests/h).

@@ -97,6 +97,8 @@ def make_panel() -> MagicMock:
     panel.bus_get = AsyncMock(return_value=(BusVariable("a", "1", False),))
     panel.bus_set = AsyncMock(return_value=())
     panel.set_env = AsyncMock(return_value=("DIM_LEVEL",))
+    panel.env_drift = AsyncMock(return_value=())
+    panel.reconcile_env = AsyncMock(return_value=())
     panel.restart = AsyncMock()
     panel.reboot = AsyncMock()
     panel.logs = AsyncMock(return_value="line1\nline2")

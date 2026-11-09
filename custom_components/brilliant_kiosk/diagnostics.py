@@ -37,6 +37,7 @@ async def async_get_config_entry_diagnostics(
         "health": asdict(data.health),
         "settings": async_redact_data(dict(data.env), env_keys),
         "setup": asdict(data.setup),
+        "env_drift": list(data.drift),
         "releases": [r.tag for r in coordinator.releases.data or ()],
         "last_update_success": coordinator.last_update_success,
     }
