@@ -9,12 +9,14 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 
 ## Unreleased (nightly)
 
-- Admin helper, phase 1: `lib/pybrilliantkiosk`, a typed async library for panel health, kiosk.env, services, logs, Brilliant bus variables, version installs and GitHub releases (spec: docs/admin-helper-spec.md).
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
 ### New
 
+- **Admin helper, phase 1** (in progress). `lib/pybrilliantkiosk`, a typed async library for panel
+  health, kiosk.env, services, logs, Brilliant bus variables, version installs and GitHub releases.
+  The Home Assistant integration builds on it (spec: docs/admin-helper-spec.md).
 - **Animated sky on Home** (beta). The clock and weather sit on a sky that follows the condition
   and the sun (dawn, day, dusk, night), with rain, snow, drifting clouds, fog, wind-blown leaves,
   stars, the sun or the moon, and lightning flashes. Drag a finger across it to blow the rain
