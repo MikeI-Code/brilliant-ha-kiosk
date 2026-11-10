@@ -82,6 +82,7 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | 🛡️ **Ring Alarm and Schlage locks** | Alarm status on the Home screen, arm / disarm with your code, and lock / unlock (two taps to unlock), through Brilliant's integrations. Home Assistant gets read-only status. If a Brilliant update changes something, only the affected control switches off, with the reason on the panel and in HA. ([How this works](docs/MANUAL.md#how-the-alarm-and-lock-control-works)) |
 | 🏢 **Multi-unit ready (lite groups)** | For duplexes and rentals: group panels by unit with shared settings, keep the intercom inside the unit, limit each panel to its own doors and locks (or view only), and lock the mic or camera where needed. ([How it works and what it doesn't isolate](docs/MANUAL.md#213-multi-unit-and-rental-properties-lite-groups)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
+| 🧩 **Manage panels from Home Assistant** | The **Brilliant Kiosk** integration installs, updates and rolls back the kiosk, shows each panel's health, and changes its settings, all from Home Assistant. Install it from the Marketplace: [MikeI-Code/ha-brilliant-kiosk](https://github.com/MikeI-Code/ha-brilliant-kiosk). |
 
 
 ---
@@ -190,11 +191,31 @@ flowchart LR
 
 ---
 
+## Home Assistant integration
+
+The **Brilliant Kiosk** integration manages your panels from Home Assistant: kiosk version and
+service health, updates and rollback (stable and nightly channels), settings, restarts, redacted
+logs, Brilliant message-bus variables and repair notices. Each panel appears as a device named
+after its room, linked to the device the kiosk already publishes over MQTT.
+
+1. **Home Assistant 2026.11 or newer:** **Settings → Marketplace → Add from link**, enter
+   `MikeI-Code/ha-brilliant-kiosk`, install, and restart when asked. Older versions: add the same
+   repository to HACS as a custom repository of type *Integration*. (Don't add this repository,
+   `brilliant-ha-kiosk`, to HACS or the Marketplace: its releases are panel software.)
+2. **Settings → Devices & services → Add integration → Brilliant Kiosk**, enter the panel's
+   address and SSH password, and confirm its SSH host key.
+
+New versions then appear in **Settings → Updates**. Full documentation, with every entity, action
+and troubleshooting step: **[github.com/MikeI-Code/ha-brilliant-kiosk](https://github.com/MikeI-Code/ha-brilliant-kiosk)**.
+
+---
+
 ## Documentation
 
 | | |
 |---|---|
 | 📝 [**Changelog**](CHANGELOG.md) | Every release, and what is on the nightly channel |
+| 🏠 [**Home Assistant integration**](https://github.com/MikeI-Code/ha-brilliant-kiosk) | Manage panels from Home Assistant: install, updates, health, settings, logs, troubleshooting |
 | 📘 [**Manual**](docs/MANUAL.md) | Installation, configuration reference, editing screens, gestures, maintenance, troubleshooting |
 | 🔧 [Hardware & services](docs/hardware-and-services.md) | Hardware, kernel interfaces, Brilliant's services, and the message-bus API |
 | 📊 [Resources & optimizations](docs/resource-utilization-and-optimizations.md) | Memory and CPU measurements, what is safe to change |
