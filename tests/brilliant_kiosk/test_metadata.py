@@ -198,6 +198,18 @@ def test_pinned_releases_are_well_formed_and_include_the_first_stable_release() 
         "6ea396194a70a5e130325fb21c1c9c24f310a95043c32bf704aa8fd9d8b85cf1"
     )
     assert PINNED_RELEASES["v1.4.0"].size == 774344
+    assert PINNED_RELEASES["v1.5.0"].sha256 == (
+        "468fcfd6dda0dadac870a5ab06e20a21045d6606dc010752266be67e07252856"
+    )
+    assert PINNED_RELEASES["v1.5.0"].size == 823449
+
+
+def test_the_newest_stable_release_in_the_changelog_is_pinned() -> None:
+    """A stable release the integration can't install is offered and then refused: pin each one."""
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    newest = re.search(r"^## \[(v\d+\.\d+\.\d+)\]", changelog, re.M)
+    assert newest is not None
+    assert newest.group(1) in PINNED_RELEASES
 
 
 def test_the_integration_never_reads_other_integrations_config_entries() -> None:

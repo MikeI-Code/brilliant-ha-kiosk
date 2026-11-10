@@ -45,9 +45,16 @@ class PinnedRelease:
 #: Stable releases by tag. v1.4.0: a trust-on-first-use snapshot taken from GitHub on 2026-11-09:
 #: sha256 and size from the release assets (API ``digest`` and ``size``), the ``.sha256`` asset and
 #: a local ``sha256sum``/``wc -c`` of the downloaded bundle; all three agree.
+#: v1.5.0 (2026-11-10): the ``.sha256`` asset and a ``sha256sum``/``wc -c`` of the downloaded
+#: bundle agree, and an independent Linux build of the tag has byte-identical contents (74 files;
+#: the archive itself differs only in file modes, which the build does not pin).
 PINNED_RELEASES: Mapping[str, PinnedRelease] = {
     "v1.4.0": PinnedRelease(
         sha256="6ea396194a70a5e130325fb21c1c9c24f310a95043c32bf704aa8fd9d8b85cf1",
         size=774344,
+    ),
+    "v1.5.0": PinnedRelease(
+        sha256="468fcfd6dda0dadac870a5ab06e20a21045d6606dc010752266be67e07252856",
+        size=823449,
     ),
 }
