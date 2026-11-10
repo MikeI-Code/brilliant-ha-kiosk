@@ -12,6 +12,13 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
+Nothing yet.
+
+## [v1.5.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.5.0) — 2026-11-10 — Home Assistant integration, animated sky, weather page
+
+Manage panels from Home Assistant with the new **Brilliant Kiosk** integration (install it from
+the Marketplace: [MikeI-Code/ha-brilliant-kiosk](https://github.com/MikeI-Code/ha-brilliant-kiosk)).
+
 ### New
 
 - **Home Assistant: panels are named after their room.** The integration named each panel

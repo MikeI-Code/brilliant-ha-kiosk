@@ -256,7 +256,7 @@ def test_the_library_version_is_the_one_the_manifest_pins() -> None:
     assert manifest["requirements"] == [f"pybrilliantkiosk=={pybrilliantkiosk.__version__}"]
     pyproject = (ROOT / "lib" / "pybrilliantkiosk" / "pyproject.toml").read_text(encoding="utf-8")
     assert f'version = "{pybrilliantkiosk.__version__}"' in pyproject
-    assert pybrilliantkiosk.__version__ == "0.1.4"
+    assert pybrilliantkiosk.__version__ == "0.1.5"
     assert pybrilliantkiosk.__version__ == metadata.version("pybrilliantkiosk")
 
 

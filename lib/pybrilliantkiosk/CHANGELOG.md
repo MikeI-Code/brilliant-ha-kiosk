@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Documentation and source links point at the `main` branch again, which now has the library
+  and its docs (kiosk v1.5.0).
+
 ## 0.1.4
 
 - Documentation links (README, PyPI project URLs) point at files that exist; they pointed at the

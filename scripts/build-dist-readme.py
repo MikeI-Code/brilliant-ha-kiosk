@@ -4,7 +4,7 @@
 That repo's page is where Home Assistant's "Documentation" link and the repair notices land, so
 it carries the full integration documentation: docs/home-assistant-integration.md, with the
 panel screenshots on top and every relative link rewritten to an absolute GitHub URL on BRANCH
-(the docs and the library only exist on the nightly branch until it is merged into main).
+(main by default; pass nightly to preview unreleased docs).
 
 Usage: scripts/build-dist-readme.py OUTPUT [BRANCH]
 """
@@ -67,7 +67,7 @@ def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    branch = sys.argv[2] if len(sys.argv) > 2 else "nightly"
+    branch = sys.argv[2] if len(sys.argv) > 2 else "main"
     Path(sys.argv[1]).write_text(build(branch), encoding="utf-8")
     return 0
 
