@@ -82,6 +82,7 @@ That's why this project only replaces the screen and never removes Brilliant's b
 | 🛡️ **Ring Alarm and Schlage locks** | Alarm status on the Home screen, arm / disarm with your code, and lock / unlock (two taps to unlock), through Brilliant's integrations. Home Assistant gets read-only status. If a Brilliant update changes something, only the affected control switches off, with the reason on the panel and in HA. ([How this works](docs/MANUAL.md#how-the-alarm-and-lock-control-works)) |
 | 🏢 **Multi-unit ready (lite groups)** | For duplexes and rentals: group panels by unit with shared settings, keep the intercom inside the unit, limit each panel to its own doors and locks (or view only), and lock the mic or camera where needed. ([How it works and what it doesn't isolate](docs/MANUAL.md#213-multi-unit-and-rental-properties-lite-groups)) |
 | 🔒 **Private by design** | Your HA token, passwords and layout live in a git-ignored `.private/` folder. The local bridge listens on localhost only. |
+| 🧩 **Manage panels from Home Assistant** | The **Brilliant Kiosk** integration installs, updates and rolls back the kiosk, shows each panel's health, and changes its settings, all from Home Assistant. Install it from the Marketplace: [MikeI-Code/ha-brilliant-kiosk](https://github.com/MikeI-Code/ha-brilliant-kiosk). |
 
 
 ---
@@ -200,7 +201,8 @@ the entities the kiosk already publishes over MQTT, and names each panel after i
 
 1. **Home Assistant 2026.11 or newer:** **Settings → Marketplace → Add from link**, enter
    `MikeI-Code/ha-brilliant-kiosk`, install, and restart when asked. (Older versions: add the same
-   repository to HACS as a custom repository of type *Integration*.)
+   repository to HACS as a custom repository of type *Integration*. Don't add this repository,
+   `brilliant-ha-kiosk`, to HACS or the Marketplace: its releases are panel software.)
 2. **Settings → Devices & services → Add integration → Brilliant Kiosk**. Panels running a current
    kiosk are discovered over MQTT with their address filled in. Enter the panel's SSH password or
    private key and confirm its SSH host key (nothing is sent before that).
