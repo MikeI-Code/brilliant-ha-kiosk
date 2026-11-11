@@ -98,21 +98,56 @@ There are two release channels. Both ship the same kind of checksummed install b
 
 What changed, and what is waiting on the nightly channel: [**CHANGELOG.md**](CHANGELOG.md).
 
-To install a channel, check it out before running the installer below: `git checkout v1.4.0`
-(or the newest `vX.Y.Z`) for stable, `git checkout nightly && git pull` for nightly.
-Going back is the same `scripts/install.sh` from the other checkout.
+Installed from Home Assistant, a panel offers each new stable release in *Settings → Updates*;
+the panel's **Release channel** select switches it to nightly. From the command line, check the
+channel out before running the installer: `git checkout vX.Y.Z` (the newest stable) or
+`git checkout nightly && git pull`. Going back is the same `scripts/install.sh` from the other
+checkout.
 
 ## Quick start
 
 > Full step-by-step instructions, every setting, and troubleshooting are in the
 > **[Manual](docs/MANUAL.md)**.
 
-**You need:** a Brilliant Control on your Wi-Fi, a Home Assistant install on the same network, and
-a computer with `bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTTY's `plink`.
+There are two ways to install. **Most people should use Home Assistant**: no command line, no
+cloning, and updates show up in *Settings → Updates* like any other.
 
-1. **Turn on SSH on the panel.** Brilliant's software has an official **Root SSH Login** setting
-   under *Advanced Settings* (see the [manual](docs/MANUAL.md#21-turn-on-ssh-on-the-panel) for its
-   caveats). No exploit is needed. Note the panel's IP address and the root password it gives you.
+**You need:** a Brilliant Control on your Wi-Fi and Home Assistant on the same network, with the
+**MQTT** integration set up (for example the Mosquitto broker add-on). The panel publishes its
+light, motion and screen switches there.
+
+### Option A: install from Home Assistant (recommended)
+
+1. **Turn on SSH on the panel.** This is a switch in Brilliant's own settings, not a hack: open
+   *Advanced Settings* and enable **Root SSH Login** (see the
+   [manual](docs/MANUAL.md#21-turn-on-ssh-on-the-panel) for its caveats). Note the panel's IP
+   address and the root password it shows. You won't need to open an SSH session yourself.
+2. **Add the integration.** Home Assistant 2026.11 or newer: **Settings → Marketplace → Add from
+   link**, enter `MikeI-Code/ha-brilliant-kiosk`, install **Brilliant Kiosk**, and restart when
+   asked. *(Home Assistant 2026.3.1 to 2026.10: in HACS, add
+   `https://github.com/MikeI-Code/ha-brilliant-kiosk` as a custom repository of type
+   **Integration**, then download Brilliant Kiosk.)*
+3. **Add your panel.** **Settings → Devices & services → Add integration → Brilliant Kiosk**.
+   Enter the panel's IP address and root password, and confirm its SSH host key (nothing is sent
+   to the panel before you do).
+4. **Install the kiosk.** Home Assistant sees the panel has no kiosk yet and offers to install
+   it. Leave **Install the kiosk now** ticked, and fill in the Home Assistant URL the panel should
+   use, a long-lived access token (your profile → *Security* → *Long-lived access tokens*), and
+   your MQTT broker's address and login. The panel restarts its screen into the new interface
+   (about 30 s). Repeat steps 3 and 4 for each panel.
+5. **Design the screens** (see [below](#design-the-screens)).
+
+From then on, each panel is a device in Home Assistant (named after its Brilliant room, for
+example *Kitchen Brilliant kiosk*) with its health, settings, restart and rollback buttons, and an
+update entity for new kiosk releases. Details:
+[Home Assistant integration](docs/home-assistant-integration.md).
+
+### Option B: install from the command line
+
+For people who prefer scripts, or manage many panels from one config. You need a computer with
+`bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTTY's `plink`.
+
+1. **Turn on SSH on the panel**, as in option A, step 1.
 2. **Clone this repo** and create your private config:
    ```bash
    git clone https://github.com/MikeI-Code/brilliant-ha-kiosk.git
@@ -132,11 +167,9 @@ a computer with `bash` (Linux, macOS, or Git Bash on Windows) plus `ssh` or PuTT
    scripts/install.sh all        # every panel in .private/ (panel1.env, panel2.env, ...)
    ```
    The panel restarts its screen into the new interface (about 30 s).
-5. **Design the screens in Home Assistant.** In HA go to *Settings → Dashboards → Add dashboard*,
-   choose *New dashboard from scratch* and give it the URL **`panel-layout`**. Add cards in HA's
-   editor; every panel rebuilds within a second of pressing **Save**. Each view becomes a tab.
-   *(Optional: `scripts/publish_layout.py native/layout.example.json` fills a new dashboard with a
-   starter layout to edit, instead of starting empty.)*
+
+You can still add the integration afterwards (option A, steps 2 and 3) to manage these panels
+from Home Assistant; it detects the installed kiosk and skips the install step.
 
 **Many panels, one setup.** All panels share `.private/kiosk.env` and the same HA dashboard, so
 ten panels need no more configuration than one:
@@ -152,10 +185,21 @@ files in `.private/`, and per-panel features are kept because they live in `pane
 edits made by hand on a panel are replaced. Choices made from HA switches (screensaver, night mode,
 ...) are kept too.
 
-Every install checks itself: if the new version doesn't come up and connect to Home Assistant
-within a minute, the panel goes back to the previous version on its own.
+### Design the screens
 
-To go back to the stock Brilliant interface at any time: `scripts/uninstall.sh panel1`.
+In HA go to *Settings → Dashboards → Add dashboard*, choose *New dashboard from scratch* and give
+it the URL **`panel-layout`**. Add cards in HA's editor; every panel rebuilds within a second of
+pressing **Save**. Each view becomes a tab. *(Optional: `scripts/publish_layout.py
+native/layout.example.json` fills a new dashboard with a starter layout to edit, instead of
+starting empty.)*
+
+### Safety net
+
+Every install checks itself, whichever way you installed: if the new version doesn't come up and
+connect to Home Assistant within a minute, the panel goes back to the previous version on its own.
+
+To go back to the stock Brilliant interface at any time: `scripts/uninstall.sh panel1` (or
+`ha-kiosk-setup uninstall` on the panel).
 
 ---
 
