@@ -27,9 +27,15 @@ microphones in a light-switch box. This project replaces the stock touchscreen a
 **native Qt Quick interface that talks to Home Assistant directly**. It keeps Brilliant's own
 background services, so the wired light, HomeKit and over-the-air updates keep working.
 
-Nothing is hacked or jail-broken. SSH access is a built-in feature of the panel's software that
-you switch on, and everything this project installs lives in `/etc` and `/var`, which survive
-Brilliant's OS updates. One script undoes it all.
+**Install it from Home Assistant, no command line needed:** add the **Brilliant Kiosk**
+integration from the Marketplace (`MikeI-Code/ha-brilliant-kiosk`), enter your panel's address and
+password, and it installs the kiosk and keeps it updated. See the [Quick start](#quick-start).
+
+Nothing is hacked or jail-broken. You switch on Brilliant's own **Root SSH Login** setting so Home
+Assistant can reach the panel, and everything this project installs lives in `/etc` and `/var`,
+which survive Brilliant's OS updates. Prefer scripts? The alternate way is to clone this repo and
+run `scripts/install.sh` over SSH yourself ([option B](#option-b-install-from-the-command-line)).
+Either way, one command undoes it all.
 
 ---
 
