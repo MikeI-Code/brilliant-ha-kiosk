@@ -1,0 +1,18 @@
+[Unit]
+Description=Three-gang physical sliders for the Brilliant kiosk
+BindsTo=ha-kiosk.service
+PartOf=ha-kiosk.service
+After=ha-kiosk.service message_bus.service switch_ui_app.service
+Conflicts=switch_ui_app.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/switch-embedded
+EnvironmentFile=/etc/ha-kiosk/kiosk.env
+ExecStart=/data/switch-embedded/env/bin/python -B /etc/ha-kiosk/slider_worker.py --device --apply
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=ha-kiosk.service

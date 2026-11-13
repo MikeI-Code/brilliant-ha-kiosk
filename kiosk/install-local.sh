@@ -20,7 +20,7 @@ set -eu
 BUNDLE="$(cd "$(dirname "$0")" && pwd)"
 DEST=/etc/ha-kiosk
 STATE=/var/lib/ha-kiosk
-UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service"
+UNITS="ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-swap.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service ha-kiosk-sliders.service"
 DROPIN=/etc/systemd/system/message_bus.service.d/ha-kiosk-display.conf
 TMPFILES=/etc/tmpfiles.d/ha-kiosk.conf
 
@@ -47,7 +47,7 @@ done
 
 uninstall() {
     log "stopping the kiosk"
-    systemctl disable --now ha-kiosk.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service 2>/dev/null || true
+    systemctl disable --now ha-kiosk.service ha-kiosk-sliders.service ha-kiosk-display.service ha-kiosk-bridge.service ha-kiosk-voice.service ha-kiosk-intercom.service ha-kiosk-capture.service 2>/dev/null || true
     if [ -f "$DROPIN" ]; then
         rm -f "$DROPIN"; systemctl daemon-reload
         log "restarting Brilliant services (message_bus) to give the screen back"
@@ -122,6 +122,12 @@ start() {
     envflag() { [ "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 ')" = 1 ]; }
     # ALLOW_MIC / ALLOW_CAMERA = 0|off|false|no lock the mic / camera (scripts/install.sh appends deny-wins lines last)
     envdeny() { case "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 \r' | tr 'A-Z' 'a-z')" in 0|off|false|no) return 0 ;; esac; return 1; }
+    if envflag KIOSK_THREE_SLIDERS; then
+        systemctl enable ha-kiosk-sliders.service
+        systemctl restart ha-kiosk-sliders.service
+    else
+        systemctl disable --now ha-kiosk-sliders.service 2>/dev/null || true
+    fi
     if envflag KIOSK_VOICE && ! envdeny ALLOW_MIC; then
         systemctl enable ha-kiosk-voice.service; systemctl restart ha-kiosk-voice.service
         log "voice satellite enabled (KIOSK_VOICE=1)"
