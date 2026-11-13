@@ -850,7 +850,18 @@ dashboard looks in a browser or the phone app.
 
 <img src="images/dim.png" width="30%" align="right" alt="Two-finger dimming readout">
 
-These panels have no physical slider: dimming happens on the touchscreen. A small local service,
+On a three-gang panel with **three local dimmable wired loads**, an optional service handles
+physical slider taps (toggle) and relative swipes (dim). Tested on Brilliant OS v26.10.21.1.
+Before enabling it, confirm in stock mode which circuit each strip operates and inspect the
+display names of `gangbox_peripheral_0`, `_1` and `_2`. They must match that order from left
+to right. Put those exact names in `SLIDER_LOAD_1`, `SLIDER_LOAD_2` and `SLIDER_LOAD_3` in the
+per-panel kiosk.env, set `KIOSK_THREE_SLIDERS=1`, and run the normal installer. The service
+checks the labels and the local dimmer interface before accepting input. Reassigned strips,
+non-dimmable loads, and two- or four-gang panels are outside the tested configuration.
+To disable, set the flag to 0 and reinstall. Returning to stock stops the worker.
+The slider service uses the panel bus and works with HA offline.
+
+On single-gang panels there is no physical slider: dimming happens on the touchscreen. A small local service,
 **`ha-kiosk-bridge`**, connects to Brilliant's message bus and lets the screen switch and dim the
 panel's own wired load **directly**: about 0.1 s per change, with no Home Assistant in the path.
 It listens on `127.0.0.1:8765` only.
