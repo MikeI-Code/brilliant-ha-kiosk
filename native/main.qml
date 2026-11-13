@@ -145,7 +145,7 @@ Window {
         Component { id: securityPage
             SecurityPage {} }
         Component { id: capturePage
-            CapturePage { } }
+            CapturePage { previewAllowed: win.current === win.captureIndex && win.displayState === "awake" } }
     }
 
     // Connection banner: what is wrong and for how long. Sits above the tab bar, clear of the clock.
