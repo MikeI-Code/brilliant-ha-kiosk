@@ -1,4 +1,5 @@
 """Serialize local load I/O while the input reader continues draining events."""
+
 from collections import deque
 from threading import Condition, Thread
 from time import monotonic
@@ -20,8 +21,8 @@ class GestureOutput:
             start, maximum = self.loads.level(slot)
             self.anchors[slot] = (contact_id, start, maximum, None)
         _, start, maximum, last = self.anchors[slot]
-        value = int(round(start + delta*maximum/1000.0))
-        value = max(max(1, maximum//100), min(maximum, value))
+        value = int(round(start + delta * maximum / 1000.0))
+        value = max(max(1, maximum // 100), min(maximum, value))
         if value != last:
             self.loads.set_level(slot, value)
             self.anchors[slot] = (contact_id, start, maximum, value)
@@ -42,12 +43,17 @@ class LiveOutput:
         with self.cv:
             if self.closed:
                 return
-            if self.pending and command[2] is not None and self.pending[-1][2][:2] == command[:2]:
+            # Keep the newest displacement for this contact; never merge taps.
+            if (
+                self.pending
+                and command[2] is not None
+                and self.pending[-1][2][:2] == command[:2]
+            ):
                 self.pending.pop()
             if len(self.pending) >= 16:
                 self.pending.clear()
                 self.generation += 1
-                self.report('Overloaded output: dropped backlog')
+                self.report("Overloaded output: dropped backlog")
                 return
             self.pending.append((self.generation, monotonic(), command))
             self.cv.notify()
@@ -76,14 +82,14 @@ class LiveOutput:
             if generation != previous:
                 self.output.anchors.clear()
                 previous = generation
-            if monotonic()-queued > 0.5:
-                self.report('Skipped expired slider command')
+            if monotonic() - queued > 0.5:
+                self.report("Skipped expired slider command")
                 continue
             try:
                 self.output.apply(command)
             except RuntimeError as err:
                 # A failed toggle is deliberately never resent. Subsequent touches remain usable.
-                self.report('Local load request rejected: '+str(err))
+                self.report("Local load request rejected: " + str(err))
             except (OSError, ValueError, KeyError) as err:
-                self.report('Local load unavailable: '+str(err))
+                self.report("Local load unavailable: " + str(err))
                 self.cancel()
