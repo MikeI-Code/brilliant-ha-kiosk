@@ -23,6 +23,42 @@ Item {
     readonly property real level: st.level || 0
     readonly property var last: st.last || null
 
+    property bool previewAllowed: false
+    property bool previewing: false
+    property string previewImage: ""
+    property var previewRequest: null
+    // Leaving the view invalidates any pending reply before the next frame is requested.
+    function stopPreview() {
+        previewing = false
+        previewNext.stop()
+        var old = previewRequest
+        previewRequest = null
+        if (old) old.abort()
+        previewImage = ""
+    }
+    function fetchPreview() {
+        if (!previewing || !previewAllowed || previewRequest) return
+        var request = new XMLHttpRequest()
+        previewRequest = request
+        request.onreadystatechange = function () {
+            if (request.readyState !== XMLHttpRequest.DONE || request !== previewRequest) return
+            previewRequest = null
+            if (request.status !== 200) { stopPreview(); return }
+            var jpeg
+            try { jpeg = JSON.parse(request.responseText).jpeg }
+            catch (e) { stopPreview(); return }
+            if (!jpeg) { stopPreview(); return }
+            previewImage = "data:image/jpeg;base64," + jpeg
+            previewNext.restart()
+        }
+        request.open("POST", api + "/preview")
+        request.setRequestHeader("X-Kiosk-Preview", "1")
+        request.send("")
+    }
+    Timer { id: previewNext; interval: 400; onTriggered: page.fetchPreview() }
+    onPreviewAllowedChanged: if (!previewAllowed) stopPreview()
+    Component.onDestruction: stopPreview()
+
     function call(path) {
         var x = new XMLHttpRequest();
         x.onreadystatechange = function () {
@@ -161,6 +197,26 @@ Item {
                     MouseArea { id: vma; anchors.fill: parent; enabled: parent.ok; onClicked: page.call(modelData.path) }
                 }
             }
+        }
+
+        Rectangle {
+            visible: page.video
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: 200 * Theme.u; height: 44 * Theme.u; radius: Theme.radius; color: Theme.card
+            Label { anchors.centerIn: parent; text: page.previewing ? "Close camera preview" : "Preview panel camera" }
+            MouseArea {
+                anchors.fill: parent
+                enabled: page.previewAllowed && !page.recording && !page.processing
+                onClicked: {
+                    if (page.previewing) page.stopPreview()
+                    else { page.previewing = true; page.fetchPreview() }
+                }
+            }
+        }
+        Image {
+            visible: page.previewing
+            width: parent.width; height: visible ? Math.min(page.height * 0.25, width * 9 / 16) : 0
+            source: page.previewImage; fillMode: Image.PreserveAspectFit; cache: false
         }
 
         // Reply from Home Assistant (<base>/capture/reply)
