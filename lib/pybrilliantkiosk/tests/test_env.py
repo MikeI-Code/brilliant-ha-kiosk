@@ -171,7 +171,9 @@ def test_bare_lines_would_have_been_exploitable(tmp_path: Path):
     assert (tmp_path / "injected").exists()
 
 
-@pytest.mark.parametrize("key", ["HA_URL", "GESTURE_2_TAP", "GESTURE_3_SWIPE_LEFT"])
+@pytest.mark.parametrize(
+    "key", ["HA_URL", "GESTURE_2_TAP", "GESTURE_3_SWIPE_LEFT", "SLIDER_TARGET_2", "SLIDER_DEBUG"]
+)
 def test_known_setting_keys(key):
     assert validate_setting_key(key) == key
 

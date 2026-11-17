@@ -127,9 +127,11 @@ KNOWN_KEYS = frozenset(
         "ALLOW_MIC",
         "ALLOW_CAMERA",
         "WEATHER_FX",
+        "SLIDER_DEBUG",
     ]
 )
 _GESTURE_KEY_RE = re.compile(r"^GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))$")
+_SLIDER_KEY_RE = re.compile(r"^SLIDER_TARGET_[1-9]$")
 SECRET_MARKERS = ("PASSWORD", "TOKEN", "SECRET")
 MASK = "********"
 
@@ -177,7 +179,7 @@ def validate_setting_key(key: str, allowed: Collection[str] | None = None) -> st
     """
     validate_key(key)
     known = KNOWN_KEYS if allowed is None else allowed
-    if key not in known and not _GESTURE_KEY_RE.match(key):
+    if key not in known and not _GESTURE_KEY_RE.match(key) and not _SLIDER_KEY_RE.match(key):
         raise InvalidArgument(f"unknown setting: {key!r}")
     return key
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `SLIDER_TARGET_1`..`SLIDER_TARGET_9` and `SLIDER_DEBUG` are accepted settings (kiosk
+  experimental physical-slider -> HA light forwarding).
+
 ## 0.1.5
 
 - Documentation and source links point at the `main` branch again, which now has the library
