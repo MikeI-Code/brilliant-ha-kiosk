@@ -12,7 +12,16 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
-Nothing yet.
+### Added
+- **Experimental: physical sliders drive Home Assistant lights** (2+ switch panels). Set the
+  switch to always-on / smart bulb in Brilliant's app, then `SLIDER_TARGET_1=light.your_bulb` in
+  `kiosk.env` (1 = first switch). Slider moves turn the HA light on/off and set its brightness;
+  the circuit is never cut. `SLIDER_DEBUG` (on by default while a target is set) logs the
+  panel's slider/gangbox bus changes: `journalctl -u ha-kiosk-bridge | grep slider:`.
+
+### Changed
+- A load running always-on is no longer offered to HA as a "Wired light", and the bridge no
+  longer waits for a dimmer that isn't there.
 
 ## [v1.5.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.5.0) — 2026-11-10 — Home Assistant integration, animated sky, weather page
 
