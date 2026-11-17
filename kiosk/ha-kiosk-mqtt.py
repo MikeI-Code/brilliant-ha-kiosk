@@ -197,6 +197,10 @@ class KioskMqtt:
                 self.c.publish(topic, "", retain=True)
                 topics.discard(topic)   # the other integration owns it now: never withdraw it again
 
+    def has_load(self):
+        """The bridge's load is a normal dimmer (absent when Brilliant runs it always-on)."""
+        return not self.peripherals or os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0") in self.peripherals
+
     def publish_discovery(self):
         b = self.base
         if self.kiosk_only:
@@ -209,13 +213,18 @@ class KioskMqtt:
             self._withdraw_panel_owned()
             self._publish_kiosk_entities()
             return
-        self._cfg("light", "load", {"name": "Wired light", "schema": "json", "brightness": True,
-                                    "brightness_scale": 100, "state_topic": f"{b}/load/state",
-                                    "command_topic": f"{b}/load/set"})
         try:
             self.peripherals = set(self.control.peripherals())
         except Exception as e:
             print(f"mqtt: peripheral list: {e}", flush=True)
+        if self.has_load():
+            self._cfg("light", "load", {"name": "Wired light", "schema": "json", "brightness": True,
+                                        "brightness_scale": 100, "state_topic": f"{b}/load/state",
+                                        "command_topic": f"{b}/load/set"})
+        else:   # always-on (smart bulb) load: never offer HA a switch that cuts the bulb's power
+            topic = f"{self.disc}/light/{self.node}/load/config"
+            self.c.publish(topic, "", retain=True)
+            topics.discard(topic)
         self.gangboxes = sorted((int(p.rsplit("_", 1)[1]) for p in self.peripherals
                                  if re.fullmatch(r"gangbox_peripheral_\d+", p)), key=int) or [0]
         sensors = []
@@ -343,7 +352,7 @@ class KioskMqtt:
             if topic == f"{self.disc}/status":
                 if payload == "online":
                     self.publish_discovery()
-            elif topic == f"{self.base}/load/set":
+            elif topic == f"{self.base}/load/set" and self.has_load():
                 cmd = json.loads(payload)
                 req = {}
                 if "brightness" in cmd:
@@ -471,6 +480,12 @@ class KioskMqtt:
         if not self.c.is_connected():
             return
         if self.kiosk_only:
+            self._poll_display()
+            return
+        if not self.has_load():
+            if time.time() >= self.next_diag:
+                self.next_diag = time.time() + int(self.env.get("DIAG_SECS", "60"))
+                self._poll_diagnostics()
             self._poll_display()
             return
         v = self.control.variables()
