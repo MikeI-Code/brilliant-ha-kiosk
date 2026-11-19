@@ -62,7 +62,7 @@ jobs:
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" \
             --prerelease --latest=false --title "Nightly $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
-            "dist/brilliant-ha-kiosk-$VERSION.tar.gz" "dist/brilliant-ha-kiosk-$VERSION.tar.gz.sha256"
+            "dist/brilliant-ha-kiosk-$VERSION.tar.gz" "dist/brilliant-ha-kiosk-$VERSION.tar.gz.sha256" "dist/brilliant-ha-kiosk-$VERSION.release.json"
           # Keep the 14 newest nightlies.
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' \
             | grep '^nightly-' | sort -r | tail -n +15 \

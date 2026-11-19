@@ -549,8 +549,7 @@ For reference; the full behaviour is in [home-assistant-integration.md](home-ass
 
 ### 0.15 Not implemented
 
-Everything in sections 1 to 16 that is not listed above, in particular: signatures and
-`release.json` assets; `version`/`display` commands; `--json`, `--config-merge`, `--mqtt`,
+Everything in sections 1 to 16 that is not listed above, in particular: signatures; `version`/`display` commands; `--json`, `--config-merge`, `--mqtt`,
 `--health-timeout`, `--no-activate`, `--require-tested-firmware`, `--allow-downgrade`; preflight
 checks; `txn.json` and boot recovery units; a `rendered` flag in the heartbeat; narrowed MQTT
 subscriptions in kiosk mode; `<base>/display/...` topics and screen power; the `schema/` directory and per-key validators; a `run.env` and the end of shell

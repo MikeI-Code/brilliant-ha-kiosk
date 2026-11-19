@@ -1,6 +1,6 @@
 # Attach the installable bundle to every GitHub release.
-# Publishing a release (tag vX.Y.Z) builds dist/brilliant-ha-kiosk-vX.Y.Z.tar.gz and its .sha256
-# and uploads both as release assets, so other tools can download a pinned, checksummed version.
+# Publishing a release (tag vX.Y.Z) builds dist/brilliant-ha-kiosk-vX.Y.Z.tar.gz, its .sha256 and .release.json
+# and uploads all three as release assets, so other tools can download a pinned, checksummed version.
 name: Release bundle
 on:
   release:
@@ -31,8 +31,9 @@ jobs:
           sha256sum -c MANIFEST.sha256 > /dev/null
           sh -n install-local.sh
           test "$(cat VERSION)" = "$TAG"
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["version"]==sys.argv[2] and d["sha256"]==open(sys.argv[3]).read().split()[0], d' "$GITHUB_WORKSPACE/dist/brilliant-ha-kiosk-$TAG.release.json" "$TAG" "$GITHUB_WORKSPACE/dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256"
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ github.token }}
         # No --clobber: a published bundle must never change (integrators pin its sha256).
-        run: gh release upload "$TAG" dist/brilliant-ha-kiosk-$TAG.tar.gz dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256 --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" dist/brilliant-ha-kiosk-$TAG.tar.gz dist/brilliant-ha-kiosk-$TAG.tar.gz.sha256 dist/brilliant-ha-kiosk-$TAG.release.json --repo "$GITHUB_REPOSITORY"
