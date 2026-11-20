@@ -20,6 +20,9 @@ These changes will be part of the next stable release.
   panel's slider/gangbox bus changes: `journalctl -u ha-kiosk-bridge | grep slider:`.
 
 ### Changed
+- Music grouping: a room Home Assistant can't reach shows "· offline", and tapping it explains
+  that it can't be removed until it's back. If a removed room is still in the group six seconds
+  later, the panel says so instead of leaving it ticked with no explanation.
 - A load running always-on is no longer offered to HA as a "Wired light", and the bridge no
   longer waits for a dimmer that isn't there.
 

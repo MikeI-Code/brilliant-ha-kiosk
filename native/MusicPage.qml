@@ -144,10 +144,34 @@ Flickable {
         playingId = item.media_content_id || ""; titleAtTap = a.media_title || ""; playingClear.restart();
         Ha.callService("media_player", "play_media", { media_content_id: item.media_content_id, media_content_type: item.media_content_type }, entity);
     }
+    // Grouping feedback: a speaker HA can't reach can't be told to leave, so say so instead of
+    // failing silently; and if a removed speaker is still in the group a few seconds later, say that.
+    property int roomTick: 0                // bumped when any listed speaker's state changes
+    property string groupNote: ""
+    property string leaving: ""
+    function isOffline(e) { var s = Ha.get(e); return !s || s.state === "unavailable"; }
+    Timer { id: noteClear; interval: 8000; onTriggered: page.groupNote = "" }
+    Timer {
+        id: leaveCheck; interval: 6000
+        onTriggered: {
+            if (page.leaving && page.members.indexOf(page.leaving) >= 0)
+                page.showNote(page.nameOf(page.leaving) + (page.isOffline(page.leaving)
+                    ? " went offline and didn't leave the group. Try again once it's back."
+                    : " didn't leave the group. Tap it again to retry."));
+            page.leaving = "";
+        }
+    }
+    function showNote(t) { groupNote = t; noteClear.restart(); }
     function toggleMember(e) {
         if (e === entity) return;
-        if (members.indexOf(e) >= 0) Ha.callService("media_player", "unjoin", null, e);
-        else Ha.callService("media_player", "join", { group_members: [e] }, entity);
+        if (members.indexOf(e) >= 0) {
+            if (isOffline(e)) { showNote(nameOf(e) + " is offline, so it can't be removed until it's back."); return; }
+            Ha.callService("media_player", "unjoin", null, e);
+            leaving = e; leaveCheck.restart();
+        } else {
+            if (isOffline(e)) { showNote(nameOf(e) + " is offline."); return; }
+            Ha.callService("media_player", "join", { group_members: [e] }, entity);
+        }
     }
 
     onEntityChanged: { refresh(); favorites = []; loadFavorites(); }
@@ -155,6 +179,7 @@ Flickable {
         target: Ha
         function onEntityUpdated(id) {
             if (page.members.indexOf(id) >= 0) { page.volTick++; page.captureBalance(); }
+            if (id.indexOf("media_player.") === 0) page.roomTick++;
             if (id !== page.entity) return;
             page.refresh();
             if (page.playingId && (page.a.media_title || "") !== page.titleAtTap) page.playingId = "";
@@ -339,6 +364,7 @@ Flickable {
                 Rectangle {
                     visible: modelData.entity !== page.entity
                     readonly property bool inGroup: page.members.indexOf(modelData.entity) >= 0
+                    readonly property bool offline: (page.roomTick, page.isOffline(modelData.entity))
                     height: 40 * Theme.u; width: (parent.width - 8 * Theme.u) / 2; radius: 12 * Theme.u
                     color: inGroup ? Theme.blueSoft : Theme.card; border.color: inGroup ? Theme.blue : Theme.border
                     Row {
@@ -346,12 +372,15 @@ Flickable {
                         spacing: 8 * Theme.u
                         Icon { size: 20; name: parent.parent.inGroup ? "checkbox-marked-circle" : "checkbox-blank-circle-outline"
                                color: parent.parent.inGroup ? Theme.blue : Theme.textDim; anchors.verticalCenter: parent.verticalCenter }
-                        Label { size: 13; text: modelData.name; anchors.verticalCenter: parent.verticalCenter }
+                        Label { size: 13; text: modelData.name + (parent.parent.offline ? " · offline" : "")
+                                color: parent.parent.offline ? Theme.textDim : Theme.text; anchors.verticalCenter: parent.verticalCenter }
                     }
                     MouseArea { anchors.fill: parent; onClicked: if (!Panel.multi) page.toggleMember(modelData.entity) }
                 }
             }
         }
+        Label { size: 13; color: Theme.amber; width: parent.width; wrapMode: Text.WordWrap
+                text: page.groupNote; visible: page.groupNote !== "" }
 
         // Favorites (grouped: Stations, Playlists, ...)
         Label { size: 13; color: Theme.textDim; text: page.favError; visible: page.favError !== "" && page.favorites.length === 0 && !page.favLoading; width: parent.width; wrapMode: Text.WordWrap }
