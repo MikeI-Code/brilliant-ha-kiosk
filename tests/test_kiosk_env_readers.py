@@ -118,8 +118,8 @@ def test_the_bridge_reads_like_setup_and_overrides_win(
 def test_the_bridge_photo_sync_and_mqtt_start_use_the_shared_reader() -> None:
     src = (KIOSK / "ha-kiosk-bridge.py").read_text(encoding="utf-8")
     assert (
-        src.count("common.read_settings()") == 3
-    )  # read_kiosk_env, start_sliders, start_photo_sync
+        src.count("common.read_settings()") == 2
+    )  # read_kiosk_env, start_photo_sync
     assert "common.read_env(" in src
 
 

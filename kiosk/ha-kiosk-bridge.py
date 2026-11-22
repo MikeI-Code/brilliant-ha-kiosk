@@ -639,16 +639,6 @@ def start_photo_sync():
     mod.PhotoSync(env).start()
 
 
-def start_sliders():
-    """Physical sliders -> HA lights (SLIDER_TARGET_<n>), experimental; see ha-kiosk-slider.py."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("ha_kiosk_slider", "/etc/ha-kiosk/ha-kiosk-slider.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    if mod.SliderLink(common.read_settings(), control, log=lambda m: print(m, flush=True)).start():
-        print("bridge: slider link started", flush=True)
-
-
 def main():
     global access
     access = SecurityAccess()
@@ -670,10 +660,6 @@ def main():
         threading.Thread(target=health.run, daemon=True).start()
     except Exception as e:
         print(f"bridge: MQTT not started: {e}", flush=True)
-    try:
-        start_sliders()
-    except Exception as e:
-        print(f"bridge: slider link not started: {e}", flush=True)
     try:
         start_photo_sync()
     except Exception as e:
