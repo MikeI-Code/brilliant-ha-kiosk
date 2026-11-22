@@ -101,6 +101,12 @@ class LoadControl:
         """Names of all peripherals on this panel (read-only)."""
         return sorted(self._with_bus(lambda b: b.device().peripherals) or {})
 
+    def has_load(self):
+        """LOAD is a load this bridge can switch. Brilliant runs an always-on (smart bulb) load
+        either without the peripheral or, on some panels, as the same peripheral with power
+        metering only (no `on` or `intensity` variable)."""
+        return LOAD in self.peripherals() and "on" in self.variables(LOAD)
+
     def info(self):
         def get(b):
             room = (b.peripheral("art_config_peripheral").variables or {}).get("display_name")
@@ -646,8 +652,8 @@ def main():
           + (f" (devices: {', '.join(sorted(access.devices))})" if access.devices else ""), flush=True)
     for i in range(30):                  # the bus may still be starting at boot
         try:
-            if LOAD not in control.peripherals():   # e.g. the load is set to always-on (smart bulb)
-                print(f"bridge: no {LOAD} on this panel: local load control off", flush=True)
+            if not control.has_load():   # e.g. the load is set to always-on (smart bulb)
+                print(f"bridge: no switchable {LOAD} on this panel: local load control off", flush=True)
                 break
             print("bridge: load", json.dumps(control.state()), flush=True)
             break

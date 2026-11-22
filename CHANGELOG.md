@@ -27,6 +27,14 @@ These changes will be part of the next stable release.
 - A load running always-on is no longer offered to HA as a "Wired light", and the bridge no
   longer waits for a dimmer that isn't there.
 
+### Fixed
+- **Installs no longer fail with "UI never reported in" when the first switch is always-on.**
+  On some panels an always-on (smart bulb) load keeps its `gangbox_peripheral_N` peripheral but
+  loses the `on` and `intensity` variables. The bridge kept retrying to read that load for 150 s
+  before it started its local server, so the screen's heartbeat never arrived and
+  `ha-kiosk-setup` restored Brilliant's UI. Such a load is now treated like a missing one: local
+  load control is off, no "Wired light" is offered to HA, and the bridge starts at once.
+
 ## [v1.5.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.5.0) — 2026-11-10 — Home Assistant integration, animated sky, weather page
 
 Manage panels from Home Assistant with the new **Brilliant Kiosk** integration (install it from
