@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-- `SLIDER_TARGET_1`..`SLIDER_TARGET_9` and `SLIDER_DEBUG` are accepted settings (kiosk
-  experimental physical-slider -> HA light forwarding).
+## 0.1.6
+
+- The kiosk's physical slider strip settings are accepted (kiosk v1.6.0): `SLIDER_TARGET_1`..`9`,
+  `SLIDER_GANG_1`..`9`, `SLIDER_FEED_1`..`9` and `SLIDER_SLOTS`. `SLIDER_DEBUG` is still accepted
+  but no longer used by the kiosk.
 
 ## 0.1.5
 
