@@ -1,4 +1,15 @@
-"""Read a three-gang Brilliant panel’s physical dimmer strips. Default to dry run."""
+"""Read a Brilliant panel's physical capacitive strips (any gang count). Default to dry run.
+
+Adapted from brilliant-ha-kiosk PR #6. Settings come from sliders.env next to this file:
+  SLIDER_SLOTS     input slot of each strip, in strip order (default "1,2,3", cut to the strip count)
+Each strip n (1 = leftmost) needs at least one of:
+  SLIDER_LOAD_<n>  a wired load of this panel, named exactly as Brilliant shows it
+  SLIDER_HA_<n>    a Home Assistant light the strip controls instead (tap = on/off, slide = dim)
+and may add:
+  SLIDER_GANG_<n>  which gang SLIDER_LOAD_<n> is on (default n), to put a load on another strip
+  SLIDER_POWER_<n> with both of the above: "manage" = the bulbs are fed by that load, switch it on
+                   when needed. Default "leave": never touch the wired load.
+"""
 
 import argparse
 import os
@@ -10,12 +21,11 @@ import time
 
 from slider_output import GestureOutput, LiveOutput
 
-from wired_loads import WiredLoads
-
-STRIP_SLOTS = (1, 2, 3)
+DEFAULT_SLOTS = {1: 1, 2: 2, 3: 3}   # input slot -> strip number
 
 INPUT_EVENT = struct.Struct("<IIHHi")  # ARM32 input_event
-TAP_SPAN, SLIDE_SPAN = 40, 65
+# Recorded on a real panel 2026-11-21: taps drift 17-53 units (lift-off), slides span 650+.
+TAP_SPAN, SLIDE_SPAN = 60, 65
 UPDATE_INTERVAL = 0.065
 GAIN = 1.5  # Provisional relative mapping, intensity units per unit of finger travel.
 
@@ -59,8 +69,9 @@ class Contact:
 
 class Worker:
     def __init__(
-        self, loads, slot=None, observer=None, live_output=None, snapshot=None
+        self, loads, slot=None, observer=None, live_output=None, snapshot=None, slot_map=None
     ):
+        self.slot_map = dict(slot_map or DEFAULT_SLOTS)
         self.live_output = live_output
         self.submit = (
             live_output.submit
@@ -79,7 +90,7 @@ class Worker:
         for slot, touch in list(self.active.items()):
             end = slot in self.released
             usable = (
-                slot in STRIP_SLOTS and touch.first is not None and not touch.blocked
+                slot in self.slot_map and touch.first is not None and not touch.blocked
             )
             kind = "ignored"
             if usable:
@@ -89,15 +100,15 @@ class Worker:
                     if end or now - touch.last_write >= UPDATE_INTERVAL:
                         delta = GAIN * (touch.y - touch.first)
                         if delta != touch.last_value:
-                            self.submit((slot, touch.id, delta))
+                            self.submit((self.slot_map[slot], touch.id, delta))
                             touch.last_value, touch.last_write = delta, now
                     kind = "slide"
                 elif end and span <= TAP_SPAN and 0 < now - touch.start <= 0.95:
-                    self.submit((slot, touch.id, None))
+                    self.submit((self.slot_map[slot], touch.id, None))
                     kind = "tap"
             if end:
                 if self.observer:
-                    self.observer(touch.id, slot, kind)
+                    self.observer(touch.id, self.slot_map.get(slot, slot), kind)
                 del self.active[slot]
         self.released.clear()
 
@@ -127,7 +138,7 @@ class Worker:
             return
         if code == 47:
             self.slot = value
-        elif self.slot not in STRIP_SLOTS:
+        elif self.slot not in self.slot_map:
             return
         elif code == 57:
             if self.inherited.get(self.slot) == value:
@@ -173,14 +184,14 @@ def active_state(service):
     return result.stdout.strip()
 
 
-def snapshot_slots(stream):
+def snapshot_slots(stream, slots=DEFAULT_SLOTS):
     import fcntl
 
     # EVIOCGABS(ABS_MT_SLOT) gives the selected slot and upper bound.
     absolute = bytearray(24)
     fcntl.ioctl(stream.fileno(), 0x8018456F, absolute)
     slot, _, maximum_slot = struct.unpack_from("<3i", absolute)
-    if not 3 <= maximum_slot <= 31:
+    if not max(slots) <= maximum_slot <= 31:
         raise ValueError("Unexpected multi-touch slot count")
     # EVIOCGMTSLOTS(ABS_MT_TRACKING_ID) returns the IDs still in contact.
     tracking = bytearray(4 * (maximum_slot + 2))
@@ -189,16 +200,79 @@ def snapshot_slots(stream):
     inherited = {
         n: t[0]
         for n, t in enumerate(struct.iter_unpack("<i", tracking[4:]))
-        if n in STRIP_SLOTS and t[0] >= 0
+        if n in slots and t[0] >= 0
     }
     return slot, inherited
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def parse_env(text):
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def read_settings(path=None):
+    return parse_env(Path(path or os.path.join(HERE, "sliders.env")).read_text())
+
+
+def ha_base():
+    import re
+    url = parse_env(Path("/etc/ha-kiosk/kiosk.env").read_text()).get("HA_URL", "")
+    match = re.match(r"(https?://[^/\s]+)", url)
+    if not match:
+        raise ValueError("No HA_URL in kiosk.env")
+    return match.group(1)
+
+
+def ha_token():
+    return Path("/etc/ha-kiosk/token").read_text().strip()
+
+
+def strip_count(settings):
+    numbers = [int(k.rsplit("_", 1)[1]) for k in settings
+               if k.startswith(("SLIDER_LOAD_", "SLIDER_HA_")) and k.rsplit("_", 1)[1].isdigit() and settings[k]]
+    count = max(numbers or [0])
+    if not count or set(numbers) != set(range(1, count + 1)):
+        raise ValueError("Give every strip from 1 up a SLIDER_LOAD_<n> or a SLIDER_HA_<n> (no gaps)")
+    return count
+
+
+def build_strips(settings, bus, say, make_light):
+    """{strip number: strip object}. Every assignment is validated before any gesture is accepted."""
+    from strips import HaLightStrip, WiredStrip
+
+    built = {}
+    for strip in range(1, strip_count(settings) + 1):
+        get = lambda key: settings.get("SLIDER_{}_{}".format(key, strip), "").strip()
+        label, entity = get("LOAD"), get("HA")
+        gang = int(get("GANG") or strip)
+        wired = WiredStrip(bus, gang - 1, label) if label else None
+        if not entity:
+            wired.level()                     # a wired strip must be a readable load
+            built[strip] = wired
+            continue
+        manage = get("POWER").lower() == "manage"
+        if manage and wired is None:
+            raise ValueError("SLIDER_POWER_{}=manage needs SLIDER_LOAD_{}".format(strip, strip))
+        if wired is not None:
+            # A gang in Brilliant's always-on mode has no on/intensity, so only its name is checked.
+            wired.level() if manage else wired._target()
+        built[strip] = HaLightStrip(wired if manage else None, make_light(entity), say)
+    return built
 
 
 def open_bus(factory):
     # The socket can appear after the systemd bus unit becomes active.
     while True:
         try:
-            return factory(name="ha_kiosk_three_sliders")
+            return factory(name="ha_kiosk_sliders")
         except (FileNotFoundError, ConnectionRefusedError):
             time.sleep(1)
 
@@ -217,28 +291,29 @@ def device_run(apply):
             raise ValueError("Stock input handler must be inactive during a live pilot")
         if active_state("ha-kiosk.service") != b"ActiveState=active":
             raise ValueError("Custom kiosk must be active during a live pilot")
+    settings = read_settings()
+    count = strip_count(settings)
+    order = [int(x) for x in settings.get("SLIDER_SLOTS", "1,2,3").split(",")][:count]
+    if len(order) != count or len(set(order)) != count:
+        raise ValueError("SLIDER_SLOTS must name one distinct input slot per strip")
+    slot_map = {slot: strip for strip, slot in enumerate(order, 1)}
     live_output = bus = None
     if apply:
         sys.path.insert(0, "/etc/ha-kiosk")
         from brilliant_bus import Bus
+        from strips import HaLight, Strips
 
+        say = lambda text: print(text, flush=True)
         bus = open_bus(Bus)
-        labels = [
-            os.environ.get("SLIDER_LOAD_{}".format(i), "").strip() for i in STRIP_SLOTS
-        ]
-        loads = WiredLoads(bus, labels)
-        for strip in STRIP_SLOTS:
-            loads.level(
-                strip
-            )  # Validate all three assignments before accepting any gestures.
-        live_output = LiveOutput(loads, lambda text: print(text, flush=True))
+        loads = Strips(build_strips(settings, bus, say, lambda entity: HaLight(ha_base(), ha_token(), entity)))
+        live_output = LiveOutput(loads, say)
     else:
-        loads = MockLoads([0, 0, 0])
+        loads = MockLoads([0] * count)
     with path.open("rb", buffering=0) as stream:
-        snapshot = lambda: snapshot_slots(stream)
+        snapshot = lambda: snapshot_slots(stream, slot_map)
         slot, inherited = snapshot()
-        seen = lambda tid, strip, kind: print(tid, strip, kind, flush=True)
-        worker = Worker(loads, slot, seen, live_output, snapshot)
+        seen = lambda tid, strip, kind: print("strip {} {}".format(strip, kind), flush=True)
+        worker = Worker(loads, slot, seen, live_output, snapshot, slot_map)
         worker.inherited = inherited
         try:
             while True:
