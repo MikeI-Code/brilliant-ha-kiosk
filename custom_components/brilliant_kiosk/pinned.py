@@ -48,6 +48,9 @@ class PinnedRelease:
 #: v1.5.0 (2026-11-10): the ``.sha256`` asset and a ``sha256sum``/``wc -c`` of the downloaded
 #: bundle agree, and an independent Linux build of the tag has byte-identical contents (74 files;
 #: the archive itself differs only in file modes, which the build does not pin).
+#: v1.6.0 (2026-11-22): the asset digest, the ``.sha256`` asset, the ``.release.json`` and a
+#: ``sha256sum``/``wc -c`` of the downloaded bundle agree, and an independent Linux build of the tag
+#: has identical contents (78 files).
 PINNED_RELEASES: Mapping[str, PinnedRelease] = {
     "v1.4.0": PinnedRelease(
         sha256="6ea396194a70a5e130325fb21c1c9c24f310a95043c32bf704aa8fd9d8b85cf1",
@@ -56,5 +59,9 @@ PINNED_RELEASES: Mapping[str, PinnedRelease] = {
     "v1.5.0": PinnedRelease(
         sha256="468fcfd6dda0dadac870a5ab06e20a21045d6606dc010752266be67e07252856",
         size=823449,
+    ),
+    "v1.6.0": PinnedRelease(
+        sha256="f856f080de782665477e8b2d30169a841e4b7d879428985f9525285e6e87f3b5",
+        size=834110,
     ),
 }
