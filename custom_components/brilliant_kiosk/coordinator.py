@@ -44,8 +44,10 @@ from .const import (
     CONF_PRIVATE_KEY,
     DEFAULT_PORT,
     DOMAIN,
+    INTEGRATION_RELEASES_URL,
     ISSUE_ENV_DRIFT,
     ISSUE_ENV_DRIFT_UNSAFE,
+    ISSUE_INTEGRATION_UPDATE,
     ISSUE_MQTT_PROVIDER,
     MQTT_DOMAIN,
     PANEL_MQTT_FULL,
@@ -60,7 +62,7 @@ from .const import (
     provider_of,
 )
 from .errors import panel_errors
-from .install import async_fetch_bundle
+from .install import async_fetch_bundle, newest_unverifiable_stable
 
 if TYPE_CHECKING:
     from . import BrilliantKioskConfigEntry
@@ -113,7 +115,34 @@ class ReleasesCoordinator(DataUpdateCoordinator[tuple[Release, ...]]):
             ) from err
         if latest is not None and all(release.tag != latest.tag for release in releases):
             releases.append(latest)
+        self._sync_integration_update_issue(releases)
         return tuple(releases)
+
+    def _sync_integration_update_issue(self, releases: list[Release]) -> None:
+        """One repair issue while a stable release exists that this integration cannot verify.
+
+        Computed here because this coordinator is the single shared place the release list is
+        built (one instance for all panels): the issue is created per integration, not per panel,
+        and an unchanged issue id is simply updated, so several config entries never duplicate it.
+        It is cleared as soon as no such release remains (an updated integration pins it) and when
+        the last panel entry goes (see :func:`async_release_releases`).
+        """
+        newest = newest_unverifiable_stable(releases)
+        if newest is None:
+            ir.async_delete_issue(self.hass, DOMAIN, ISSUE_INTEGRATION_UPDATE)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_INTEGRATION_UPDATE,
+            is_fixable=True,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            learn_more_url=INTEGRATION_RELEASES_URL,
+            translation_key=ISSUE_INTEGRATION_UPDATE,
+            translation_placeholders={"tag": newest.tag},
+            data={"tag": newest.tag},
+        )
 
 
 @dataclass(slots=True)
@@ -147,6 +176,7 @@ async def async_release_releases(hass: HomeAssistant, entry_id: str) -> None:
     if not shared.users:
         del hass.data[DATA_RELEASES]
         await shared.coordinator.async_shutdown()
+        ir.async_delete_issue(hass, DOMAIN, ISSUE_INTEGRATION_UPDATE)
 
 
 @callback

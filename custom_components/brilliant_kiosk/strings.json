@@ -293,7 +293,7 @@
       "message": "{tag} is a nightly build. Select the nightly channel (Release channel) of this panel first. Nightly builds are checked only against their own checksum file, which is a weaker guarantee than a stable release."
     },
     "release_not_pinned": {
-      "message": "{tag} is not in this integration's list of verified releases, so it will not be installed on a panel. Update the integration to a version that includes it."
+      "message": "{tag} is not in this integration's list of verified releases, so it will not be installed on a panel. Update Brilliant Kiosk in Settings → Updates to get a version that includes it; a repair notice offers this when an update is available."
     },
     "verification_failed": {
       "message": "The panel could not verify the kiosk bundle, so nothing was installed: {error} The download may be damaged; try again."
@@ -355,6 +355,24 @@
     "env_drift_unsafe": {
       "title": "Panel settings differ and some cannot be fixed from Home Assistant",
       "description": "The running settings of {host} (/etc/ha-kiosk/kiosk.env) and the saved copy (/var/lib/ha-kiosk/config/kiosk.env) differ in: {keys}. Of these, {unsafe} contain characters that are not allowed (quotes, backslash, $ or a backtick). Those files are read by shell scripts running as root, so Home Assistant never rewrites such a line, and this cannot be fixed from Home Assistant.\n\nFix it on the panel over SSH, in one of two ways. Edit the {unsafe} lines in /etc/ha-kiosk/kiosk.env to remove the characters; this issue then becomes fixable here and can write the values to both copies. Or run `ha-kiosk-setup reapply`, which rebuilds the running copy from the saved one and drops the running values."
+    },
+    "release_needs_integration_update": {
+      "title": "Brilliant Kiosk {tag} needs a newer version of this integration",
+      "description": "Kiosk release {tag} is newer than any release this version of the Brilliant Kiosk integration has verified, so panels cannot install it. Update the Brilliant Kiosk integration (Settings → Updates) and restart Home Assistant.",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Update the Brilliant Kiosk integration",
+            "description": "Kiosk release {tag} needs a newer version of this integration. Installed: {installed}. Available: {latest}. Select Submit to install the update; Home Assistant must be restarted afterwards to finish."
+          }
+        },
+        "error": {
+          "install_failed": "The integration update could not be installed: {error}"
+        },
+        "abort": {
+          "no_update": "Brilliant Kiosk {tag} needs a newer version of this integration, which is not available yet. Check Settings → Updates later."
+        }
+      }
     }
   },
   "services": {

@@ -17,6 +17,7 @@ from . import BrilliantKioskConfigEntry
 from .const import CHANNEL_NIGHTLY, CHANNEL_STABLE, CONF_CHANNEL, DOMAIN
 from .coordinator import BrilliantKioskCoordinator
 from .entity import BrilliantKioskEntity
+from .install import is_installable
 
 PARALLEL_UPDATES = 1
 RELEASE_URL = "https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/{tag}"
@@ -66,7 +67,11 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
 
     @property
     def _latest(self) -> Release | None:
-        """The newest release of the channel, only if it is newer than the installed version.
+        """The newest installable release of the channel, only if newer than the installed version.
+
+        Installable means a nightly (nightly channel) or a stable release pinned in this version of
+        the integration: an unpinned stable would be offered and then refused at install. That
+        case is a repair issue instead (see ``ReleasesCoordinator``).
 
         Never a downgrade: a nightly is newer than the stable it was built on, so a stable
         channel does not offer an older stable over an installed nightly. Unknown installed or
@@ -77,6 +82,7 @@ class KioskUpdate(BrilliantKioskEntity, UpdateEntity):
             (key, release)
             for release in self.coordinator.releases.data or ()
             if (self._channel == CHANNEL_NIGHTLY or not release.prerelease)
+            and is_installable(release)
             and (key := parse_version(_version_of(release))) is not None
         ]
         if not candidates:

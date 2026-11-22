@@ -2,10 +2,42 @@
 
 from __future__ import annotations
 
-from pybrilliantkiosk import Release, Releases
+from collections.abc import Iterable
+
+from pybrilliantkiosk import Release, Releases, is_newer, parse_version
 
 from .errors import InstallRefused
 from .pinned import PINNED_RELEASES
+
+
+def is_installable(release: Release) -> bool:
+    """Whether :func:`async_fetch_bundle` could accept ``release``: a nightly, or a pinned stable.
+
+    A nightly is accepted subject to the channel (checked at install time); a stable release only
+    when its tag is in :data:`~.pinned.PINNED_RELEASES`.
+    """
+    return release.prerelease or release.tag in PINNED_RELEASES
+
+
+def newest_unverifiable_stable(releases: Iterable[Release]) -> Release | None:
+    """The newest stable release that is newer than every pinned one and not pinned itself.
+
+    Such a release needs a newer version of this integration before a panel can install it. A
+    stable release whose tag is no version, or that is older than a pinned one, is ignored (an
+    old release that was never pinned is not a reason to update).
+    """
+    pinned = [tag for tag in PINNED_RELEASES if parse_version(tag) is not None]
+    candidates = [
+        (version, release)
+        for release in releases
+        if not release.prerelease
+        and release.tag not in PINNED_RELEASES
+        and (version := parse_version(release.tag)) is not None
+        and all(is_newer(release.tag, tag) for tag in pinned)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda pair: pair[0])[1]
 
 
 async def async_fetch_bundle(

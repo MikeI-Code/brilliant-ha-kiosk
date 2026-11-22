@@ -12,6 +12,15 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
+### Changed
+- **A kiosk release the integration cannot install is no longer offered.** A new stable release
+  used to show up as an update on every panel and then fail to install, because each version of the
+  Home Assistant integration only installs releases it has verified. The panel's update entity now
+  offers only releases the installed integration can install. When a newer stable release exists
+  that it cannot verify yet, Home Assistant shows one repair notice ("needs a newer version of this
+  integration"); its fix updates the Brilliant Kiosk integration through the Marketplace (restart
+  Home Assistant afterwards), or says that no integration update is available yet.
+
 ## [v1.6.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.6.0) — 2026-11-22 — Physical slider strips, Home Assistant 2026.10
 
 Two- and three-gang panels get their physical slider strips back, each driving a wired load or a

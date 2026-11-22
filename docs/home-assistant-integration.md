@@ -371,6 +371,12 @@ and every IP address removed.
 | **Panel settings differ and some cannot be fixed from Home Assistant** | As above, but a running value contains a character that is not allowed. Root shell scripts read that file, so the integration never rewrites such a line. | No fix button. On the panel over SSH: edit the named keys in `/etc/ha-kiosk/kiosk.env` to remove the character (the issue then becomes the fixable one above), or run `ha-kiosk-setup reapply` to rebuild the running copy from the saved one. |
 | **The MQTT provider could not be applied** | Changing the MQTT provider option needed a settings change on the panel, which failed, or a poll found the panel running a different provider than the option says. | Submit applies the chosen provider again and shows the panel's reason if it still refuses. |
 
+| **Brilliant Kiosk {release} needs a newer version of this integration** | A newer stable kiosk release exists whose checksum the installed version of the integration does not contain, so it cannot be installed (the update entity does not offer it). One issue for the whole integration, not per panel; it goes away once an integration version that includes the release is installed. | Submit installs the integration update through its Marketplace update entity (shown with the installed and the available version) and asks you to restart Home Assistant. If the Marketplace has no update yet, the fix says so; check Settings → Updates later or see the [integration releases](https://github.com/MikeI-Code/ha-brilliant-kiosk/releases). |
+
+The fix finds the integration's own update entity in the entity registry: an `update` entity of
+another platform (never one of the panels' own update entities) that is called
+`update.brilliant_kiosk`, or is named "Brilliant Kiosk" (itself or its device).
+
 A changed SSH host key is not a repair issue but a re-authentication (Devices & services). The
 issues of a panel are removed with its entry.
 
@@ -504,7 +510,9 @@ data:
 * **Values.** Settings values cannot contain `'`, `"`, `$`, a backtick, a backslash or control
   characters (see [Installation parameters](#installation-parameters)).
 * **Releases.** A stable release is installable only if its checksum is pinned in the installed
-  version of the integration; a brand-new release needs an integration update first.
+  version of the integration; a brand-new release needs an integration update first. The update
+  entity does not offer such a release (it would only fail); a repair notice offers to update the
+  integration instead, and an explicit install of the tag is refused with the same advice.
 * **First install needs the dialog.** `install_version` and the update entity refuse a panel
   without the kiosk; remove and re-add the panel to install.
 * **Overrides race.** The kiosk rewrites `overrides.env` without the setup lock; a switch toggled

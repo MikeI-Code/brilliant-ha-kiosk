@@ -105,6 +105,11 @@ ISSUE_MQTT_PROVIDER: Final = "mqtt_provider_not_applied"
 ISSUE_ENV_DRIFT: Final = "env_drift"
 #: The drift issue of a panel whose running kiosk.env has values that cannot be written safely.
 ISSUE_ENV_DRIFT_UNSAFE: Final = "env_drift_unsafe"
+#: A newer stable kiosk release exists that this version of the integration cannot verify. One
+#: issue for the whole integration (not per panel), so its id has no config entry suffix.
+ISSUE_INTEGRATION_UPDATE: Final = "release_needs_integration_update"
+#: Where the integration's own releases are listed (the way forward when no update is offered yet).
+INTEGRATION_RELEASES_URL: Final = "https://github.com/MikeI-Code/ha-brilliant-kiosk/releases"
 
 CONF_EXPECTED_FINGERPRINT: Final = "expected_fingerprint"
 
