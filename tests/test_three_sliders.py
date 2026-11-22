@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "kiosk"))
 from slider_output import LiveOutput
 from slider_worker import Worker, MockLoads
-from wired_loads import WiredLoads
+from strips import WiredStrip
 
 
 class RecoveryTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class RecoveryTests(unittest.TestCase):
             self.frame(worker, 2, (57, 11), (54, 400))
             self.frame(worker, 2.1, (57, -1))
             self.assertEqual(
-                loads.history[-2:], [(slot, "level", 800), (slot, "toggle", 0)]
+                loads.history[-2:], [(slot, "level", 702), (slot, "toggle", 0)]
             )
 
     def test_stalled_output_reader_and_drop(self):
@@ -107,11 +107,11 @@ class RecoveryTests(unittest.TestCase):
                     )
 
         bus = Bus()
-        WiredLoads(bus, ["First", "Second", "Third"]).set_level(1, 450)
+        WiredStrip(bus, 0, "First").set_level(450)
         self.assertEqual(bus.calls, [{"intensity": 1}, {"intensity": 2}])
         bus = Bus()
         with self.assertRaises(RuntimeError):
-            WiredLoads(bus, ["First", "Second", "Third"]).toggle(1)
+            WiredStrip(bus, 0, "First").toggle()
         self.assertEqual(len(bus.calls), 1)
 
 

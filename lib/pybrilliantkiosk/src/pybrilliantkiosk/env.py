@@ -128,10 +128,11 @@ KNOWN_KEYS = frozenset(
         "ALLOW_CAMERA",
         "WEATHER_FX",
         "SLIDER_DEBUG",
+        "SLIDER_SLOTS",
     ]
 )
 _GESTURE_KEY_RE = re.compile(r"^GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))$")
-_SLIDER_KEY_RE = re.compile(r"^SLIDER_TARGET_[1-9]$")
+_SLIDER_KEY_RE = re.compile(r"^SLIDER_(TARGET|GANG|FEED)_[1-9]$")
 SECRET_MARKERS = ("PASSWORD", "TOKEN", "SECRET")
 MASK = "********"
 

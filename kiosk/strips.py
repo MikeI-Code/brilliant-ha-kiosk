@@ -1,6 +1,6 @@
 """What each physical strip controls: a wired load on this panel, or a Home Assistant light.
 
-Adapted from brilliant-ha-kiosk PR #6 (wired_loads.py), generalised from exactly three wired
+Grew out of the three-dimmer version in PR #6, generalised from exactly three wired
 dimmers to any number of strips. A strip is one of:
 
   WiredStrip    the panel's own gangbox load (tap = toggle, slide = dim if the load is a dimmer)
@@ -16,13 +16,25 @@ import urllib.request
 FULL = 1000   # every strip reports and accepts levels on a 0..1000 scale
 
 
+class BusLost(Exception):
+    """The panel message bus connection failed. It cannot be trusted again: the worker exits."""
+
+
 class WiredStrip:
     def __init__(self, bus, index, label):
         self.bus, self.label = bus, label
         self.name = "gangbox_peripheral_{}".format(index)
 
+    def _bus(self, method, *args, **kwargs):
+        # EOF or a socket error (including a timeout, after which a late reply could be read as
+        # the answer to the next request) leaves the bus stream unusable.
+        try:
+            return getattr(self.bus, method)(*args, **kwargs)
+        except (EOFError, OSError) as err:
+            raise BusLost(str(err) or type(err).__name__)
+
     def _target(self):
-        variables = self.bus.peripheral(self.name).variables
+        variables = self._bus("peripheral", self.name).variables
         if variables["display_name"].value.strip() != self.label:
             raise ValueError("Circuit assignment has changed. Verify the strip mapping.")
         return variables
@@ -34,7 +46,7 @@ class WiredStrip:
     def _write(self, variables, values):
         if any(k not in variables or not variables[k].externally_settable for k in values):
             raise ValueError("Requested control is unavailable.")
-        self.bus.call("set_variables_request", device_id=self.bus.device_id, peripheral_name=self.name,
+        self._bus("call", "set_variables_request", device_id=self.bus.device_id, peripheral_name=self.name,
                       variables=values, last_set_timestamps={k: variables[k].timestamp for k in values})
 
     def is_on(self):

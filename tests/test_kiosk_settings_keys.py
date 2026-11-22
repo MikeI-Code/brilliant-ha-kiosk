@@ -42,7 +42,7 @@ def _allowed(key: str, keys: set[str]) -> bool:
     return (
         key in keys
         or re.fullmatch(r"GESTURE_[23]_(TAP|SWIPE_(LEFT|RIGHT|UP|DOWN))", key) is not None
-        or re.fullmatch(r"SLIDER_TARGET_[1-9]", key) is not None
+        or re.fullmatch(r"SLIDER_(TARGET|GANG|FEED)_[1-9]", key) is not None
     )
 
 

@@ -122,9 +122,17 @@ start() {
     envflag() { [ "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 ')" = 1 ]; }
     # ALLOW_MIC / ALLOW_CAMERA = 0|off|false|no lock the mic / camera (scripts/install.sh appends deny-wins lines last)
     envdeny() { case "$(sed -n "s/^$1=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 \r' | tr 'A-Z' 'a-z')" in 0|off|false|no) return 0 ;; esac; return 1; }
-    if envflag KIOSK_THREE_SLIDERS; then
+    # Physical slider strips: on when any SLIDER_TARGET_<n> has a value (last assignment wins).
+    sliders_set() {
+        for n in 1 2 3 4 5 6 7 8 9; do
+            [ -n "$(sed -n "s/^SLIDER_TARGET_$n=//p" "$DEST/kiosk.env" | tail -n 1 | tr -d '\"\047 \r')" ] && return 0
+        done
+        return 1
+    }
+    if sliders_set; then
         systemctl enable ha-kiosk-sliders.service
         systemctl restart ha-kiosk-sliders.service
+        log "slider strips enabled (SLIDER_TARGET_<n>)"
     else
         systemctl disable --now ha-kiosk-sliders.service 2>/dev/null || true
     fi

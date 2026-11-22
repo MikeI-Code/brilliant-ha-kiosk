@@ -13,11 +13,12 @@ Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brill
 These changes will be part of the next stable release.
 
 ### Added
-- **Experimental: physical sliders drive Home Assistant lights** (2+ switch panels). Set the
-  switch to always-on / smart bulb in Brilliant's app, then `SLIDER_TARGET_1=light.your_bulb` in
-  `kiosk.env` (1 = first switch). Slider moves turn the HA light on/off and set its brightness;
-  the circuit is never cut. `SLIDER_DEBUG` (on by default while a target is set) logs the
-  panel's slider/gangbox bus changes: `journalctl -u ha-kiosk-bridge | grep slider:`.
+- **Physical slider strips on two- and three-gang panels** (thanks @KD-DC and @mjn138). Tap to
+  toggle, slide to dim. Each strip can drive one of the panel's wired loads (works with Home
+  Assistant offline) or a Home Assistant light: `SLIDER_TARGET_<n>` in `kiosk.env`, plus optional
+  `SLIDER_GANG_<n>`, `SLIDER_FEED_<n>` and `SLIDER_SLOTS`. See the manual's dimming section. This
+  replaces the earlier bridge-based slider experiment; `SLIDER_TARGET_<n>=light.*` settings keep
+  working, and `SLIDER_DEBUG` is no longer used (`journalctl -u ha-kiosk-sliders` instead).
 
 ### Changed
 - Music grouping: a room Home Assistant can't reach shows "· offline", and tapping it explains

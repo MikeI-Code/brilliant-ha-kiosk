@@ -57,7 +57,8 @@ directly: it watches Brilliant's own screen-on decision through the shadow backl
 
 * **Touch**: Synaptics DSX (`dsx-i2c`, I2C bus 0 `0-0020`), events on `/dev/input/event0` (the kiosk reads it for wake-on-touch and writes one sync event to
   wake the screen).
-* **No physical slider on these panels**: `brilliant_captouch` (I2C bus 1, `1-000a`) has no driver
+* **No physical slider on single-gang panels** (two- and three-gang panels expose their strips
+  as `brilliant_captouch` input slots; see the manual's dimming section): `brilliant_captouch` (I2C bus 1, `1-000a`) has no driver
   bound ("waiting for supplier") and `hardware_peripheral` reports `num_cap_touch_sliders = 0`.
   Dimming is done on the touchscreen (Synaptics DSX, 720×1280, **10 touch points**).
 * **Wired load** (`gangbox_peripheral_0`; more gangboxes appear as `gangbox_peripheral_N`): `on`,

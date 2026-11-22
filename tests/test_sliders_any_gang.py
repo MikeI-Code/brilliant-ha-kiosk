@@ -2,7 +2,7 @@ import io, json, os, sys, threading, time, unittest, urllib.error
 from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kiosk"))
 from slider_output import GestureOutput, LiveOutput
-from slider_worker import MockLoads, Worker, build_strips, parse_env, strip_count
+from slider_worker import MockLoads, SetupError, Worker, build_strips, configured_strips
 from strips import FULL, HaLight, HaLightStrip, Strips, WiredStrip
 
 
@@ -77,14 +77,14 @@ class WorkerTests(unittest.TestCase):
         for slot in (1, 2, 3):
             frame(worker, 1, (47, slot), (57, 10), (54, 300)); frame(worker, 1.1, (54, 500)); frame(worker, 1.2, (57, -1))
             frame(worker, 2, (57, 11), (54, 400)); frame(worker, 2.1, (57, -1))
-            self.assertEqual(loads.history[-2:], [(slot, "level", 800), (slot, "toggle", 0)])
+            self.assertEqual(loads.history[-2:], [(slot, "level", 702), (slot, "toggle", 0)])
 
     def test_two_strips_with_remapped_slots(self):
         loads = MockLoads([500, 500]); worker = Worker(loads, slot_map={0: 1, 1: 2})
         frame(worker, 1, (47, 1), (57, 5), (54, 400)); frame(worker, 1.1, (57, -1))          # tap strip 2
         frame(worker, 2, (47, 0), (57, 6), (54, 600)); frame(worker, 2.1, (54, 400)); frame(worker, 2.2, (57, -1))  # slide strip 1 down
         frame(worker, 3, (47, 2), (57, 7), (54, 400)); frame(worker, 3.1, (57, -1))          # unmapped slot: ignored
-        self.assertEqual(loads.history, [(2, "toggle", 0), (1, "level", 200)])
+        self.assertEqual(loads.history, [(2, "toggle", 0), (1, "level", 298)])
 
     def test_two_fingers_at_once_do_nothing(self):
         loads = MockLoads([500, 500]); worker = Worker(loads, slot_map={1: 1, 2: 2})
@@ -97,12 +97,10 @@ class WorkerTests(unittest.TestCase):
         frame(worker, 1, (47, 1), (57, 0), (54, 515)); frame(worker, 1.2, (54, 489)); frame(worker, 1.28, (54, 462)); frame(worker, 1.29, (57, -1))
         self.assertEqual(loads.history, [(1, "toggle", 0)])
 
-    def test_parse_env(self):
-        self.assertEqual(parse_env('# c\nSLIDER_LOAD_1="Ceiling"\nSLIDER_HA_2=light.x\n'), {"SLIDER_LOAD_1": "Ceiling", "SLIDER_HA_2": "light.x"})
 
 
 class ConfigTests(unittest.TestCase):
-    FAMILY = {"SLIDER_HA_1": "light.lamp", "SLIDER_HA_2": "light.main", "SLIDER_LOAD_3": "Hallway", "SLIDER_GANG_3": "1"}
+    FAMILY = {"SLIDER_TARGET_1": "light.lamp", "SLIDER_TARGET_2": "light.main", "SLIDER_TARGET_3": "Hallway", "SLIDER_GANG_3": "1"}
 
     def family_bus(self):
         return FakeBus({"gangbox_peripheral_0": {"display_name": "Hallway", "dimmable": "1", "on": "1", "intensity": "600", "max_intensity_value": "1000"},
@@ -111,21 +109,28 @@ class ConfigTests(unittest.TestCase):
     def test_family_room_two_ha_strips_and_hallway_dimmer_on_strip_three(self):
         bus, made = self.family_bus(), []
         built = build_strips(self.FAMILY, bus, print, lambda entity: made.append(entity) or ("light", entity))
-        self.assertEqual(made, ["light.lamp", "light.main"]); self.assertEqual(strip_count(self.FAMILY), 3)
+        self.assertEqual(made, ["light.lamp", "light.main"]); self.assertEqual(configured_strips(self.FAMILY), [1, 2, 3])
         self.assertIsNone(built[1].circuit); self.assertIsNone(built[2].circuit)
         out = GestureOutput(Strips({3: built[3]})); out.apply((3, 1, -200))
         self.assertEqual(bus.calls, [("gangbox_peripheral_0", {"intensity": "400"})])
 
     def test_always_on_gang_is_accepted_for_ha_strip_but_not_as_wired_strip(self):
-        build_strips({"SLIDER_LOAD_1": "Hallway", "SLIDER_LOAD_2": "Main", "SLIDER_HA_2": "light.main"}, self.family_bus(), print, lambda e: e)
-        with self.assertRaises(KeyError):
-            build_strips({"SLIDER_LOAD_1": "Hallway", "SLIDER_LOAD_2": "Main"}, self.family_bus(), print, lambda e: e)
+        build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "light.main"}, self.family_bus(), print, lambda e: e)
+        with self.assertRaises(SetupError):
+            build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "Main"}, self.family_bus(), print, lambda e: e)
 
-    def test_gaps_and_wrong_names_are_refused(self):
+    def test_feed_names_the_circuit_that_powers_the_bulbs(self):
+        built = build_strips({"SLIDER_TARGET_1": "light.x", "SLIDER_FEED_1": "Hallway"}, self.family_bus(), print, lambda e: e)
+        self.assertEqual(built[1].circuit.label, "Hallway")
+        with self.assertRaises(SetupError):
+            build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_FEED_1": "Hallway"}, self.family_bus(), print, lambda e: e)
+
+    def test_gaps_are_ignored_and_wrong_names_are_refused(self):
+        self.assertEqual(configured_strips({"SLIDER_TARGET_1": "light.a", "SLIDER_TARGET_3": "light.c", "SLIDER_TARGET_2": ""}), [1, 3])
+        with self.assertRaises(SetupError):
+            configured_strips({"SLIDER_TARGET_1": " "})
         with self.assertRaises(ValueError):
-            strip_count({"SLIDER_HA_1": "light.a", "SLIDER_HA_3": "light.c"})
-        with self.assertRaises(ValueError):
-            build_strips({"SLIDER_LOAD_1": "Kitchen"}, self.family_bus(), print, lambda e: e)
+            build_strips({"SLIDER_TARGET_1": "Kitchen"}, self.family_bus(), print, lambda e: e)
 
 
 class WiredTests(unittest.TestCase):

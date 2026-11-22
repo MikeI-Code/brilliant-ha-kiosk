@@ -1,14 +1,14 @@
 """Read a Brilliant panel's physical capacitive strips (any gang count). Default to dry run.
 
-Adapted from brilliant-ha-kiosk PR #6. Settings come from sliders.env next to this file:
-  SLIDER_SLOTS     input slot of each strip, in strip order (default "1,2,3", cut to the strip count)
-Each strip n (1 = leftmost) needs at least one of:
-  SLIDER_LOAD_<n>  a wired load of this panel, named exactly as Brilliant shows it
-  SLIDER_HA_<n>    a Home Assistant light the strip controls instead (tap = on/off, slide = dim)
-and may add:
-  SLIDER_GANG_<n>  which gang SLIDER_LOAD_<n> is on (default n), to put a load on another strip
-  SLIDER_POWER_<n> with both of the above: "manage" = the bulbs are fed by that load, switch it on
-                   when needed. Default "leave": never touch the wired load.
+Settings come from kiosk.env and overrides.env, read like every other kiosk service.
+Strip 1 is the leftmost.
+  SLIDER_TARGET_<n> what strip n controls: a Home Assistant light (light.*, tap = on/off,
+                    slide = brightness) or a wired load of this panel, named exactly as Brilliant
+                    shows it (tap = toggle, slide = dim when it is a dimmer)
+  SLIDER_GANG_<n>   which gang that wired load is on (default n)
+  SLIDER_FEED_<n>   for a light: the wired load that powers its bulbs, switched on when needed.
+                    Unset: the wired load is never touched.
+  SLIDER_SLOTS      input slot of each strip, in strip order (default "1,2,3")
 """
 
 import argparse
@@ -52,7 +52,7 @@ class Contact:
         self.start = now
         self.id = tracking_id
         self.first = self.y = self.low = self.high = None
-        self.last_value = None
+        self.last_value = 0.0
         self.last_write = float("-inf")
         self.sliding = self.blocked = False
 
@@ -98,7 +98,11 @@ class Worker:
                 if span >= SLIDE_SPAN:
                     touch.sliding = True
                     if end or now - touch.last_write >= UPDATE_INTERVAL:
-                        delta = GAIN * (touch.y - touch.first)
+                        # Measure from where the slide began, not the first touch, so the
+                        # level does not jump by the dead zone when the slide starts.
+                        travel = touch.y - touch.first
+                        travel = max(0, abs(travel) - SLIDE_SPAN) * (1 if travel > 0 else -1)
+                        delta = GAIN * travel
                         if delta != touch.last_value:
                             self.submit((self.slot_map[slot], touch.id, delta))
                             touch.last_value, touch.last_write = delta, now
@@ -205,29 +209,28 @@ def snapshot_slots(stream, slots=DEFAULT_SLOTS):
     return slot, inherited
 
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+SETUP_ERROR = 3  # exit status for a configuration problem: systemd does not restart (see the unit)
 
 
-def parse_env(text):
-    out = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            out[key.strip()] = value.strip().strip('"').strip("'")
-    return out
+class SetupError(ValueError):
+    """The panel or kiosk.env does not match the slider configuration. Restarting will not help."""
 
 
-def read_settings(path=None):
-    return parse_env(Path(path or os.path.join(HERE, "sliders.env")).read_text())
+def read_settings():
+    """kiosk.env with overrides.env on top, read by the shared kiosk reader."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ha_kiosk_common", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ha-kiosk-common.py"))
+    common = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(common)
+    return common.read_settings()
 
 
-def ha_base():
+def ha_base(settings):
     import re
-    url = parse_env(Path("/etc/ha-kiosk/kiosk.env").read_text()).get("HA_URL", "")
-    match = re.match(r"(https?://[^/\s]+)", url)
+    match = re.match(r"(https?://[^/\s]+)", settings.get("HA_URL", ""))
     if not match:
-        raise ValueError("No HA_URL in kiosk.env")
+        raise SetupError("No HA_URL in kiosk.env")
     return match.group(1)
 
 
@@ -235,36 +238,53 @@ def ha_token():
     return Path("/etc/ha-kiosk/token").read_text().strip()
 
 
-def strip_count(settings):
-    numbers = [int(k.rsplit("_", 1)[1]) for k in settings
-               if k.startswith(("SLIDER_LOAD_", "SLIDER_HA_")) and k.rsplit("_", 1)[1].isdigit() and settings[k]]
-    count = max(numbers or [0])
-    if not count or set(numbers) != set(range(1, count + 1)):
-        raise ValueError("Give every strip from 1 up a SLIDER_LOAD_<n> or a SLIDER_HA_<n> (no gaps)")
-    return count
+def configured_strips(settings):
+    """Strip numbers with a SLIDER_TARGET_<n>, in order. Strips without one are ignored."""
+    numbers = sorted(int(k.rsplit("_", 1)[1]) for k in settings
+                     if k.startswith("SLIDER_TARGET_") and k.rsplit("_", 1)[1].isdigit() and settings[k].strip())
+    if not numbers:
+        raise SetupError("No SLIDER_TARGET_<n> is set")
+    return numbers
+
+
+def _checked(wired, strip):
+    try:
+        wired.level()
+    except KeyError:
+        raise SetupError("Strip {}: {} has no wired load to drive (is it always-on? "
+                         "Use a light.* target instead)".format(strip, wired.label))
+    except ValueError as err:
+        raise SetupError("Strip {} ({}): {}".format(strip, wired.label, err))
+    return wired
 
 
 def build_strips(settings, bus, say, make_light):
-    """{strip number: strip object}. Every assignment is validated before any gesture is accepted."""
+    """{strip number: strip object}. Every assignment is validated before any gesture is accepted.
+
+    SLIDER_TARGET_<n> is a Home Assistant light (light.*) or a wired load named as Brilliant shows it.
+    SLIDER_GANG_<n> is the gang of that wired load (default n). For a light, SLIDER_FEED_<n> names the
+    wired load that powers the bulbs: it is switched on when needed. Without it the wired load is
+    never touched.
+    """
     from strips import HaLightStrip, WiredStrip
 
     built = {}
-    for strip in range(1, strip_count(settings) + 1):
+    for strip in configured_strips(settings):
         get = lambda key: settings.get("SLIDER_{}_{}".format(key, strip), "").strip()
-        label, entity = get("LOAD"), get("HA")
-        gang = int(get("GANG") or strip)
-        wired = WiredStrip(bus, gang - 1, label) if label else None
-        if not entity:
-            wired.level()                     # a wired strip must be a readable load
-            built[strip] = wired
+        target, feed = get("TARGET"), get("FEED")
+        try:
+            gang = int(get("GANG") or strip)
+        except ValueError:
+            raise SetupError("SLIDER_GANG_{} must be a number".format(strip))
+        if not target.startswith("light."):
+            if feed:
+                raise SetupError("SLIDER_FEED_{} only applies to a light target".format(strip))
+            built[strip] = _checked(WiredStrip(bus, gang - 1, target), strip)
             continue
-        manage = get("POWER").lower() == "manage"
-        if manage and wired is None:
-            raise ValueError("SLIDER_POWER_{}=manage needs SLIDER_LOAD_{}".format(strip, strip))
-        if wired is not None:
-            # A gang in Brilliant's always-on mode has no on/intensity, so only its name is checked.
-            wired.level() if manage else wired._target()
-        built[strip] = HaLightStrip(wired if manage else None, make_light(entity), say)
+        circuit = None
+        if feed:
+            circuit = _checked(WiredStrip(bus, gang - 1, feed), strip)
+        built[strip] = HaLightStrip(circuit, make_light(target), say)
     return built
 
 
@@ -284,19 +304,24 @@ def device_run(apply):
         if p.read_text().strip() == "brilliant_captouch"
     ]
     if len(matches) != 1:
-        raise ValueError("Expected one brilliant_captouch input device")
+        raise SetupError("Expected one brilliant_captouch input device")
     path = Path("/dev/input") / matches[0].parents[1].name
     if apply:
+        # Transient at boot or during an install: exit 1 and let systemd retry.
         if active_state("switch_ui_app.service") != b"ActiveState=inactive":
-            raise ValueError("Stock input handler must be inactive during a live pilot")
+            raise RuntimeError("Stock input handler must be inactive")
         if active_state("ha-kiosk.service") != b"ActiveState=active":
-            raise ValueError("Custom kiosk must be active during a live pilot")
+            raise RuntimeError("Custom kiosk is not active yet")
     settings = read_settings()
-    count = strip_count(settings)
-    order = [int(x) for x in settings.get("SLIDER_SLOTS", "1,2,3").split(",")][:count]
-    if len(order) != count or len(set(order)) != count:
-        raise ValueError("SLIDER_SLOTS must name one distinct input slot per strip")
-    slot_map = {slot: strip for strip, slot in enumerate(order, 1)}
+    strips = configured_strips(settings)
+    count = max(strips)
+    try:
+        order = [int(x) for x in settings.get("SLIDER_SLOTS", "1,2,3").split(",")]
+    except ValueError:
+        order = []
+    if len(order) < count or len(set(order)) != len(order):
+        raise SetupError("SLIDER_SLOTS must name one distinct input slot per strip")
+    slot_map = {order[strip - 1]: strip for strip in strips}
     live_output = bus = None
     if apply:
         sys.path.insert(0, "/etc/ha-kiosk")
@@ -305,8 +330,11 @@ def device_run(apply):
 
         say = lambda text: print(text, flush=True)
         bus = open_bus(Bus)
-        loads = Strips(build_strips(settings, bus, say, lambda entity: HaLight(ha_base(), ha_token(), entity)))
-        live_output = LiveOutput(loads, say)
+        base = ha_base(settings) if any(
+            settings.get("SLIDER_TARGET_{}".format(n), "").strip().startswith("light.")
+            for n in strips) else None
+        loads = Strips(build_strips(settings, bus, say, lambda entity: HaLight(base, ha_token(), entity)))
+        live_output = LiveOutput(loads, say, fatal=lambda: os._exit(1))
     else:
         loads = MockLoads([0] * count)
     with path.open("rb", buffering=0) as stream:
@@ -343,7 +371,11 @@ def main():
         action="store_true",
         help="Control the configured local dimmers (default: dry run)",
     )
-    device_run(parser.parse_args().apply)
+    try:
+        device_run(parser.parse_args().apply)
+    except SetupError as err:
+        print("Slider setup: " + str(err), flush=True)
+        sys.exit(SETUP_ERROR)
 
 
 if __name__ == "__main__":

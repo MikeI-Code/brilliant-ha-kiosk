@@ -1,9 +1,12 @@
 [Unit]
-Description=Three-gang physical sliders for the Brilliant kiosk
+Description=Physical slider strips for the Brilliant kiosk
 BindsTo=ha-kiosk.service
 PartOf=ha-kiosk.service
 After=ha-kiosk.service message_bus.service switch_ui_app.service
 Conflicts=switch_ui_app.service
+# A crash-looping worker gives up after 5 starts in 2 minutes.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,6 +15,8 @@ EnvironmentFile=/etc/ha-kiosk/kiosk.env
 ExecStart=/data/switch-embedded/env/bin/python -B /etc/ha-kiosk/slider_worker.py --device --apply
 Restart=on-failure
 RestartSec=2
+# Exit 3 = configuration error (wrong load name, gang count): restarting will not fix it.
+RestartPreventExitStatus=3
 NoNewPrivileges=true
 
 [Install]

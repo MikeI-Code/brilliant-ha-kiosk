@@ -850,16 +850,23 @@ dashboard looks in a browser or the phone app.
 
 <img src="images/dim.png" width="30%" align="right" alt="Two-finger dimming readout">
 
-On a three-gang panel with **three local dimmable wired loads**, an optional service handles
-physical slider taps (toggle) and relative swipes (dim). Tested on Brilliant OS v26.10.21.1.
-Before enabling it, confirm in stock mode which circuit each strip operates and inspect the
-display names of `gangbox_peripheral_0`, `_1` and `_2`. They must match that order from left
-to right. Put those exact names in `SLIDER_LOAD_1`, `SLIDER_LOAD_2` and `SLIDER_LOAD_3` in the
-per-panel kiosk.env, set `KIOSK_THREE_SLIDERS=1`, and run the normal installer. The service
-checks the labels and the local dimmer interface before accepting input. Reassigned strips,
-non-dimmable loads, and two- or four-gang panels are outside the tested configuration.
-To disable, set the flag to 0 and reinstall. Returning to stock stops the worker.
-The slider service uses the panel bus and works with HA offline.
+On a **two- or three-gang panel**, an optional service handles the physical strips: tap to toggle,
+slide to dim. Set one `SLIDER_TARGET_<n>` per strip in the per-panel kiosk.env (strip 1 is the
+leftmost) and run the normal installer; the service starts when any target is set.
+
+* **A wired load** of this panel: use the name Brilliant shows for it. Tap toggles it; slide dims
+  it if it is a dimmer. This works with Home Assistant offline. If the load sits on a different
+  gang than its strip, add `SLIDER_GANG_<n>`.
+* **A Home Assistant light** (`light.living_room`): tap turns it on or off, slide sets brightness.
+  For smart bulbs, first set that switch to always-on in Brilliant's app. If the bulbs are powered
+  through one of this panel's wired loads, name it in `SLIDER_FEED_<n>` and the strip switches it
+  on when needed; otherwise the wired load is never touched.
+
+Before enabling it, confirm in stock mode which circuit each strip operates. The service checks
+every name against the panel before it accepts any touches, and stops (without restarting) if a
+name does not match. Tested on Brilliant OS v26.10.21.1 and v26.11.18.1. To disable, clear the
+targets and reinstall. Returning to stock stops the service.
+`journalctl -u ha-kiosk-sliders` shows each tap and slide.
 
 On single-gang panels there is no physical slider: dimming happens on the touchscreen. A small local service,
 **`ha-kiosk-bridge`**, connects to Brilliant's message bus and lets the screen switch and dim the

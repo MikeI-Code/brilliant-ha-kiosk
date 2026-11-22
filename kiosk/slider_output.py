@@ -4,6 +4,8 @@ from collections import deque
 from threading import Condition, Thread
 from time import monotonic
 
+from strips import BusLost
+
 
 class GestureOutput:
     def __init__(self, loads):
@@ -21,6 +23,8 @@ class GestureOutput:
             start, maximum = self.loads.level(slot)
             self.anchors[slot] = (contact_id, start, maximum, None)
         _, start, maximum, last = self.anchors[slot]
+        if start == 0 and delta <= 0 and last is None:
+            return  # sliding down on a light that is off must not turn it on
         value = int(round(start + delta * maximum / 1000.0))
         value = max(max(1, maximum // 100), min(maximum, value))
         if value != last:
@@ -29,9 +33,10 @@ class GestureOutput:
 
 
 class LiveOutput:
-    def __init__(self, loads, report=print):
+    def __init__(self, loads, report=print, fatal=None):
         self.output = GestureOutput(loads)
         self.report = report
+        self.fatal = fatal  # called when output cannot continue; the service exits and restarts
         self.pending = deque()
         self.cv = Condition()
         self.closed = False
@@ -82,14 +87,34 @@ class LiveOutput:
             if generation != previous:
                 self.output.anchors.clear()
                 previous = generation
-            if monotonic() - queued > 0.5:
+            if monotonic() - queued > 0.5 and (command[2] is None or self._superseded(command)):
+                # Old taps are never applied late. An old slide is skipped only when a newer
+                # position for the same contact is queued, so the final position still lands.
                 self.report("Skipped expired slider command")
                 continue
             try:
                 self.output.apply(command)
+            except BusLost as err:
+                self._die("Panel message bus lost: " + str(err))
+                return
             except RuntimeError as err:
                 # A failed toggle is deliberately never resent. Subsequent touches remain usable.
                 self.report("Local load request rejected: " + str(err))
             except (OSError, ValueError, KeyError) as err:
                 self.report("Local load unavailable: " + str(err))
                 self.cancel()
+            except Exception as err:  # never leave the reader running with no output thread
+                self._die("Slider output failed: {!r}".format(err))
+                return
+
+    def _superseded(self, command):
+        with self.cv:
+            return any(p[2][:2] == command[:2] for p in self.pending)
+
+    def _die(self, text):
+        self.report(text)
+        with self.cv:
+            self.closed = True
+            self.pending.clear()
+        if self.fatal is not None:
+            self.fatal()
