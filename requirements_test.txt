@@ -8,7 +8,7 @@
 #
 # Installed in ONE pip run with the library so the resolver keeps Home Assistant's own pins
 # (cryptography, asyncssh, ...): installing the library afterwards upgrades them and breaks imports.
-pytest-homeassistant-custom-component==0.13.317
+pytest-homeassistant-custom-component==0.13.375
 ruff==0.17.5
 mypy==2.4.1
 -e lib/pybrilliantkiosk
