@@ -12,6 +12,12 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
+## [v1.6.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.6.0) — 2026-11-22 — Physical slider strips, Home Assistant 2026.10
+
+Two- and three-gang panels get their physical slider strips back, each driving a wired load or a
+Home Assistant light. The Home Assistant integration now needs Home Assistant 2026.10.4 or newer
+(library pybrilliantkiosk 0.1.6).
+
 ### Added
 - **Physical slider strips on two- and three-gang panels** (thanks @KD-DC and @mjn138). Tap to
   toggle, slide to dim. Each strip can drive one of the panel's wired loads (works with Home
