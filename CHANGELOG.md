@@ -27,6 +27,14 @@ These changes will be part of the next stable release.
 - A load running always-on is no longer offered to HA as a "Wired light", and the bridge no
   longer waits for a dimmer that isn't there.
 
+### Fixed
+- **The bridge no longer drops its message-bus connection when the bus answers with an error**
+  (Brilliant OS v26.11.18.1 answers `get_device` for a device that doesn't exist, such as
+  `schlage` when no Schlage lock is linked, with an error instead of an empty result). The bridge
+  treated that as a dead connection and reconnected every 5 s under the same name, which the bus
+  refused (`NameInUseError: Cannot rebind name ...ha_kiosk_bridge`) and which could leave the
+  wired load uncontrollable (#10).
+
 ## [v1.5.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.5.0) — 2026-11-10 — Home Assistant integration, animated sky, weather page
 
 Manage panels from Home Assistant with the new **Brilliant Kiosk** integration (install it from

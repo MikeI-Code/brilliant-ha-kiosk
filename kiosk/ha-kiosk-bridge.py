@@ -54,6 +54,11 @@ class LoadControl:
                     if self.bus is None:
                         self.bus = Bus(name="ha_kiosk_bridge")
                     return fn(self.bus)
+                except (RuntimeError, ValueError):
+                    # The bus answered with an error (e.g. "Unknown device 'schlage'"): the
+                    # connection is fine. Reconnecting here re-registers the same name before the
+                    # bus has released it (NameInUseError) and can lose the bus altogether.
+                    raise
                 except Exception:
                     try:
                         self.bus and self.bus.close()
