@@ -1,9 +1,17 @@
-import io, json, os, sys, threading, time, unittest, urllib.error
+import io
+import json
+import os
+import sys
+import time
+import unittest
+import urllib.error
 from types import SimpleNamespace
+from typing import ClassVar
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kiosk"))
 from slider_output import GestureOutput, LiveOutput
 from slider_worker import MockLoads, SetupError, Worker, build_strips, configured_strips
-from strips import FULL, HaLight, HaLightStrip, Strips, WiredStrip
+from strips import HaLight, HaLightStrip, Strips, WiredStrip
 
 
 def frame(worker, now, *pairs):
@@ -21,8 +29,14 @@ class FakeBus:
     def peripheral(self, name):
         self.reads += 1
         values = self.gangs[name]
-        return SimpleNamespace(variables={k: SimpleNamespace(value=v, timestamp=self.reads, externally_settable=k != "max_intensity_value")
-                                          for k, v in values.items()})
+        return SimpleNamespace(
+            variables={
+                k: SimpleNamespace(
+                    value=v, timestamp=self.reads, externally_settable=k != "max_intensity_value"
+                )
+                for k, v in values.items()
+            }
+        )
 
     def call(self, method, **kw):
         self.calls.append((kw["peripheral_name"], dict(kw["variables"])))
@@ -32,14 +46,23 @@ class FakeBus:
 
 
 def office_bus(ceiling_on="1", fan_on="0"):
-    return FakeBus({
-        "gangbox_peripheral_0": {"display_name": "Ceiling", "dimmable": "1", "on": ceiling_on, "intensity": "400", "max_intensity_value": "1000"},
-        "gangbox_peripheral_1": {"display_name": "Fan light", "on": fan_on},
-    })
+    return FakeBus(
+        {
+            "gangbox_peripheral_0": {
+                "display_name": "Ceiling",
+                "dimmable": "1",
+                "on": ceiling_on,
+                "intensity": "400",
+                "max_intensity_value": "1000",
+            },
+            "gangbox_peripheral_1": {"display_name": "Fan light", "on": fan_on},
+        }
+    )
 
 
 class FakeHA:
     """Stands in for urlopen."""
+
     def __init__(self, state="on", brightness=128, fail=False):
         self.state, self.brightness, self.fail, self.posts = state, brightness, fail, []
 
@@ -47,7 +70,8 @@ class FakeHA:
         if self.fail:
             raise urllib.error.URLError("unreachable")
         if req.get_method() == "POST":
-            body = json.loads(req.data.decode()); self.posts.append((req.full_url.rsplit("/", 1)[1], body))
+            body = json.loads(req.data.decode())
+            self.posts.append((req.full_url.rsplit("/", 1)[1], body))
             if req.full_url.endswith("turn_off"):
                 self.state = "off"
             else:
@@ -56,77 +80,153 @@ class FakeHA:
                     self.brightness = round(body["brightness_pct"] * 255 / 100)
             payload = []
         else:
-            payload = {"state": self.state, "attributes": {"brightness": self.brightness if self.state == "on" else None}}
+            payload = {
+                "state": self.state,
+                "attributes": {"brightness": self.brightness if self.state == "on" else None},
+            }
         return io.BytesIO(json.dumps(payload).encode())
 
 
 def fan_strip(bus, ha, log=None):
-    light = HaLight("http://ha:8123", "tok", "light.fan", opener=lambda req, timeout=None: _ctx(ha(req, timeout)))
-    return HaLightStrip(WiredStrip(bus, 1, "Fan light"), light, (log.append if log is not None else print))
+    light = HaLight(
+        "http://ha:8123",
+        "tok",
+        "light.fan",
+        opener=lambda req, timeout=None: _ctx(ha(req, timeout)),
+    )
+    return HaLightStrip(
+        WiredStrip(bus, 1, "Fan light"), light, (log.append if log is not None else print)
+    )
 
 
 class _ctx:
-    def __init__(self, f): self.f = f
-    def __enter__(self): return self.f
-    def __exit__(self, *a): return False
+    def __init__(self, f):
+        self.f = f
+
+    def __enter__(self):
+        return self.f
+
+    def __exit__(self, *a):
+        return False
 
 
 class WorkerTests(unittest.TestCase):
     def test_pr6_three_strip_behaviour_unchanged(self):
-        loads = MockLoads([500] * 3); worker = Worker(loads)
+        loads = MockLoads([500] * 3)
+        worker = Worker(loads)
         for slot in (1, 2, 3):
-            frame(worker, 1, (47, slot), (57, 10), (54, 300)); frame(worker, 1.1, (54, 500)); frame(worker, 1.2, (57, -1))
-            frame(worker, 2, (57, 11), (54, 400)); frame(worker, 2.1, (57, -1))
+            frame(worker, 1, (47, slot), (57, 10), (54, 300))
+            frame(worker, 1.1, (54, 500))
+            frame(worker, 1.2, (57, -1))
+            frame(worker, 2, (57, 11), (54, 400))
+            frame(worker, 2.1, (57, -1))
             self.assertEqual(loads.history[-2:], [(slot, "level", 702), (slot, "toggle", 0)])
 
     def test_two_strips_with_remapped_slots(self):
-        loads = MockLoads([500, 500]); worker = Worker(loads, slot_map={0: 1, 1: 2})
-        frame(worker, 1, (47, 1), (57, 5), (54, 400)); frame(worker, 1.1, (57, -1))          # tap strip 2
-        frame(worker, 2, (47, 0), (57, 6), (54, 600)); frame(worker, 2.1, (54, 400)); frame(worker, 2.2, (57, -1))  # slide strip 1 down
-        frame(worker, 3, (47, 2), (57, 7), (54, 400)); frame(worker, 3.1, (57, -1))          # unmapped slot: ignored
+        loads = MockLoads([500, 500])
+        worker = Worker(loads, slot_map={0: 1, 1: 2})
+        frame(worker, 1, (47, 1), (57, 5), (54, 400))
+        frame(worker, 1.1, (57, -1))  # tap strip 2
+        frame(worker, 2, (47, 0), (57, 6), (54, 600))
+        frame(worker, 2.1, (54, 400))
+        frame(worker, 2.2, (57, -1))  # slide strip 1 down
+        frame(worker, 3, (47, 2), (57, 7), (54, 400))
+        frame(worker, 3.1, (57, -1))  # unmapped slot: ignored
         self.assertEqual(loads.history, [(2, "toggle", 0), (1, "level", 298)])
 
     def test_two_fingers_at_once_do_nothing(self):
-        loads = MockLoads([500, 500]); worker = Worker(loads, slot_map={1: 1, 2: 2})
-        frame(worker, 1, (47, 1), (57, 5), (54, 400)); frame(worker, 1.05, (47, 2), (57, 6), (54, 400))
-        frame(worker, 1.2, (47, 1), (57, -1)); frame(worker, 1.3, (47, 2), (57, -1))
+        loads = MockLoads([500, 500])
+        worker = Worker(loads, slot_map={1: 1, 2: 2})
+        frame(worker, 1, (47, 1), (57, 5), (54, 400))
+        frame(worker, 1.05, (47, 2), (57, 6), (54, 400))
+        frame(worker, 1.2, (47, 1), (57, -1))
+        frame(worker, 1.3, (47, 2), (57, -1))
         self.assertEqual(loads.history, [])
 
     def test_real_tap_with_lift_off_drift_counts_as_tap(self):
-        loads = MockLoads([500] * 3); worker = Worker(loads)
-        frame(worker, 1, (47, 1), (57, 0), (54, 515)); frame(worker, 1.2, (54, 489)); frame(worker, 1.28, (54, 462)); frame(worker, 1.29, (57, -1))
+        loads = MockLoads([500] * 3)
+        worker = Worker(loads)
+        frame(worker, 1, (47, 1), (57, 0), (54, 515))
+        frame(worker, 1.2, (54, 489))
+        frame(worker, 1.28, (54, 462))
+        frame(worker, 1.29, (57, -1))
         self.assertEqual(loads.history, [(1, "toggle", 0)])
 
 
-
 class ConfigTests(unittest.TestCase):
-    FAMILY = {"SLIDER_TARGET_1": "light.lamp", "SLIDER_TARGET_2": "light.main", "SLIDER_TARGET_3": "Hallway", "SLIDER_GANG_3": "1"}
+    FAMILY: ClassVar[dict[str, str]] = {
+        "SLIDER_TARGET_1": "light.lamp",
+        "SLIDER_TARGET_2": "light.main",
+        "SLIDER_TARGET_3": "Hallway",
+        "SLIDER_GANG_3": "1",
+    }
 
     def family_bus(self):
-        return FakeBus({"gangbox_peripheral_0": {"display_name": "Hallway", "dimmable": "1", "on": "1", "intensity": "600", "max_intensity_value": "1000"},
-                        "gangbox_peripheral_1": {"display_name": "Main"}, "gangbox_peripheral_2": {"display_name": "Floor"}})
+        return FakeBus(
+            {
+                "gangbox_peripheral_0": {
+                    "display_name": "Hallway",
+                    "dimmable": "1",
+                    "on": "1",
+                    "intensity": "600",
+                    "max_intensity_value": "1000",
+                },
+                "gangbox_peripheral_1": {"display_name": "Main"},
+                "gangbox_peripheral_2": {"display_name": "Floor"},
+            }
+        )
 
     def test_family_room_two_ha_strips_and_hallway_dimmer_on_strip_three(self):
         bus, made = self.family_bus(), []
-        built = build_strips(self.FAMILY, bus, print, lambda entity: made.append(entity) or ("light", entity))
-        self.assertEqual(made, ["light.lamp", "light.main"]); self.assertEqual(configured_strips(self.FAMILY), [1, 2, 3])
-        self.assertIsNone(built[1].circuit); self.assertIsNone(built[2].circuit)
-        out = GestureOutput(Strips({3: built[3]})); out.apply((3, 1, -200))
+        built = build_strips(
+            self.FAMILY, bus, print, lambda entity: made.append(entity) or ("light", entity)
+        )
+        self.assertEqual(made, ["light.lamp", "light.main"])
+        self.assertEqual(configured_strips(self.FAMILY), [1, 2, 3])
+        self.assertIsNone(built[1].circuit)
+        self.assertIsNone(built[2].circuit)
+        out = GestureOutput(Strips({3: built[3]}))
+        out.apply((3, 1, -200))
         self.assertEqual(bus.calls, [("gangbox_peripheral_0", {"intensity": "400"})])
 
     def test_always_on_gang_is_accepted_for_ha_strip_but_not_as_wired_strip(self):
-        build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "light.main"}, self.family_bus(), print, lambda e: e)
+        build_strips(
+            {"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "light.main"},
+            self.family_bus(),
+            print,
+            lambda e: e,
+        )
         with self.assertRaises(SetupError):
-            build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "Main"}, self.family_bus(), print, lambda e: e)
+            build_strips(
+                {"SLIDER_TARGET_1": "Hallway", "SLIDER_TARGET_2": "Main"},
+                self.family_bus(),
+                print,
+                lambda e: e,
+            )
 
     def test_feed_names_the_circuit_that_powers_the_bulbs(self):
-        built = build_strips({"SLIDER_TARGET_1": "light.x", "SLIDER_FEED_1": "Hallway"}, self.family_bus(), print, lambda e: e)
+        built = build_strips(
+            {"SLIDER_TARGET_1": "light.x", "SLIDER_FEED_1": "Hallway"},
+            self.family_bus(),
+            print,
+            lambda e: e,
+        )
         self.assertEqual(built[1].circuit.label, "Hallway")
         with self.assertRaises(SetupError):
-            build_strips({"SLIDER_TARGET_1": "Hallway", "SLIDER_FEED_1": "Hallway"}, self.family_bus(), print, lambda e: e)
+            build_strips(
+                {"SLIDER_TARGET_1": "Hallway", "SLIDER_FEED_1": "Hallway"},
+                self.family_bus(),
+                print,
+                lambda e: e,
+            )
 
     def test_gaps_are_ignored_and_wrong_names_are_refused(self):
-        self.assertEqual(configured_strips({"SLIDER_TARGET_1": "light.a", "SLIDER_TARGET_3": "light.c", "SLIDER_TARGET_2": ""}), [1, 3])
+        self.assertEqual(
+            configured_strips(
+                {"SLIDER_TARGET_1": "light.a", "SLIDER_TARGET_3": "light.c", "SLIDER_TARGET_2": ""}
+            ),
+            [1, 3],
+        )
         with self.assertRaises(SetupError):
             configured_strips({"SLIDER_TARGET_1": " "})
         with self.assertRaises(ValueError):
@@ -135,39 +235,59 @@ class ConfigTests(unittest.TestCase):
 
 class WiredTests(unittest.TestCase):
     def test_dimmer_level_toggle_and_stale_retry(self):
-        bus = office_bus(); s = WiredStrip(bus, 0, "Ceiling")
+        bus = office_bus()
+        s = WiredStrip(bus, 0, "Ceiling")
         self.assertEqual(s.level(), (400, 1000))
-        s.toggle(); self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"on": "0"}))
+        s.toggle()
+        self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"on": "0"}))
         self.assertEqual(s.level(), (0, 1000))
-        s.set_level(700); self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"on": "1", "intensity": "700"}))
-        bus = office_bus(); bus.stale_once = True
-        WiredStrip(bus, 0, "Ceiling").set_level(450); self.assertEqual(len(bus.calls), 2)
-        bus = office_bus(); bus.stale_once = True
+        s.set_level(700)
+        self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"on": "1", "intensity": "700"}))
+        bus = office_bus()
+        bus.stale_once = True
+        WiredStrip(bus, 0, "Ceiling").set_level(450)
+        self.assertEqual(len(bus.calls), 2)
+        bus = office_bus()
+        bus.stale_once = True
         with self.assertRaises(RuntimeError):
             WiredStrip(bus, 0, "Ceiling").toggle()
-        self.assertEqual(len(bus.calls), 1)                       # a toggle is never resent
+        self.assertEqual(len(bus.calls), 1)  # a toggle is never resent
 
     def test_renamed_circuit_is_refused(self):
         with self.assertRaises(ValueError):
             WiredStrip(office_bus(), 0, "Kitchen").toggle()
 
     def test_on_off_only_load(self):
-        bus = office_bus(fan_on="0"); s = WiredStrip(bus, 1, "Fan light")
-        self.assertEqual(s.level(), (0, 1000)); s.toggle(); self.assertEqual(s.level(), (1000, 1000))
-        s.set_level(300); self.assertEqual(bus.gangs["gangbox_peripheral_1"], {"display_name": "Fan light", "on": "1"})
+        bus = office_bus(fan_on="0")
+        s = WiredStrip(bus, 1, "Fan light")
+        self.assertEqual(s.level(), (0, 1000))
+        s.toggle()
+        self.assertEqual(s.level(), (1000, 1000))
+        s.set_level(300)
+        self.assertEqual(
+            bus.gangs["gangbox_peripheral_1"], {"display_name": "Fan light", "on": "1"}
+        )
 
 
 class HaOnlyStripTests(unittest.TestCase):
     def strip(self, ha):
-        light = HaLight("http://ha:8123", "tok", "light.fan", opener=lambda req, timeout=None: _ctx(ha(req, timeout)))
+        light = HaLight(
+            "http://ha:8123",
+            "tok",
+            "light.fan",
+            opener=lambda req, timeout=None: _ctx(ha(req, timeout)),
+        )
         return HaLightStrip(None, light)
 
     def test_tap_and_slide_never_touch_the_wired_load(self):
         bus, ha = office_bus(fan_on="0"), FakeHA(state="off")
         out = GestureOutput(Strips({1: WiredStrip(bus, 0, "Ceiling"), 2: self.strip(ha)}))
-        out.apply((2, 1, None)); out.apply((2, 2, None)); out.apply((2, 3, 600))
+        out.apply((2, 1, None))
+        out.apply((2, 2, None))
+        out.apply((2, 3, 600))
         self.assertEqual([p[0] for p in ha.posts], ["turn_on", "turn_off", "turn_on"])
-        self.assertEqual(ha.posts[-1][1]["brightness_pct"], 60); self.assertEqual(bus.calls, [])
+        self.assertEqual(ha.posts[-1][1]["brightness_pct"], 60)
+        self.assertEqual(bus.calls, [])
 
     def test_ha_down_or_bulbs_offline_is_an_error_not_a_circuit_cut(self):
         with self.assertRaises(OSError):
@@ -180,39 +300,50 @@ class HaStripTests(unittest.TestCase):
     def test_tap_with_circuit_off_powers_circuit_only(self):
         bus, ha = office_bus(fan_on="0"), FakeHA()
         fan_strip(bus, ha).toggle()
-        self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "1"})]); self.assertEqual(ha.posts, [])
+        self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "1"})])
+        self.assertEqual(ha.posts, [])
 
     def test_tap_toggles_bulbs_and_keeps_circuit_on(self):
         bus, ha = office_bus(fan_on="1"), FakeHA(state="on")
-        s = fan_strip(bus, ha); s.toggle(); s.toggle()
-        self.assertEqual([p[0] for p in ha.posts], ["turn_off", "turn_on"]); self.assertEqual(bus.calls, [])
+        s = fan_strip(bus, ha)
+        s.toggle()
+        s.toggle()
+        self.assertEqual([p[0] for p in ha.posts], ["turn_off", "turn_on"])
+        self.assertEqual(bus.calls, [])
 
     def test_tap_falls_back_to_circuit_when_ha_down_or_bulbs_offline(self):
         for ha in (FakeHA(fail=True), FakeHA(state="unavailable")):
             bus, log = office_bus(fan_on="1"), []
             fan_strip(bus, ha, log).toggle()
-            self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "0"})]); self.assertEqual(len(log), 1)
+            self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "0"})])
+            self.assertEqual(len(log), 1)
 
     def test_slide_dims_bulbs_relative_to_current_brightness(self):
-        bus, ha = office_bus(fan_on="1"), FakeHA(state="on", brightness=128)      # ~50%
+        bus, ha = office_bus(fan_on="1"), FakeHA(state="on", brightness=128)  # ~50%
         out = GestureOutput(Strips({1: WiredStrip(bus, 0, "Ceiling"), 2: fan_strip(bus, ha)}))
-        out.apply((2, 9, 300)); out.apply((2, 9, -2000))
-        self.assertEqual([p[1].get("brightness_pct") for p in ha.posts], [80, 1]); self.assertEqual(bus.calls, [])
-        out.apply((1, 10, 100)); self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"intensity": "500"}))
+        out.apply((2, 9, 300))
+        out.apply((2, 9, -2000))
+        self.assertEqual([p[1].get("brightness_pct") for p in ha.posts], [80, 1])
+        self.assertEqual(bus.calls, [])
+        out.apply((1, 10, 100))
+        self.assertEqual(bus.calls[-1], ("gangbox_peripheral_0", {"intensity": "500"}))
 
     def test_slide_from_dark_circuit_powers_it_first(self):
         bus, ha = office_bus(fan_on="0"), FakeHA(state="off")
         GestureOutput(Strips({2: fan_strip(bus, ha)})).apply((2, 1, 400))
-        self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "1"})]); self.assertEqual(ha.posts[0][1]["brightness_pct"], 40)
+        self.assertEqual(bus.calls, [("gangbox_peripheral_1", {"on": "1"})])
+        self.assertEqual(ha.posts[0][1]["brightness_pct"], 40)
 
     def test_ha_down_during_slide_is_reported_not_fatal(self):
         bus, log = office_bus(fan_on="1"), []
         sink = LiveOutput(Strips({2: fan_strip(bus, FakeHA(fail=True))}), log.append)
         try:
-            sink.submit((2, 1, 100)); deadline = time.monotonic() + 1
+            sink.submit((2, 1, 100))
+            deadline = time.monotonic() + 1
             while not log and time.monotonic() < deadline:
                 time.sleep(0.01)
-            self.assertTrue(log and "unavailable" in log[0]); self.assertTrue(sink.thread.is_alive())
+            self.assertTrue(log and "unavailable" in log[0])
+            self.assertTrue(sink.thread.is_alive())
         finally:
             sink.close()
 

@@ -1,14 +1,13 @@
+import sys
 import threading
 import time
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
-import unittest
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "kiosk"))
 from slider_output import LiveOutput
-from slider_worker import Worker, MockLoads
+from slider_worker import MockLoads, Worker
 from strips import WiredStrip
 
 
@@ -40,9 +39,7 @@ class RecoveryTests(unittest.TestCase):
             self.frame(worker, 1.2, (57, -1))
             self.frame(worker, 2, (57, 11), (54, 400))
             self.frame(worker, 2.1, (57, -1))
-            self.assertEqual(
-                loads.history[-2:], [(slot, "level", 702), (slot, "toggle", 0)]
-            )
+            self.assertEqual(loads.history[-2:], [(slot, "level", 702), (slot, "toggle", 0)])
 
     def test_stalled_output_reader_and_drop(self):
         entered = threading.Event()
@@ -92,9 +89,7 @@ class RecoveryTests(unittest.TestCase):
                 }
                 return SimpleNamespace(
                     variables={
-                        k: SimpleNamespace(
-                            value=v, timestamp=self.reads, externally_settable=True
-                        )
+                        k: SimpleNamespace(value=v, timestamp=self.reads, externally_settable=True)
                         for k, v in values.items()
                     }
                 )
@@ -102,9 +97,7 @@ class RecoveryTests(unittest.TestCase):
             def call(self, method, **kwargs):
                 self.calls.append(kwargs["last_set_timestamps"])
                 if len(self.calls) == 1:
-                    raise RuntimeError(
-                        "Check-and-set timestamp stale for 'intensity' (code 2)"
-                    )
+                    raise RuntimeError("Check-and-set timestamp stale for 'intensity' (code 2)")
 
         bus = Bus()
         WiredStrip(bus, 0, "First").set_level(450)

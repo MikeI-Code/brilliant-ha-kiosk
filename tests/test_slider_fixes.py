@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 import unittest
-from types import SimpleNamespace
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kiosk"))
@@ -100,8 +99,11 @@ class BusLoss(unittest.TestCase):
     def test_closed_bus_makes_the_service_exit(self):
         died = threading.Event()
         log = []
-        sink = LiveOutput(Strips({1: WiredStrip(self.DeadBus(EOFError("closed")), 0, "Hall")}),
-                          log.append, fatal=died.set)
+        sink = LiveOutput(
+            Strips({1: WiredStrip(self.DeadBus(EOFError("closed")), 0, "Hall")}),
+            log.append,
+            fatal=died.set,
+        )
         sink.submit((1, 1, None))
         self.assertTrue(died.wait(1))
         self.assertIn("bus lost", log[-1])
@@ -121,22 +123,29 @@ class BusLoss(unittest.TestCase):
 
 class SetupErrors(unittest.TestCase):
     def test_setup_error_exits_with_the_no_restart_status(self):
-        with mock.patch.object(slider_worker, "device_run", side_effect=SetupError("bad name")), \
-                mock.patch.object(sys, "argv", ["slider_worker.py", "--device"]):
-            with self.assertRaises(SystemExit) as caught:
-                slider_worker.main()
+        with (
+            mock.patch.object(slider_worker, "device_run", side_effect=SetupError("bad name")),
+            mock.patch.object(sys, "argv", ["slider_worker.py", "--device"]),
+            self.assertRaises(SystemExit) as caught,
+        ):
+            slider_worker.main()
         self.assertEqual(caught.exception.code, SETUP_ERROR)
 
     def test_kiosk_not_ready_is_retryable(self):
-        with mock.patch.object(slider_worker, "device_run", side_effect=RuntimeError("not active")), \
-                mock.patch.object(sys, "argv", ["slider_worker.py", "--device"]):
-            with self.assertRaises(RuntimeError):
-                slider_worker.main()
+        with (
+            mock.patch.object(slider_worker, "device_run", side_effect=RuntimeError("not active")),
+            mock.patch.object(sys, "argv", ["slider_worker.py", "--device"]),
+            self.assertRaises(RuntimeError),
+        ):
+            slider_worker.main()
 
     def test_unit_does_not_restart_on_setup_errors(self):
-        unit = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "systemd", "ha-kiosk-sliders.service")
-        text = open(unit, encoding="utf-8").read()
-        self.assertIn("RestartPreventExitStatus={}".format(SETUP_ERROR), text)
+        unit = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "systemd", "ha-kiosk-sliders.service"
+        )
+        with open(unit, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn(f"RestartPreventExitStatus={SETUP_ERROR}", text)
         self.assertIn("StartLimitBurst=", text)
 
     def test_missing_ha_url_is_a_setup_error(self):
