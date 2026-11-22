@@ -130,7 +130,7 @@ light, motion and screen switches there.
    address and the root password it shows. You won't need to open an SSH session yourself.
 2. **Add the integration.** Home Assistant 2026.11 or newer: **Settings → Marketplace → Add from
    link**, enter `MikeI-Code/ha-brilliant-kiosk`, install **Brilliant Kiosk**, and restart when
-   asked. *(Home Assistant 2026.3.1 to 2026.10: in HACS, add
+   asked. *(Home Assistant 2026.10.4 to 2026.10: in HACS, add
    `https://github.com/MikeI-Code/ha-brilliant-kiosk` as a custom repository of type
    **Integration**, then download Brilliant Kiosk.)*
 3. **Add your panel.** **Settings → Devices & services → Add integration → Brilliant Kiosk**.

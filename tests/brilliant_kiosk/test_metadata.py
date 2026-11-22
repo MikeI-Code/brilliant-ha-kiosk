@@ -49,7 +49,7 @@ def test_the_workflow_uses_the_requirements_file_and_checks_formatting() -> None
     assert workflow.count("ruff format --check") == 2  # library job and integration job
     assert "cache-dependency-path: pyproject.toml" not in workflow  # that file lists no packages
     assert "requirements_test.txt" in workflow.split("cache-dependency-path:")[-1].split("- run")[0]
-    assert 'python-version: "3.14"' in workflow  # Home Assistant 2026.3 needs Python >= 3.14.2
+    assert 'python-version: "3.14"' in workflow  # Home Assistant 2026.10 needs Python >= 3.14.2
 
 
 def test_manifest_links_and_quality_scale() -> None:

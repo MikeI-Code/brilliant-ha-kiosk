@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
@@ -34,8 +34,8 @@ from .coordinator import BrilliantKioskCoordinator
 from .errors import panel_errors
 from .redact import scrub_logs
 
-_VALUE = vol.Any(str, int, float, bool)
-_VALUES = vol.Schema({cv.string: _VALUE})
+_VALUE = probatio.Any(str, int, float, bool)
+_VALUES = probatio.Schema({cv.string: _VALUE})
 
 
 def _text(value: Any) -> str:
@@ -138,18 +138,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
     call made by a user who is not an administrator is refused. Automations, scripts and the
     like (no user) are not affected.
     """
-    entry: dict[Any, Any] = {vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string}
+    entry: dict[Any, Any] = {probatio.Required(ATTR_CONFIG_ENTRY_ID): cv.string}
     async_register_admin_service(
         hass,
         DOMAIN,
         SERVICE_SET_ENV,
         _set_env,
-        vol.Schema(
+        probatio.Schema(
             {
                 **entry,
-                vol.Optional(ATTR_VALUES, default={}): _VALUES,
-                vol.Optional(ATTR_DELETE, default=[]): [cv.string],
-                vol.Optional(ATTR_RESTART, default=False): cv.boolean,
+                probatio.Optional(ATTR_VALUES, default={}): _VALUES,
+                probatio.Optional(ATTR_DELETE, default=[]): [cv.string],
+                probatio.Optional(ATTR_RESTART, default=False): cv.boolean,
             }
         ),
     )
@@ -158,7 +158,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_GET_ENV,
         _get_env,
-        vol.Schema(entry),
+        probatio.Schema(entry),
         supports_response=SupportsResponse.ONLY,
     )
     async_register_admin_service(
@@ -166,7 +166,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_BUS_GET,
         _bus_get,
-        vol.Schema({**entry, vol.Required(ATTR_PERIPHERAL): cv.string}),
+        probatio.Schema({**entry, probatio.Required(ATTR_PERIPHERAL): cv.string}),
         supports_response=SupportsResponse.ONLY,
     )
     async_register_admin_service(
@@ -174,8 +174,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_BUS_SET,
         _bus_set,
-        vol.Schema(
-            {**entry, vol.Required(ATTR_PERIPHERAL): cv.string, vol.Required(ATTR_VALUES): _VALUES}
+        probatio.Schema(
+            {
+                **entry,
+                probatio.Required(ATTR_PERIPHERAL): cv.string,
+                probatio.Required(ATTR_VALUES): _VALUES,
+            }
         ),
     )
     async_register_admin_service(
@@ -183,12 +187,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_LOGS,
         _logs,
-        vol.Schema(
+        probatio.Schema(
             {
                 **entry,
-                vol.Required(ATTR_UNIT): vol.In(UNITS),
-                vol.Optional(ATTR_LINES, default=100): vol.All(
-                    vol.Coerce(int), vol.Range(min=1, max=5000)
+                probatio.Required(ATTR_UNIT): probatio.In(UNITS),
+                probatio.Optional(ATTR_LINES, default=100): probatio.All(
+                    probatio.Coerce(int), probatio.Range(min=1, max=5000)
                 ),
             }
         ),
@@ -199,5 +203,5 @@ def async_setup_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_INSTALL_VERSION,
         _install_version,
-        vol.Schema({**entry, vol.Required(ATTR_TAG): cv.string}),
+        probatio.Schema({**entry, probatio.Required(ATTR_TAG): cv.string}),
     )

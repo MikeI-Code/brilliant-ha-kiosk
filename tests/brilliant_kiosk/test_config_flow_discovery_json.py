@@ -223,7 +223,9 @@ async def test_an_old_default_title_becomes_the_room(
     entry = make_entry()
     await setup_entry(hass, entry)
     assert entry.title == "Kitchen Brilliant kiosk"
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, str(entry.unique_id))})
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, str(entry.unique_id)), entry.entry_id
+    )
     assert device is not None
     assert device.name == "Kitchen Brilliant kiosk"
     panel.identity.assert_awaited_once()

@@ -21,6 +21,11 @@ These changes will be part of the next stable release.
   working, and `SLIDER_DEBUG` is no longer used (`journalctl -u ha-kiosk-sliders` instead).
 
 ### Changed
+- **Home Assistant integration: requires Home Assistant 2026.10.4 or newer.** Home Assistant 2026.10
+  replaced voluptuous with its own validation library for config flows and services, renamed
+  the device link `via_device` to `via_device_id`, and deprecated the old device lookups. The
+  integration was moved to these APIs and its tests now run on 2026.10.4; older versions are no
+  longer supported. Behaviour is unchanged: the panel's device is still linked to its MQTT device.
 - Music grouping: a room Home Assistant can't reach shows "· offline", and tapping it explains
   that it can't be removed until it's back. If a removed room is still in the group six seconds
   later, the panel says so instead of leaving it ticked with no explanation.

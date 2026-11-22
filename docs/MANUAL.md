@@ -709,7 +709,7 @@ when the panel's settings drift. It does not replace the MQTT device above; it l
 
 * Home Assistant 2026.11 or newer: **Settings, Marketplace, Add from link**, enter
   `MikeI-Code/ha-brilliant-kiosk`, install, restart.
-* Older Home Assistant (2026.3.1 to 2026.10): add `https://github.com/MikeI-Code/ha-brilliant-kiosk`
+* Older Home Assistant (2026.10.4 to 2026.10): add `https://github.com/MikeI-Code/ha-brilliant-kiosk`
   as a HACS custom repository of type *Integration*.
 
 Then **Settings, Devices & services, Add integration, Brilliant Kiosk**. A panel running a

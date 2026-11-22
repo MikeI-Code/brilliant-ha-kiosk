@@ -261,8 +261,11 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
             )
             return
         devices = dr.async_get(self.hass)
-        device = devices.async_get_device(identifiers={(DOMAIN, old)})
-        if device is not None and devices.async_get_device(identifiers={(DOMAIN, node)}) is None:
+        device = devices.async_get_device_by_identifier((DOMAIN, old), entry.entry_id)
+        if (
+            device is not None
+            and devices.async_get_device_by_identifier((DOMAIN, node), entry.entry_id) is None
+        ):
             devices.async_update_device(device.id, new_identifiers={(DOMAIN, node)})
 
         @callback
@@ -303,19 +306,21 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
         """The panel's device created by the MQTT integration, if it exists (yet)."""
         registry = dr.async_get(self.hass)
         for ident in self.mqtt_device_ids(env):
-            if device := registry.async_get_device(identifiers={(MQTT_DOMAIN, ident)}):
-                return device
+            if devices := registry.async_get_devices(identifiers={(MQTT_DOMAIN, ident)}):
+                return devices[0]
         return None
 
     @callback
     def _link_mqtt_device(self, env: Mapping[str, str]) -> None:
-        """Point our device at the MQTT device (``via_device``) once MQTT discovery made it.
+        """Point our device at the MQTT device (``via_device_id``) once MQTT discovery made it.
 
         Runs on every update, so a device that shows up after the integration was set up is
         linked without a reload.
         """
         registry = dr.async_get(self.hass)
-        own = registry.async_get_device(identifiers={(DOMAIN, str(self.config_entry.unique_id))})
+        own = registry.async_get_device_by_identifier(
+            (DOMAIN, str(self.config_entry.unique_id)), self.config_entry.entry_id
+        )
         mqtt_device = self.find_mqtt_device(env)
         if own and mqtt_device and own.via_device_id != mqtt_device.id:
             registry.async_update_device(own.id, via_device_id=mqtt_device.id)
@@ -324,7 +329,9 @@ class BrilliantKioskCoordinator(DataUpdateCoordinator[KioskData]):
     def _sync_device_version(self, version: str | None) -> None:
         """Keep the device's software version current (it is set once, when the device is made)."""
         registry = dr.async_get(self.hass)
-        own = registry.async_get_device(identifiers={(DOMAIN, str(self.config_entry.unique_id))})
+        own = registry.async_get_device_by_identifier(
+            (DOMAIN, str(self.config_entry.unique_id)), self.config_entry.entry_id
+        )
         if own and version and own.sw_version != version:
             registry.async_update_device(own.id, sw_version=version)
 

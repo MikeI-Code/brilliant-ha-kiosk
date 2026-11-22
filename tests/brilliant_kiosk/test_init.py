@@ -354,7 +354,8 @@ def _add_mqtt_device(hass, identifier: str):
 
 
 def _our_device(hass):
-    return dr.async_get(hass).async_get_device(identifiers={(DOMAIN, UNIQUE_ID)})
+    devices = dr.async_get(hass).async_get_devices(identifiers={(DOMAIN, UNIQUE_ID)})
+    return devices[0] if devices else None
 
 
 async def test_device_has_own_identifiers_and_never_claims_mqtt_ones(
@@ -367,7 +368,7 @@ async def test_device_has_own_identifiers_and_never_claims_mqtt_ones(
     assert device.manufacturer == "Brilliant"
     assert device.sw_version == "v1.4.0"
     assert device.via_device_id is None  # no MQTT device exists
-    assert dr.async_get(hass).async_get_device(identifiers={("mqtt", NODE)}) is None
+    assert dr.async_get(hass).async_get_devices(identifiers={("mqtt", NODE)}) == []
     eid = entity_id(hass, "sensor", "version")
     assert er.async_get(hass).async_get(eid).device_id == device.id
 

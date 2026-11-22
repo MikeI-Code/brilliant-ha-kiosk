@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-import voluptuous as vol
-from homeassistant.components.repairs import RepairsFlow
+import probatio
+from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 
 from . import BrilliantKioskConfigEntry
@@ -46,11 +45,13 @@ class _PanelFixFlow(RepairsFlow, ABC):
     async def _fix(self, entry: BrilliantKioskConfigEntry) -> str | None:
         """Do the fix; returns an error text, or None when it worked."""
 
-    async def async_step_init(self, user_input: dict[str, str] | None = None) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, str] | None = None) -> RepairsFlowResult:
         """Start with the confirmation."""
         return await self.async_step_confirm()
 
-    async def async_step_confirm(self, user_input: dict[str, str] | None = None) -> FlowResult:
+    async def async_step_confirm(
+        self, user_input: dict[str, str] | None = None
+    ) -> RepairsFlowResult:
         """Explain, and fix on submit; stay on the form (with the error) when it fails."""
         entry = self._entry()
         if entry is None:
@@ -65,7 +66,7 @@ class _PanelFixFlow(RepairsFlow, ABC):
             placeholders["error"] = error
         return self.async_show_form(
             step_id="confirm",
-            data_schema=vol.Schema({}),
+            data_schema=probatio.Schema({}),
             description_placeholders=placeholders,
             errors=errors,
         )
