@@ -5,12 +5,12 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, MQTT_DOMAIN
+from .const import DOMAIN
 from .coordinator import BrilliantKioskCoordinator
 
 
 def build_device_info(coordinator: BrilliantKioskCoordinator) -> DeviceInfo:
-    """The panel's own device, linked to its MQTT device (``via_device``) when that exists.
+    """The panel's own device, linked to its MQTT device (``via_device_id``) when that exists.
 
     The identifier is always ``(DOMAIN, unique_id)``: this integration never claims the MQTT
     integration's identifiers. When the MQTT device appears later, the coordinator links it on
@@ -27,8 +27,7 @@ def build_device_info(coordinator: BrilliantKioskCoordinator) -> DeviceInfo:
     )
     mqtt_device = coordinator.find_mqtt_device()
     if mqtt_device is not None:
-        mqtt_id = next(ident for domain, ident in mqtt_device.identifiers if domain == MQTT_DOMAIN)
-        info["via_device"] = (MQTT_DOMAIN, mqtt_id)
+        info["via_device_id"] = mqtt_device.id
     return info
 
 

@@ -193,8 +193,15 @@ def _enable_custom_integrations(enable_custom_integrations: None) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_mqtt_broker() -> Generator[None]:
-    """The manifest depends on mqtt for discovery; tests need no broker."""
-    with patch("homeassistant.components.mqtt.async_setup", return_value=True):
+    """The manifest depends on mqtt for discovery; tests need no broker.
+
+    Home Assistant 2026.10 also sets up the MQTT config entries that exist when a dependent
+    integration is set up (it used to leave them alone), which opens a socket to the broker.
+    """
+    with (
+        patch("homeassistant.components.mqtt.async_setup", return_value=True),
+        patch("homeassistant.components.mqtt.async_setup_entry", return_value=True),
+    ):
         yield
 
 

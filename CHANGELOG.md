@@ -20,6 +20,11 @@ These changes will be part of the next stable release.
   panel's slider/gangbox bus changes: `journalctl -u ha-kiosk-bridge | grep slider:`.
 
 ### Changed
+- **Home Assistant integration: requires Home Assistant 2026.10.4 or newer.** Home Assistant 2026.10
+  replaced voluptuous with its own validation library for config flows and services, renamed
+  the device link `via_device` to `via_device_id`, and deprecated the old device lookups. The
+  integration was moved to these APIs and its tests now run on 2026.10.4; older versions are no
+  longer supported. Behaviour is unchanged: the panel's device is still linked to its MQTT device.
 - A load running always-on is no longer offered to HA as a "Wired light", and the bridge no
   longer waits for a dimmer that isn't there.
 

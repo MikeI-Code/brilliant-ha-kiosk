@@ -349,4 +349,5 @@ async def test_a_failing_install_in_an_open_flow_is_still_shown_on_the_form(
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "install_failed"}
     assert result["description_placeholders"] == {"error": "activation failed"}
+    await asyncio.sleep(0)  # the task's done callback (the log line) runs on the next loop pass
     assert f"The kiosk install on {HOST} failed: activation failed" in caplog.text

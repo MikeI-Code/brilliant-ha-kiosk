@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
-import voluptuous as vol
+import probatio
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigEntryState,
@@ -166,7 +166,7 @@ def _port_of(data: Mapping[str, Any]) -> int:
     return int(data.get(CONF_PORT, DEFAULT_PORT))
 
 
-_PORT = vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))
+_PORT = probatio.All(probatio.Coerce(int), probatio.Range(min=1, max=65535))
 
 
 def _kiosk_state(payload: str | bytes | bytearray) -> str:
@@ -274,8 +274,8 @@ def _credentials(user_input: Mapping[str, Any]) -> dict[str, str]:
 def _auth_schema() -> dict[Any, Any]:
     """Password and private key; one of them is required (checked in the step)."""
     return {
-        vol.Optional(CONF_PASSWORD): _PASSWORD,
-        vol.Optional(CONF_PRIVATE_KEY): _KEY_TEXT,
+        probatio.Optional(CONF_PASSWORD): _PASSWORD,
+        probatio.Optional(CONF_PRIVATE_KEY): _KEY_TEXT,
     }
 
 
@@ -418,13 +418,13 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     def _show_user_form(
         self, previous: Mapping[str, Any] | None, errors: dict[str, str]
     ) -> ConfigFlowResult:
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_HOST): str,
-                vol.Required(CONF_PORT, default=DEFAULT_PORT): _PORT,
-                vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): str,
+                probatio.Required(CONF_HOST): str,
+                probatio.Required(CONF_PORT, default=DEFAULT_PORT): _PORT,
+                probatio.Required(CONF_USERNAME, default=DEFAULT_USERNAME): str,
                 **_auth_schema(),
-                vol.Optional(CONF_EXPECTED_FINGERPRINT): str,
+                probatio.Optional(CONF_EXPECTED_FINGERPRINT): str,
             }
         )
         secrets = (CONF_PASSWORD, CONF_PRIVATE_KEY)
@@ -446,7 +446,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self._async_connect()
         return self.async_show_form(
             step_id="host_key",
-            data_schema=vol.Schema({}),
+            data_schema=probatio.Schema({}),
             description_placeholders={
                 "host": self._user_input[CONF_HOST],
                 **_key_placeholders(self._host_info),
@@ -539,18 +539,22 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         text = TextSelector()
         return self.async_show_form(
             step_id="install",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_INSTALL, default=True): bool,
-                    vol.Required(
+                    probatio.Required(CONF_INSTALL, default=True): bool,
+                    probatio.Required(
                         CONF_HA_URL,
                         default=previous.get(CONF_HA_URL) or _internal_url(self.hass),
                     ): text,
-                    vol.Required(CONF_TOKEN): _PASSWORD,
-                    vol.Required(CONF_MQTT_HOST, default=previous.get(CONF_MQTT_HOST, "")): text,
-                    vol.Optional(CONF_MQTT_USER, default=previous.get(CONF_MQTT_USER, "")): text,
+                    probatio.Required(CONF_TOKEN): _PASSWORD,
+                    probatio.Required(
+                        CONF_MQTT_HOST, default=previous.get(CONF_MQTT_HOST, "")
+                    ): text,
+                    probatio.Optional(
+                        CONF_MQTT_USER, default=previous.get(CONF_MQTT_USER, "")
+                    ): text,
                     # Never pre-filled: a default would put the password into the form.
-                    vol.Optional(CONF_MQTT_PASSWORD): _PASSWORD,
+                    probatio.Optional(CONF_MQTT_PASSWORD): _PASSWORD,
                 }
             ),
             errors=errors,
@@ -649,7 +653,9 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
         assert self._host_info is not None
         return self.async_show_form(
             step_id=step_id,
-            data_schema=vol.Schema({vol.Required(CONF_NEW_HOST_KEY, default=False): bool}),
+            data_schema=probatio.Schema(
+                {probatio.Required(CONF_NEW_HOST_KEY, default=False): bool}
+            ),
             description_placeholders={
                 "host": host or entry.data[CONF_HOST],
                 "old_fingerprint": entry.data[CONF_HOST_KEY],
@@ -744,7 +750,7 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema(_auth_schema()),
+            data_schema=probatio.Schema(_auth_schema()),
             description_placeholders={"host": entry.data[CONF_HOST]},
             errors=errors,
         )
@@ -784,10 +790,10 @@ class BrilliantKioskConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_HOST, default=entry.data[CONF_HOST]): str,
-                    vol.Required(CONF_PORT, default=_port_of(entry.data)): _PORT,
+                    probatio.Required(CONF_HOST, default=entry.data[CONF_HOST]): str,
+                    probatio.Required(CONF_PORT, default=_port_of(entry.data)): _PORT,
                 }
             ),
             errors=errors,
@@ -882,19 +888,19 @@ class BrilliantKioskOptionsFlow(OptionsFlow):
         provider_now = options.get(CONF_MQTT_PROVIDER) or provider_of(entry.runtime_data.data.env)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_MQTT_PROVIDER, default=provider_now): SelectSelector(
+                    probatio.Required(CONF_MQTT_PROVIDER, default=provider_now): SelectSelector(
                         SelectSelectorConfig(
                             options=list(PROVIDERS),
                             translation_key=CONF_MQTT_PROVIDER,
                             mode=SelectSelectorMode.LIST,
                         )
                     ),
-                    vol.Optional(
+                    probatio.Optional(
                         CONF_MQTT_DEVICE_ID, default=options.get(CONF_MQTT_DEVICE_ID, "")
                     ): str,
-                    vol.Required(
+                    probatio.Required(
                         CONF_MANAGE_INSTALLS,
                         default=options.get(CONF_MANAGE_INSTALLS, provider_now == PROVIDER_BUILTIN),
                     ): bool,

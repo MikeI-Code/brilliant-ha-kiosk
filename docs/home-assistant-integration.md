@@ -47,8 +47,7 @@ administrators only.
 ## Installation
 
 You need a panel that already has SSH switched on (see the [manual, section 2.1](MANUAL.md#21-turn-on-ssh-on-the-panel)) and
-Home Assistant **2026.3.1 or newer** (the first release that shows an integration's own
-`brand/` images and the version the tests run against).
+Home Assistant **2026.10.4 or newer** (the version the tests run against).
 
 The integration depends on the **MQTT** integration (it discovers panels from the kiosk's retained
 state topic). Set MQTT up first and make sure your panels publish to the same broker.
@@ -66,7 +65,7 @@ is developed, tested and released from this repository. HACS does not run on Hom
 
 ### HACS
 
-For Home Assistant 2026.3.1 to 2026.10.
+For Home Assistant 2026.10.4 to 2026.10.
 
 1. In HACS, open the three-dot menu, **Custom repositories**, add
    `https://github.com/MikeI-Code/ha-brilliant-kiosk` with category **Integration**.
@@ -480,8 +479,9 @@ data:
 
 ## Known limitations
 
-* **Home Assistant version.** Home Assistant 2026.3.1 or newer is required (it runs on Python
-  3.14); older versions neither show the integration's own brand images nor are tested.
+* **Home Assistant version.** Home Assistant 2026.10.4 or newer is required (it runs on Python
+  3.14); older versions are not tested and do not work (the integration uses the 2026.10
+  schema library and device registry).
 * **Discovery.** A kiosk of the nightly that added it also publishes retained
   `brilliant_kiosk/<node>/discovery` (a kiosk nightly newer than 20261109), JSON with `state`, `host` (the panel's LAN address),
   `device_id` and `room`. The flow then knows which panel it is (a panel you already added is not

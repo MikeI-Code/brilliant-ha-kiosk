@@ -3,9 +3,8 @@
 # coverage, hassfest and HACS validation.
 #
 # Versions: the integration job installs requirements_test.txt, which pins
-# pytest-homeassistant-custom-component to the exact release for Home Assistant 2026.3.1. That is
-# also the minimum in hacs.json (2026.3 is the first release with local brand images), and it needs
-# Python 3.14. Raise all of them together.
+# pytest-homeassistant-custom-component to the exact release for Home Assistant 2026.10.4. That is
+# also the minimum in hacs.json, and it needs Python 3.14. Raise all of them together.
 #
 # Strict typing: Home Assistant core registers strict modules in its own `.strict-typing` file,
 # which does not exist for custom integrations. The equivalent here is `mypy --strict` over the

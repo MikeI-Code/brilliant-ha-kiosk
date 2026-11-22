@@ -18,7 +18,7 @@ rules:
   brands:
     status: done
     comment: >-
-      Shipped locally in custom_components/brilliant_kiosk/brand/ (icon.png, icon@2x.png; the logo is optional). Local brand images are supported from Home Assistant 2026.3 (developers.home-assistant.io, brand images), so hacs.json requires 2026.3.1, the version the tests run against (requirements_test.txt pins pytest-homeassistant-custom-component 0.13.317, which pins homeassistant 2026.3.1).
+      Shipped locally in custom_components/brilliant_kiosk/brand/ (icon.png, icon@2x.png; the logo is optional). Local brand images are supported from Home Assistant 2026.3 (developers.home-assistant.io, brand images), so hacs.json requires 2026.10.4, the version the tests run against (requirements_test.txt pins pytest-homeassistant-custom-component 0.13.375, which pins homeassistant 2026.10.4).
   common-modules:
     status: done
     comment: >-
@@ -137,7 +137,7 @@ rules:
   devices:
     status: done
     comment: >-
-      Each panel is its own device, identified by (brilliant_kiosk, unique_id), with its software version kept current, and linked with via_device to the panel's MQTT device (built-in MQTT id brilliant_<devid12>, or brilliant-mqtt's MQTT_DEVICE_ID) as soon as that device exists; re-checked on every coordinator update.
+      Each panel is its own device, identified by (brilliant_kiosk, unique_id), with its software version kept current, and linked with via_device_id to the panel's MQTT device (built-in MQTT id brilliant_<devid12>, or brilliant-mqtt's MQTT_DEVICE_ID) as soon as that device exists; re-checked on every coordinator update.
   diagnostics:
     status: done
     comment: >-

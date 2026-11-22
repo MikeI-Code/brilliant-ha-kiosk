@@ -92,7 +92,7 @@ async def _async_name_after_room(
     title = panel_title(room, host)
     hass.config_entries.async_update_entry(entry, title=title)
     devices = dr.async_get(hass)
-    device = devices.async_get_device(identifiers={(DOMAIN, str(entry.unique_id))})
+    device = devices.async_get_device_by_identifier((DOMAIN, str(entry.unique_id)), entry.entry_id)
     if device is not None and device.name_by_user is None:
         devices.async_update_device(device.id, name=title)
 
@@ -146,11 +146,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: BrilliantKioskConfigEn
     Version 2: the unique id is always the node of the panel's Brilliant device id. A version 1
     entry made while that id could not be read carries the host key fingerprint instead; it needs
     the panel to be converted, which the coordinator does on the first successful poll (this
-    runs before any connection, and must not wait for one). Entries of a newer version are not
-    understood by this one.
+    runs before any connection, and must not wait for one). Home Assistant itself refuses an
+    entry of a newer version (migration error) before this runs.
     """
-    if entry.version > 2:
-        return False
     if entry.version == 1:
         hass.config_entries.async_update_entry(entry, version=2)
     return True
