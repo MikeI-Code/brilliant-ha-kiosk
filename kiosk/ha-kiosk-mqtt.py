@@ -197,26 +197,33 @@ class KioskMqtt:
                 self.c.publish(topic, "", retain=True)
                 topics.discard(topic)   # the other integration owns it now: never withdraw it again
 
+    load_switchable = True   # False when the bridge's load peripheral has no `on` variable
+
     def has_load(self):
-        """The bridge's load is a normal dimmer (absent when Brilliant runs it always-on)."""
-        return not self.peripherals or os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0") in self.peripherals
+        """The bridge's load is a normal dimmer or switch. Brilliant runs an always-on (smart
+        bulb) load either without the peripheral or as the same peripheral with no `on`."""
+        load = os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0")
+        return not self.peripherals or (load in self.peripherals and self.load_switchable)
+
+    def _read_peripherals(self):
+        try:
+            self.peripherals = set(self.control.peripherals())
+            load = os.environ.get("BRIDGE_LOAD", "gangbox_peripheral_0")
+            if load in self.peripherals:
+                self.load_switchable = "on" in self.control.variables(load)
+        except Exception as e:
+            print(f"mqtt: peripheral list: {e}", flush=True)
 
     def publish_discovery(self):
         b = self.base
         if self.kiosk_only:
-            try:
-                self.peripherals = set(self.control.peripherals())
-            except Exception as e:
-                print(f"mqtt: peripheral list: {e}", flush=True)
+            self._read_peripherals()
             self.gangboxes = sorted((int(p.rsplit("_", 1)[1]) for p in self.peripherals
                                      if re.fullmatch(r"gangbox_peripheral_\d+", p)), key=int) or [0]
             self._withdraw_panel_owned()
             self._publish_kiosk_entities()
             return
-        try:
-            self.peripherals = set(self.control.peripherals())
-        except Exception as e:
-            print(f"mqtt: peripheral list: {e}", flush=True)
+        self._read_peripherals()
         if self.has_load():
             self._cfg("light", "load", {"name": "Wired light", "schema": "json", "brightness": True,
                                         "brightness_scale": 100, "state_topic": f"{b}/load/state",

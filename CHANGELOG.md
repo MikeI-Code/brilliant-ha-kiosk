@@ -34,6 +34,12 @@ These changes will be part of the next stable release.
   treated that as a dead connection and reconnected every 5 s under the same name, which the bus
   refused (`NameInUseError: Cannot rebind name ...ha_kiosk_bridge`) and which could leave the
   wired load uncontrollable (#10).
+- **Installs no longer fail with "UI never reported in" when the first switch is always-on.**
+  On some panels an always-on (smart bulb) load keeps its `gangbox_peripheral_N` peripheral but
+  loses the `on` and `intensity` variables. The bridge kept retrying to read that load for 150 s
+  before it started its local server, so the screen's heartbeat never arrived and
+  `ha-kiosk-setup` restored Brilliant's UI. Such a load is now treated like a missing one: local
+  load control is off, no "Wired light" is offered to HA, and the bridge starts at once.
 
 ## [v1.5.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.5.0) — 2026-11-10 — Home Assistant integration, animated sky, weather page
 
