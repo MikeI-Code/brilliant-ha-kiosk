@@ -21,6 +21,13 @@ These changes will be part of the next stable release.
   integration"); its fix updates the Brilliant Kiosk integration through the Marketplace (restart
   Home Assistant afterwards), or says that no integration update is available yet.
 
+### Security
+- The HA token and `kiosk.env` are now written to `/etc/ha-kiosk` atomically with mode 600 from the
+  start (previously copied, then `chmod`ed). The saved copies never reuse a leftover temp file.
+- The manual recommends a dedicated **non-administrator**, local-only Home Assistant user for the
+  panels, and documents token rotation and revocation. `publish_layout.py` creates the Panel Layout
+  dashboard readable by non-admins (`--require-admin` keeps the old behaviour).
+
 ## [v1.6.0](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases/tag/v1.6.0) — 2026-11-22 — Physical slider strips, Home Assistant 2026.10
 
 Two- and three-gang panels get their physical slider strips back, each driving a wired load or a

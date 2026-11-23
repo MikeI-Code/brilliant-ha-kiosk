@@ -126,8 +126,9 @@ Bundle layout (`scripts/build-bundle.sh`):
 
 Builds are reproducible: `tar --sort=name --mtime=@<commit time> --owner=0 --group=0
 --numeric-owner | gzip -9n`, `MANIFEST.sha256` in `LC_ALL=C` order. The release workflow uploads
-without `--clobber`, so a published bundle is never replaced. There is **no signature** and no
-`release.json` asset: the root of trust is a SHA-256 and size the installer pins itself
+without `--clobber`, so a published bundle is never replaced. There is **no signature**. Since v1.6.0 a
+`<name>.release.json` asset (`{name, version, sha256, size}`) is uploaded beside the bundle and
+its `.sha256`; it is informational, not an authentication boundary: the root of trust is a SHA-256 and size the installer pins itself
 (`custom_components/brilliant_kiosk/pinned.py` for stable releases; a nightly is checked against
 its `.sha256` asset only).
 
@@ -401,9 +402,11 @@ use that option.
 
 `--token FILE` (whole file, stripped) or `--token-stdin` (first line). It must match
 `^[A-Za-z0-9._-]{20,4096}$` (exit 4). It is written to `/var/lib/ha-kiosk/config/token` with a
-trailing newline, 0600 in a 0700 directory, through a temp file and `os.replace`;
-`install-local.sh` copies it to `/etc/ha-kiosk/token` and `chmod 600`s it (a short window at the
-default umask). Without `--token`, a first `install` adopts an existing `/etc/ha-kiosk/token`.
+trailing newline, 0600 in a 0700 directory: any leftover temp file is removed, a new one is
+created with `O_EXCL` and mode 0600, `fchmod`ed, `fsync`ed and `os.replace`d into place.
+`install-local.sh` installs `/etc/ha-kiosk/token` and `/etc/ha-kiosk/kiosk.env` the same way (copied
+under `umask 077` to `<file>.new`, then renamed), so no copy is ever readable by other users.
+Rotation: run `install` with the new `--token`, then delete the old token in Home Assistant. Without `--token`, a first `install` adopts an existing `/etc/ha-kiosk/token`.
 `uninstall` and `purge` delete both copies and fail with exit 1 if either remains. Deletion on
 eMMC is best effort: the operator SHOULD revoke the token in Home Assistant when a panel leaves.
 
@@ -600,8 +603,8 @@ Builds are reproducible: `tar --sort=name --mtime=<commit date> --owner=0 --grou
 --numeric-owner | gzip -n`. CI builds twice and fails if the digests differ. Release assets are
 never replaced: the workflow fails if an asset already exists.
 
-* **Current state:** reproducible build and no-clobber upload are done (0.1). `release.json` is
-  produced locally with four fields and not uploaded; no signature, `CONTRACT` or `schema/`.
+* **Current state:** reproducible build and no-clobber upload are done (0.1). `release.json` (four
+  fields) is uploaded as a release asset since v1.6.0 but not signed; no signature, `CONTRACT` or `schema/`.
 * **Planned:** all of 2.1.
 
 ### 2.2 Root of trust and keys
@@ -1006,8 +1009,8 @@ that user's power. `GESTURE_*` service calls also run with it.
 | API | Where | Non-admin |
 |---|---|---|
 | WS `auth`, `get_states`, `subscribe_events` `state_changed` | `Ha.qml` | Expected yes (`state_changed` is in HA's non-admin subscribe allowlist); TO VERIFY |
-| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | **TO VERIFY.** Believed to be in the same allowlist (`homeassistant/auth/permissions/events.py`). The current "must be an admin" log is an assumption, not a test result. |
-| WS `lovelace/config` | `main.qml` | TO VERIFY; dashboards with `require_admin` will fail |
+| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | Yes per source: `EVENT_LOVELACE_UPDATED` is in `SUBSCRIBE_ALLOWLIST` (`homeassistant/auth/permissions/events.py`, checked 2026-11-23). Live test pending. |
+| WS `lovelace/config` | `main.qml` | Yes per source: only `lovelace/config/save` and `delete` carry `require_admin` (`components/lovelace/websocket.py`, checked 2026-11-23). Live test pending, including a `require_admin` dashboard. |
 | WS `call_service` (tiles, gestures, `weather.get_forecasts`) | QML | Expected yes; TO VERIFY |
 | WS `media_player/browse_media` | `MusicPage.qml` | TO VERIFY |
 | WS `media_source/browse_media`, `resolve_media` | `ha-kiosk-photos.py` | TO VERIFY |
@@ -1023,10 +1026,10 @@ The token is attached only when the parsed scheme, host and port of a URL equal 
 
 * **Current state:** the token type is not enforced; the table is unverified. `ha-kiosk-voice.py`
   attaches the token only when scheme, host and port all match `HA_URL`.
-  `docs/MANUAL.md` asks for an admin token; `scripts/publish_layout.py` creates an admin-only
-  dashboard.
-* **Planned:** non-admin user documented, `publish_layout.py` creates a non-admin dashboard,
-  table verified in the pilot.
+  `docs/MANUAL.md` recommends a dedicated non-admin, local-only user (admin only for
+  `CAPTURE_UPLOAD`); `scripts/publish_layout.py` creates a non-admin dashboard (`--require-admin`
+  to opt out). The live matrix with a non-admin token is still open.
+* **Planned:** non-admin table verified live in the pilot.
 
 ---
 

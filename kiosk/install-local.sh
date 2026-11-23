@@ -85,14 +85,23 @@ install_files() {
     cp "$BUNDLE/VERSION" "$DEST/VERSION" 2>/dev/null || true
     cp "$0" "$DEST/install-local.sh" 2>/dev/null || true   # keep the uninstaller on the panel
 
-    if [ -n "$ENV_FILE" ]; then cp "$ENV_FILE" "$DEST/kiosk.env"; fi
-    [ -f "$DEST/kiosk.env" ] || cp "$BUNDLE/kiosk.env.example" "$DEST/kiosk.env"
-    chmod 600 "$DEST/kiosk.env"                         # may hold the MQTT password
+    # Secrets (kiosk.env may hold the MQTT password; token is the HA token) are written as a 0600
+    # temp file under umask 077 and renamed into place, so no copy is ever readable by others.
+    put_secret() {  # put_secret SRC DEST
+        rm -f "$2.new"
+        (umask 077; cp "$1" "$2.new") && chmod 600 "$2.new" && sync "$2.new" 2>/dev/null; mv -f "$2.new" "$2"
+    }
+    if [ -n "$ENV_FILE" ]; then put_secret "$ENV_FILE" "$DEST/kiosk.env"
+    elif [ ! -f "$DEST/kiosk.env" ]; then put_secret "$BUNDLE/kiosk.env.example" "$DEST/kiosk.env"
+    else chmod 600 "$DEST/kiosk.env"; fi
     if [ "$NO_MQTT" = 1 ]; then
-        grep -v '^KIOSK_MQTT=' "$DEST/kiosk.env" > "$DEST/kiosk.env.tmp" || true
-        echo "KIOSK_MQTT=0" >> "$DEST/kiosk.env.tmp"; mv "$DEST/kiosk.env.tmp" "$DEST/kiosk.env"; chmod 600 "$DEST/kiosk.env"
+        rm -f "$DEST/kiosk.env.tmp"
+        (umask 077; grep -v '^KIOSK_MQTT=' "$DEST/kiosk.env" > "$DEST/kiosk.env.tmp" || true
+         echo "KIOSK_MQTT=0" >> "$DEST/kiosk.env.tmp")
+        mv -f "$DEST/kiosk.env.tmp" "$DEST/kiosk.env"
     fi
-    if [ -n "$TOKEN_FILE" ]; then cp "$TOKEN_FILE" "$DEST/token"; chmod 600 "$DEST/token"; fi
+    if [ -n "$TOKEN_FILE" ]; then put_secret "$TOKEN_FILE" "$DEST/token"
+    elif [ -f "$DEST/token" ]; then chmod 600 "$DEST/token"; fi
     if [ -n "$LAYOUT_FILE" ]; then cp "$LAYOUT_FILE" "$DEST/native/layout.json"
     elif [ ! -f "$DEST/native/layout.json" ]; then cp "$DEST/native/layout.example.json" "$DEST/native/layout.json"; fi
 

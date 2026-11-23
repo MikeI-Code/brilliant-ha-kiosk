@@ -175,7 +175,7 @@ is read from other integrations** (in particular not from Home Assistant's MQTT 
 |---|---|
 | Install the kiosk now | Untick to add the panel for monitoring only. |
 | Home Assistant URL for the panel | Address the panel can reach, starting with `http://` or `https://`. Prefilled with your internal URL when there is one. |
-| Long-lived access token | Created on your Home Assistant profile page (Security tab), ideally for an administrator; stored on the panel only (`/etc/ha-kiosk/token` and `/var/lib/ha-kiosk/config/token`, readable by root). Any characters. |
+| Long-lived access token | Created on your Home Assistant profile page (Security tab), ideally for a dedicated non-administrator user (see the manual, section 2.3); stored on the panel only (written atomically, mode 600 (`/etc/ha-kiosk/token` and `/var/lib/ha-kiosk/config/token`, readable by root). Any characters. |
 | MQTT broker host | Your broker's host name or IP address. The panel publishes its entities there. Port 1883 is assumed; change `MQTT_PORT` afterwards with the `set_env` action. |
 | MQTT user, MQTT password | Optional broker login. |
 

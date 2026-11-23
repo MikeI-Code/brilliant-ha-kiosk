@@ -132,10 +132,18 @@ The panel has no on-screen keyboard, so it signs in with a token:
 2. Under **Long-lived access tokens**, choose **Create token** and name it, e.g. "Wall panels".
 3. Save the token as a single line in `.private/token`.
 
-Use an **administrator** account: live layout updates (section 4) subscribe to an event that only
-admins can see, and clip uploads (`CAPTURE_UPLOAD=1`) need admin rights. The token is copied to
-the panel as `/etc/ha-kiosk/token` (mode 600; the saved copy is `/var/lib/ha-kiosk/config/token`)
-and never leaves your network.
+Use a **dedicated, non-administrator** Home Assistant user for the panels (Settings → People →
+Users → Add user, untick *Administrator*, tick *Can only log in from the local network*), log in as
+that user once and create the token on its profile. Live layout updates (section 4) work without
+admin rights; only clip uploads (`CAPTURE_UPLOAD=1`) need an administrator. A non-admin user can
+still read every entity and call any service, so treat the token like a house key. The token is
+copied to the panel as `/etc/ha-kiosk/token` (mode 600, written atomically; the saved copy is
+`/var/lib/ha-kiosk/config/token`) and never leaves your network.
+
+To **rotate** the token, create a new one, save it to `.private/token`, re-run
+`scripts/install.sh panelN`, then delete the old token in Home Assistant. When a panel leaves your
+home, uninstall the kiosk and **revoke** its token: removing it from the panel's flash is best
+effort.
 
 ### 2.4 Install
 
@@ -194,7 +202,8 @@ HA_URL=http://192.168.1.10:8123 HA_TOKEN=$(cat .private/token) \
   python3 scripts/publish_layout.py native/layout.example.json
 ```
 
-This creates an admin-only dashboard called **Panel Layout** (`/panel-layout`). It refuses to
+This creates a dashboard called **Panel Layout** that non-admin users can read (add
+`--require-admin` to restrict it, which then needs an administrator token on the panel) (`/panel-layout`). It refuses to
 overwrite a dashboard that already has views unless you add `--force`. Make sure
 `LAYOUT_DASHBOARD=panel-layout` is in `.private/kiosk.env`, re-run `scripts/install.sh panel1`, and
 from then on edit the screens in HA (section 4). Pass your own `.private/layout.json` instead of the
@@ -1282,7 +1291,7 @@ that offers the newest release of that channel ([home-assistant-integration.md](
 | `install.sh` says **settings rejected** | An unknown key or a value with `"`, `'`, `` ` ``, `$` or `\`. The message names the line. Only the keys in [section 7](#7-configuration-reference) are accepted. |
 | `install.sh` ends with **"the previous version is running again"** (exit 5) or **"Brilliant's own screen is back"** (exit 6) | The new release did not connect to Home Assistant within 60 s. Check `HA_URL` and the token, then `ssh root@<panel> /var/lib/ha-kiosk/ha-kiosk-setup diagnostics`. |
 | **Clock is wrong** by hours | Set `TZ` (and `TZ_LOCAL`) to your POSIX time zone. |
-| **Layout doesn't update** when you save in HA | The token's user must be an HA **administrator**. Check `LAYOUT_DASHBOARD`. The log shows `no live layout updates` if the subscription was refused. |
+| **Layout doesn't update** when you save in HA | Check `LAYOUT_DASHBOARD`. If the dashboard is *Visible to administrators only* (Settings → Dashboards), untick it or use an administrator token. The log shows `no live layout updates` if the subscription was refused. |
 | A tile shows **Unavailable** | The entity ID in the layout doesn't exist in HA, or the device is offline. |
 | An icon is **blank** | Use a Material Design icon name (`mdi:…`). Others aren't in the icon font. |
 | **Gestures don't control the light** | Set `LOAD_ENTITY`. Check the bridge: `systemctl status ha-kiosk-bridge`, then `wget -qO- http://127.0.0.1:8765/load` on the panel. |

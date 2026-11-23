@@ -6,7 +6,11 @@ screens whenever it is saved. Run this once to start from your current layout; a
 It will not overwrite a dashboard that already has views unless you pass --force.
 
 Usage:  HA_URL=http://192.168.1.10:8123 HA_TOKEN=<long-lived token> \
-          python3 scripts/publish_layout.py [layout.json] [--force]
+          python3 scripts/publish_layout.py [layout.json] [--force] [--require-admin]
+
+The dashboard is created visible to non-administrators, so a panel can use a token of a dedicated
+non-admin Home Assistant user. Pass --require-admin to restrict it to administrators (the panel's
+token must then belong to an administrator).
 Needs:  pip install websockets
 """
 import asyncio
@@ -69,8 +73,9 @@ def to_lovelace(layout):
 
 
 async def main():
-    args = [a for a in sys.argv[1:] if a != "--force"]
+    args = [a for a in sys.argv[1:] if a not in ("--force", "--require-admin")]
     force = "--force" in sys.argv
+    require_admin = "--require-admin" in sys.argv
     path = pathlib.Path(args[0]) if args else ROOT / ".private/layout.json"
     config = to_lovelace(json.loads(path.read_text(encoding="utf-8")))
     base = os.environ["HA_URL"].rstrip("/")
@@ -94,9 +99,14 @@ async def main():
         if not any(d["url_path"] == URL_PATH for d in dashboards):
             r = await call({"type": "lovelace/dashboards/create", "url_path": URL_PATH, "title": "Panel Layout",
                             "icon": "mdi:tablet-dashboard", "show_in_sidebar": True,
-                            "require_admin": True, "mode": "storage"})
+                            "require_admin": require_admin, "mode": "storage"})
             print("create dashboard:", r["success"], r.get("error", ""))
         else:
+            existing = next(d for d in dashboards if d["url_path"] == URL_PATH)
+            if existing.get("require_admin") and not require_admin:
+                print(f"note: '{URL_PATH}' is admin-only; a non-admin panel token may not read it. "
+                      "Untick 'Visible to administrators only' in Settings > Dashboards, "
+                      "or re-run with --require-admin to keep it.")
             cur = await call({"type": "lovelace/config", "url_path": URL_PATH})
             if cur.get("success") and cur["result"].get("views") and not force:
                 sys.exit(f"'{URL_PATH}' already has views (edited in HA?). Re-run with --force to overwrite.")
