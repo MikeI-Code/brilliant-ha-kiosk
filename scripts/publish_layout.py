@@ -104,9 +104,8 @@ async def main():
         else:
             existing = next(d for d in dashboards if d["url_path"] == URL_PATH)
             if existing.get("require_admin") and not require_admin:
-                print(f"note: '{URL_PATH}' is admin-only; a non-admin panel token may not read it. "
-                      "Untick 'Visible to administrators only' in Settings > Dashboards, "
-                      "or re-run with --require-admin to keep it.")
+                print(f"note: '{URL_PATH}' is admin-only in the HA sidebar. A non-admin panel token can "
+                      "still read it (require_admin only hides it in the frontend).")
             cur = await call({"type": "lovelace/config", "url_path": URL_PATH})
             if cur.get("success") and cur["result"].get("views") and not force:
                 sys.exit(f"'{URL_PATH}' already has views (edited in HA?). Re-run with --force to overwrite.")

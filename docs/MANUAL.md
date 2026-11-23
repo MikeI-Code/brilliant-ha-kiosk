@@ -203,7 +203,7 @@ HA_URL=http://192.168.1.10:8123 HA_TOKEN=$(cat .private/token) \
 ```
 
 This creates a dashboard called **Panel Layout** that non-admin users can read (add
-`--require-admin` to restrict it, which then needs an administrator token on the panel) (`/panel-layout`). It refuses to
+`--require-admin` to hide it from non-admins in the HA sidebar; the panel can still read it) (`/panel-layout`). It refuses to
 overwrite a dashboard that already has views unless you add `--force`. Make sure
 `LAYOUT_DASHBOARD=panel-layout` is in `.private/kiosk.env`, re-run `scripts/install.sh panel1`, and
 from then on edit the screens in HA (section 4). Pass your own `.private/layout.json` instead of the
@@ -1291,7 +1291,7 @@ that offers the newest release of that channel ([home-assistant-integration.md](
 | `install.sh` says **settings rejected** | An unknown key or a value with `"`, `'`, `` ` ``, `$` or `\`. The message names the line. Only the keys in [section 7](#7-configuration-reference) are accepted. |
 | `install.sh` ends with **"the previous version is running again"** (exit 5) or **"Brilliant's own screen is back"** (exit 6) | The new release did not connect to Home Assistant within 60 s. Check `HA_URL` and the token, then `ssh root@<panel> /var/lib/ha-kiosk/ha-kiosk-setup diagnostics`. |
 | **Clock is wrong** by hours | Set `TZ` (and `TZ_LOCAL`) to your POSIX time zone. |
-| **Layout doesn't update** when you save in HA | Check `LAYOUT_DASHBOARD`. If the dashboard is *Visible to administrators only* (Settings → Dashboards), untick it or use an administrator token. The log shows `no live layout updates` if the subscription was refused. |
+| **Layout doesn't update** when you save in HA | Check `LAYOUT_DASHBOARD` and that the token is valid. Admin rights are not needed, even for an admin-only dashboard. The log shows `no live layout updates` if the subscription was refused. |
 | A tile shows **Unavailable** | The entity ID in the layout doesn't exist in HA, or the device is offline. |
 | An icon is **blank** | Use a Material Design icon name (`mdi:…`). Others aren't in the icon font. |
 | **Gestures don't control the light** | Set `LOAD_ENTITY`. Check the bridge: `systemctl status ha-kiosk-bridge`, then `wget -qO- http://127.0.0.1:8765/load` on the panel. |

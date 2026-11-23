@@ -1008,14 +1008,15 @@ that user's power. `GESTURE_*` service calls also run with it.
 
 | API | Where | Non-admin |
 |---|---|---|
-| WS `auth`, `get_states`, `subscribe_events` `state_changed` | `Ha.qml` | Expected yes (`state_changed` is in HA's non-admin subscribe allowlist); TO VERIFY |
-| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | Yes per source: `EVENT_LOVELACE_UPDATED` is in `SUBSCRIBE_ALLOWLIST` (`homeassistant/auth/permissions/events.py`, checked 2026-11-23). Live test pending. |
-| WS `lovelace/config` | `main.qml` | Yes per source: only `lovelace/config/save` and `delete` carry `require_admin` (`components/lovelace/websocket.py`, checked 2026-11-23). Live test pending, including a `require_admin` dashboard. |
-| WS `call_service` (tiles, gestures, `weather.get_forecasts`) | QML | Expected yes; TO VERIFY |
-| WS `media_player/browse_media` | `MusicPage.qml` | TO VERIFY |
-| WS `media_source/browse_media`, `resolve_media` | `ha-kiosk-photos.py` | TO VERIFY |
-| REST `GET /api/states/<entity>` | `ha-kiosk-ambient.py` | Expected yes |
+| WS `auth`, `get_states`, `subscribe_events` `state_changed` | `Ha.qml` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). |
+| WS `subscribe_events` `lovelace_updated` | `Ha.qml` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). `EVENT_LOVELACE_UPDATED` is in `SUBSCRIBE_ALLOWLIST`. |
+| WS `lovelace/config` | `main.qml` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). Also for a dashboard with `require_admin: true`: that flag only hides it in the frontend. Only `lovelace/config/save`/`delete` need admin. |
+| WS `call_service` (tiles, gestures, `weather.get_forecasts`) | QML | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). (`weather.get_forecasts` reached entity validation, so it was authorized). |
+| WS `media_player/browse_media` | `MusicPage.qml` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). |
+| WS `media_source/browse_media`, `resolve_media` | `ha-kiosk-photos.py` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). (`browse_media`; `resolve_media` not separately exercised) |
+| REST `GET /api/states/<entity>` | `ha-kiosk-ambient.py` | Live: yes (2026-11-23, HA 192.168.7.240, temporary non-admin local-only user). |
 | TTS / media fetch | `ha-kiosk-voice.py` | TO VERIFY |
+| Media upload (`CAPTURE_UPLOAD=1`) | `ha-kiosk-capture.py` | Admin required |
 
 If `lovelace/config` is denied, the UI uses the cached or file layout: `rendered` stays true,
 `layout_source: cache`, `layout_error: forbidden`. Polling fallback (only if `lovelace_updated`
@@ -1028,8 +1029,8 @@ The token is attached only when the parsed scheme, host and port of a URL equal 
   attaches the token only when scheme, host and port all match `HA_URL`.
   `docs/MANUAL.md` recommends a dedicated non-admin, local-only user (admin only for
   `CAPTURE_UPLOAD`); `scripts/publish_layout.py` creates a non-admin dashboard (`--require-admin`
-  to opt out). The live matrix with a non-admin token is still open.
-* **Planned:** non-admin table verified live in the pilot.
+  to opt out). The non-admin matrix was run live on 2026-11-23 (table above); TTS/voice remains to verify.
+* **Planned:** verify the voice/TTS row; run the matrix on a panel with a non-admin token.
 
 ---
 
