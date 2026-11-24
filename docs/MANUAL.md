@@ -489,6 +489,12 @@ records. With `CAPTURE_VIDEO=1` there are also **Snapshot** and **Video clip** b
 started (labelled *Requested by Home Assistant*; the panel switches to the Capture tab so the person
 in the room sees it). The last clip and any reply text from HA are shown below.
 
+**Local camera preview.** With video capture enabled, tap **Preview panel camera** on the
+Capture page to see successive still frames. Leaving the tab, dimming the display or closing
+the preview stops new requests. A frame already in progress may finish. Preview uses the
+existing camera permission and the loopback control service; frames are temporary and do
+not create capture events or media-library clips.
+
 **Clips.** Voice is 16 kHz mono 16-bit WAV. Snapshots are 1280x720 JPEG. Video is 640x360 at 5 fps,
 H.264 in MP4, no sound. Clips live in RAM (`/run/ha-kiosk-capture`, 16 MB in total, oldest dropped
 first) and are deleted after `CAPTURE_TTL` seconds or when the service stops.

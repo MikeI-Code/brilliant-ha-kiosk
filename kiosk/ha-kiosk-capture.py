@@ -19,6 +19,7 @@ ships no Home Assistant logic.
                reply   <base>/capture/reply    {"text":"...","clear_after":30}  (shown on the screen)
   Local UI     127.0.0.1:CAPTURE_PORT+1  GET /status /start?kind=audio|video /stop /snapshot /cancel
 """
+import base64
 import json
 import math
 import os
@@ -285,6 +286,7 @@ class Recorder:
         self.error, self.last, self.reply = None, None, None
         self.stop_ev, self.cancel_ev = threading.Event(), threading.Event()
         self.procs = []
+        self.previewing = False
         self.last_ha = 0.0
         self.state_cb = lambda s: None
 
@@ -326,7 +328,7 @@ class Recorder:
         if kind in ("video", "snapshot") and not VIDEO:
             return False, "camera locked" if CAM_DENIED else "video capture is off (CAPTURE_VIDEO=0)"
         with self.lock:
-            if self.state in ("recording", "processing"):
+            if self.previewing or self.state in ("recording", "processing"):
                 return False, "busy"
             if source == "ha":
                 if time.monotonic() - self.last_ha < HA_INTERVAL:
@@ -456,6 +458,28 @@ class Recorder:
         if gst.returncode and not self.cancel_ev.is_set():
             raise RuntimeError((err or b"").decode(errors="replace").strip()[-200:] or "encoder failed")
 
+    def preview_frame(self):
+        """One local display frame; do not register, publish or upload a clip."""
+        if not VIDEO:
+            return 403, {}
+        with self.lock:
+            if self.previewing or self.state in ("recording", "processing"):
+                return 409, {}
+            self.previewing = True
+        try:
+            path, _, _ = self._snapshot()
+            try:
+                with open(path, "rb") as frame:
+                    return 200, {"jpeg": base64.b64encode(frame.read()).decode("ascii")}
+            finally:
+                os.remove(path)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            log("panel camera preview frame unavailable")
+            return 503, {}
+        finally:
+            with self.lock:
+                self.previewing = False
+
     def _snapshot(self):
         tmp, raw = self.clips.tmp_path("jpg"), self.clips.tmp_path("raw")
         w, h = 1280, 720
@@ -473,6 +497,10 @@ class Recorder:
             gst = _encode(w, h, 30, raw, ["imxvpuenc_jpeg"], tmp)
             self.procs = [gst]
             self._wait_gst(gst, 30)
+        except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            raise
         finally:
             self.procs = []
             _v4l2_restore()
@@ -637,6 +665,14 @@ def control_server(rec):
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
+
+        def do_POST(self):
+            # QML is local; an ordinary browser form must not be able to trigger capture.
+            if self.path != "/preview" or self.headers.get("X-Kiosk-Preview") != "1":
+                self.send_error(404)
+                return
+            code, body = rec.preview_frame()
+            _json(self, body, code)
 
         def do_GET(self):
             u = urllib.parse.urlsplit(self.path)
