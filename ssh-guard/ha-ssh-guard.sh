@@ -39,7 +39,8 @@ LOG() { logger -t ha-ssh-guard "$*" 2>/dev/null; }
   #    Never fight an existing active directive. /etc survives updates (merged, not replaced).
   CONF=/etc/ssh/sshd_config
   MARK="# ha-ssh-guard"
-  if [ -f "$CONF" ] && ! grep -qE '^[[:space:]]*PermitRootLogin[[:space:]]' "$CONF" 2>/dev/null; then
+  if [ -f "$CONF" ] && ! grep -qE '^[[:space:]]*PermitRootLogin[[:space:]]' "$CONF" 2>/dev/null
+  then
     {
       echo ""
       echo "$MARK (keeps SSH reachable across updates; remove via uninstall-ssh-guard)"

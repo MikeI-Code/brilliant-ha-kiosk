@@ -515,7 +515,8 @@ async def test_install_ssh_guard_passes_the_key(
 ) -> None:
     entry = await loaded(hass, panel, releases)
     key = "ssh-ed25519 AAAAkey you@host"
-    await call(hass, "install_ssh_guard", {"config_entry_id": entry.entry_id, "authorized_keys": key})
+    data = {"config_entry_id": entry.entry_id, "authorized_keys": key}
+    await call(hass, "install_ssh_guard", data)
     panel.install_ssh_guard.assert_awaited_once_with(key)
 
 

@@ -46,7 +46,8 @@ LOG() { logger -t ha-ssh-guard "$*" 2>/dev/null; }
   # 2) Allow root login, but only if an update reset sshd_config to its (commented) default.
   CONF=/etc/ssh/sshd_config
   MARK="# ha-ssh-guard"
-  if [ -f "$CONF" ] && ! grep -qE '^[[:space:]]*PermitRootLogin[[:space:]]' "$CONF" 2>/dev/null; then
+  if [ -f "$CONF" ] && ! grep -qE '^[[:space:]]*PermitRootLogin[[:space:]]' "$CONF" 2>/dev/null
+  then
     {
       echo ""
       echo "$MARK (keeps SSH reachable across updates; remove via uninstall-ssh-guard)"
