@@ -80,6 +80,10 @@ SERVICE_BUS_GET: Final = "bus_get"
 SERVICE_BUS_SET: Final = "bus_set"
 SERVICE_LOGS: Final = "logs"
 SERVICE_INSTALL_VERSION: Final = "install_version"
+SERVICE_INSTALL_SSH_GUARD: Final = "install_ssh_guard"
+SERVICE_REMOVE_SSH_GUARD: Final = "remove_ssh_guard"
+
+ATTR_AUTHORIZED_KEYS: Final = "authorized_keys"
 
 CONF_MANAGE_INSTALLS: Final = "manage_installs"
 #: ha-kiosk-setup v1.4.0 accepts 1/0/kiosk (not "full"/"off"); "1" is the built-in full mode.
