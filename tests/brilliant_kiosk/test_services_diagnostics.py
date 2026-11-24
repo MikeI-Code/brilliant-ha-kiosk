@@ -537,9 +537,7 @@ async def test_install_ssh_guard_reports_a_panel_error_as_translated(
         await call(hass, "install_ssh_guard", {"config_entry_id": entry.entry_id})
 
 
-async def test_remove_ssh_guard(
-    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
-) -> None:
+async def test_remove_ssh_guard(hass: HomeAssistant, panel: MagicMock, releases: MagicMock) -> None:
     entry = await loaded(hass, panel, releases)
     await call(hass, "remove_ssh_guard", {"config_entry_id": entry.entry_id})
     panel.remove_ssh_guard.assert_awaited_once_with()

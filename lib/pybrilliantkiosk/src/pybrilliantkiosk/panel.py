@@ -788,9 +788,7 @@ class Panel:
             await self._run(
                 f"cat > {GUARD_DIR}/dropbear && chmod 700 {GUARD_DIR}/dropbear", stdin=dropbear
             )
-        await self._run(
-            "cat > /etc/systemd/system/ha-ssh-guard.service", stdin=SERVICE_UNIT
-        )
+        await self._run("cat > /etc/systemd/system/ha-ssh-guard.service", stdin=SERVICE_UNIT)
         await self._run("cat > /etc/systemd/system/ha-ssh-guard.timer", stdin=TIMER_UNIT)
         await self._run(
             "systemctl daemon-reload "
