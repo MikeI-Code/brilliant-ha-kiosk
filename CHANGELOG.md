@@ -12,6 +12,15 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
+### Fixed
+- **Motion wake and the Motion sensor now follow the faceplate directly ([#16](https://github.com/MikeI-Code/brilliant-ha-kiosk/issues/16)).**
+  Both used to infer motion from Brilliant's own screen turning on. Once the kiosk owns the
+  backlight, Brilliant writes its screen state into dummy files and decouples from reality, so that
+  signal fired only rarely (about once an hour) — walking up to a panel often failed to wake it, and
+  the Motion binary sensor stayed off. The bridge/MQTT now reads the faceplate's `movement_detected`
+  from the message bus and `ha-kiosk-display` wakes on it, so motion wake and the Motion sensor are
+  responsive again. Tested on Brilliant OS v26.11.18.1.
+
 ### Added
 - **Optional SSH guard: keeps a panel reachable over SSH across Brilliant firmware updates.**
   Brilliant's updates can reset the panel's "Root SSH Login" state and lock out an administrator;

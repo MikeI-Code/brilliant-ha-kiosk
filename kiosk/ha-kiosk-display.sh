@@ -139,10 +139,12 @@ idle_state() {
     else echo dim; fi
 }
 
-# Motion wake. Brilliant's hardware service still decides "screen on" from the faceplate motion
-# sensor, but (see message_bus-ha-kiosk.conf) it now writes into dummy files. When its screen goes
-# from off to on, someone walked up, so we wake too. (Brightness tweaks while on don't count.)
+# Motion wake. ha-kiosk-mqtt reads the faceplate's motion detector (movement_detected) from the
+# bus and bumps $SHADOW/motion (epoch ms) whenever it sees someone (issue #16). We wake when that
+# value changes. As a fallback we also watch Brilliant's own screen-on signal (redirected into the
+# dummy $SHADOW files by message_bus-ha-kiosk.conf): an off->on there also means someone walked up.
 SHADOW=/run/ha-kiosk-shadow
+motion_signal() { cat "$SHADOW/motion" 2>/dev/null || echo 0; }
 brilliant_screen_on() {
     [ "$(cat "$SHADOW/blank" 2>/dev/null)" != 1 ] && [ "$(cat "$SHADOW/brightness" 2>/dev/null || echo 0)" -gt 0 ] &&
         [ "$(cat "$SHADOW/bl_power" 2>/dev/null || echo 0)" = 0 ]
@@ -164,11 +166,15 @@ while true; do
     [ "$cur" = photos ] && build_photos             # pick up newly synced photos
     set_state "$cur"
     # Idle: wake on touch or (if allowed) motion; re-check the schedule every ~30 s.
-    was_on=0; brilliant_screen_on && was_on=1; n=0
+    was_on=0; brilliant_screen_on && was_on=1
+    motion_at=$(motion_signal); n=0
     while ! touched_within 2; do
         now_on=0; brilliant_screen_on && now_on=1
-        if [ $was_on = 0 ] && [ $now_on = 1 ] && motion_wake_allowed; then echo "display: motion"; break; fi
-        was_on=$now_on
+        now_motion=$(motion_signal)
+        if motion_wake_allowed && { [ "$now_motion" != "$motion_at" ] || { [ $was_on = 0 ] && [ $now_on = 1 ]; }; }; then
+            echo "display: motion"; break
+        fi
+        motion_at=$now_motion; was_on=$now_on
         n=$((n + 1)); [ $n -lt 15 ] && continue; n=0
         nxt=$(idle_state)
         [ "$nxt" != "$cur" ] && { cur=$nxt; set_state "$cur"; }
