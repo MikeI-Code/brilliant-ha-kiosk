@@ -126,6 +126,8 @@ def make_panel() -> MagicMock:
     panel.logs = AsyncMock(return_value="line1\nline2")
     panel.install = AsyncMock(return_value=SetupStatus(state="active"))
     panel.setup_command = AsyncMock(return_value=SetupStatus(state="active"))
+    panel.install_ssh_guard = AsyncMock()
+    panel.remove_ssh_guard = AsyncMock()
     panel.unsafe = ()
     #: Set to a library error to make the next polls fail with it (reset with ``None``).
     panel.poll_error = None

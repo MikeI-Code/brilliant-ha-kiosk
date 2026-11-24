@@ -322,6 +322,34 @@ data:
   tag: v1.4.0
 ```
 
+### `brilliant_kiosk.install_ssh_guard`: keep SSH reachable across updates
+
+Installs the optional **SSH guard**, which keeps a panel reachable over SSH across Brilliant
+firmware updates (an update can otherwise reset the panel's *Root SSH Login* state and lock you
+out). It is separate from the kiosk UI, installs its own fail-safe systemd unit and timer on the
+panel, and re-asserts the SSH enable state on every boot. See [SSH guard](ssh-guard.md).
+
+| Field | Description |
+|---|---|
+| `authorized_keys` | Public key(s) to install for key-based root login, so access no longer depends on the per-device password. Leave empty to keep existing access and only maintain the enable state. |
+
+```yaml
+action: brilliant_kiosk.install_ssh_guard
+data:
+  config_entry_id: 01J0EXAMPLE
+  authorized_keys: ssh-ed25519 AAAA... you@host
+```
+
+### `brilliant_kiosk.remove_ssh_guard`: remove the SSH guard
+
+Removes the SSH guard. SSH itself is left as-is (your current keys and settings are kept).
+
+```yaml
+action: brilliant_kiosk.remove_ssh_guard
+data:
+  config_entry_id: 01J0EXAMPLE
+```
+
 ### Entities
 
 Per panel (device **\<room\> Brilliant kiosk**, for example *Kitchen Brilliant kiosk*; the room is

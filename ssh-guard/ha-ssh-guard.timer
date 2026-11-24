@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic SSH guard re-check (HA Kiosk add-on)
+
+[Timer]
+# Re-assert shortly after boot and then periodically, in case something disables SSH at runtime.
+OnBootSec=2min
+OnUnitActiveSec=30min
+Unit=ha-ssh-guard.service
+
+[Install]
+WantedBy=timers.target

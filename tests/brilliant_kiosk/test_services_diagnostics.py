@@ -510,6 +510,39 @@ async def test_logs_scrub_the_identifiers_of_the_panels_own_settings(
     assert result == {"logs": "connect **REDACTED** as **REDACTED** failed"}
 
 
+async def test_install_ssh_guard_passes_the_key(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    key = "ssh-ed25519 AAAAkey you@host"
+    data = {"config_entry_id": entry.entry_id, "authorized_keys": key}
+    await call(hass, "install_ssh_guard", data)
+    panel.install_ssh_guard.assert_awaited_once_with(key)
+
+
+async def test_install_ssh_guard_without_a_key_passes_none(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    entry = await loaded(hass, panel, releases)
+    await call(hass, "install_ssh_guard", {"config_entry_id": entry.entry_id})
+    panel.install_ssh_guard.assert_awaited_once_with(None)
+
+
+async def test_install_ssh_guard_reports_a_panel_error_as_translated(
+    hass: HomeAssistant, panel: MagicMock, releases: MagicMock
+) -> None:
+    panel.install_ssh_guard.side_effect = CannotConnect("down")
+    entry = await loaded(hass, panel, releases)
+    with pytest.raises(HomeAssistantError):
+        await call(hass, "install_ssh_guard", {"config_entry_id": entry.entry_id})
+
+
+async def test_remove_ssh_guard(hass: HomeAssistant, panel: MagicMock, releases: MagicMock) -> None:
+    entry = await loaded(hass, panel, releases)
+    await call(hass, "remove_ssh_guard", {"config_entry_id": entry.entry_id})
+    panel.remove_ssh_guard.assert_awaited_once_with()
+
+
 # -- the actions are for administrators -----------------------------------------------------------
 
 ACTIONS = {
@@ -519,6 +552,8 @@ ACTIONS = {
     "bus_set": {"peripheral": "p", "values": {"a": 1}},
     "logs": {"unit": "ha-kiosk.service"},
     "install_version": {"tag": "v1.5.0"},
+    "install_ssh_guard": {},
+    "remove_ssh_guard": {},
 }
 
 

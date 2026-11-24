@@ -1,0 +1,15 @@
+[Unit]
+Description=Keep SSH reachable across Brilliant firmware updates (HA Kiosk add-on)
+Documentation=https://github.com/MikeI-Code/brilliant-ha-kiosk/blob/main/docs/ssh-guard.md
+# Run late and never gate the boot: no Requires/Before on core targets, so a failure here can
+# never hold up or fail the system.
+After=multi-user.target sshd.socket
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/ha-ssh-guard/ha-ssh-guard.sh
+# The script always exits 0 and there is no Restart=, so this unit can never crash-loop
+# (a boot-time crash loop could trigger the recovery partition and wipe persistent state).
+
+[Install]
+WantedBy=multi-user.target

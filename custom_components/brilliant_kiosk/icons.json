@@ -27,6 +27,8 @@
     "bus_get": { "service": "mdi:bus" },
     "bus_set": { "service": "mdi:bus-edit" },
     "logs": { "service": "mdi:text-long" },
-    "install_version": { "service": "mdi:download" }
+    "install_version": { "service": "mdi:download" },
+    "install_ssh_guard": { "service": "mdi:shield-lock" },
+    "remove_ssh_guard": { "service": "mdi:shield-off" }
   }
 }

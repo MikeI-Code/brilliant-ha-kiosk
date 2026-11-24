@@ -13,6 +13,7 @@ from homeassistant.helpers.service import async_register_admin_service
 from pybrilliantkiosk import UNITS
 
 from .const import (
+    ATTR_AUTHORIZED_KEYS,
     ATTR_CONFIG_ENTRY_ID,
     ATTR_DELETE,
     ATTR_LINES,
@@ -26,8 +27,10 @@ from .const import (
     SERVICE_BUS_GET,
     SERVICE_BUS_SET,
     SERVICE_GET_ENV,
+    SERVICE_INSTALL_SSH_GUARD,
     SERVICE_INSTALL_VERSION,
     SERVICE_LOGS,
+    SERVICE_REMOVE_SSH_GUARD,
     SERVICE_SET_ENV,
 )
 from .coordinator import BrilliantKioskCoordinator
@@ -131,6 +134,19 @@ async def _install_version(call: ServiceCall) -> None:
     await coordinator.async_install(release)
 
 
+async def _install_ssh_guard(call: ServiceCall) -> None:
+    coordinator = _coordinator(call.hass, call.data[ATTR_CONFIG_ENTRY_ID])
+    keys = call.data.get(ATTR_AUTHORIZED_KEYS)
+    with panel_errors():
+        await coordinator.panel.install_ssh_guard(keys)
+
+
+async def _remove_ssh_guard(call: ServiceCall) -> None:
+    coordinator = _coordinator(call.hass, call.data[ATTR_CONFIG_ENTRY_ID])
+    with panel_errors():
+        await coordinator.panel.remove_ssh_guard()
+
+
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register the actions (once, from async_setup), for administrators only.
 
@@ -204,4 +220,18 @@ def async_setup_services(hass: HomeAssistant) -> None:
         SERVICE_INSTALL_VERSION,
         _install_version,
         probatio.Schema({**entry, probatio.Required(ATTR_TAG): cv.string}),
+    )
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_INSTALL_SSH_GUARD,
+        _install_ssh_guard,
+        probatio.Schema({**entry, probatio.Optional(ATTR_AUTHORIZED_KEYS): cv.string}),
+    )
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        SERVICE_REMOVE_SSH_GUARD,
+        _remove_ssh_guard,
+        probatio.Schema(entry),
     )

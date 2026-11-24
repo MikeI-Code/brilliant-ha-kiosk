@@ -68,3 +68,14 @@ install_version:
       example: v1.4.0
       selector:
         text:
+install_ssh_guard:
+  fields:
+    config_entry_id: *panel
+    authorized_keys:
+      example: ssh-ed25519 AAAA... you@host
+      selector:
+        text:
+          multiline: true
+remove_ssh_guard:
+  fields:
+    config_entry_id: *panel

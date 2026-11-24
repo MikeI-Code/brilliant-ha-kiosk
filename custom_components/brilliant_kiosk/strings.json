@@ -358,7 +358,6 @@
     },
     "release_needs_integration_update": {
       "title": "Brilliant Kiosk {tag} needs a newer version of this integration",
-      "description": "Kiosk release {tag} is newer than any release this version of the Brilliant Kiosk integration has verified, so panels cannot install it. Update the Brilliant Kiosk integration (Settings → Updates) and restart Home Assistant.",
       "fix_flow": {
         "step": {
           "confirm": {
@@ -469,6 +468,30 @@
         "tag": {
           "name": "Release",
           "description": "The GitHub release tag (v1.4.0, nightly-20261108) or the bundle version."
+        }
+      }
+    },
+    "install_ssh_guard": {
+      "name": "Install SSH guard",
+      "description": "Installs the optional SSH guard, which keeps the panel reachable over SSH across Brilliant firmware updates (they can otherwise reset the Root SSH Login state). Separate from the kiosk UI.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Panel",
+          "description": "The panel to protect."
+        },
+        "authorized_keys": {
+          "name": "Authorized keys",
+          "description": "Public key(s) to install for key-based root login, so access no longer depends on the per-device password. Leave empty to keep existing access and only maintain the enable state."
+        }
+      }
+    },
+    "remove_ssh_guard": {
+      "name": "Remove SSH guard",
+      "description": "Removes the SSH guard. SSH itself is left as-is (current keys and settings are kept).",
+      "fields": {
+        "config_entry_id": {
+          "name": "Panel",
+          "description": "The panel to remove the guard from."
         }
       }
     }

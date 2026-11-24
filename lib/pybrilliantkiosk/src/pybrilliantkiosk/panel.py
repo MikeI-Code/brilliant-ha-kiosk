@@ -756,6 +756,59 @@ class Panel:
             raise CommandFailed(command, result.exit_status, result.stderr)
         return result
 
+    # -- ssh guard ----------------------------------------------------------------------
+
+    async def install_ssh_guard(
+        self, authorized_keys: str | None = None, *, dropbear: bytes | None = None
+    ) -> None:
+        """Install the optional SSH guard: keep SSH reachable across firmware updates.
+
+        Brilliant's updates can reset the panel's "Root SSH Login" state and lock out an
+        administrator; the guard re-asserts it on every boot (see :mod:`.sshguard`). Writes the
+        guard, its systemd unit and timer, enables them and runs the guard once.
+
+        With ``authorized_keys`` (one or more public keys) root login becomes key-based and no
+        longer depends on the per-device password; without it the panel's existing access is kept
+        and only the enable state is maintained. ``dropbear`` is an optional static ``armv7``
+        server binary, used only if a future update removes OpenSSH entirely.
+        """
+        from .sshguard import GUARD_DIR, GUARD_SH, SERVICE_UNIT, TIMER_UNIT
+
+        await self._run(f"mkdir -p {GUARD_DIR} && chmod 700 {GUARD_DIR}")
+        await self._run(
+            f"cat > {GUARD_DIR}/ha-ssh-guard.sh && chmod 700 {GUARD_DIR}/ha-ssh-guard.sh",
+            stdin=GUARD_SH,
+        )
+        if authorized_keys:
+            await self._run(
+                f"cat > {GUARD_DIR}/authorized_keys && chmod 600 {GUARD_DIR}/authorized_keys",
+                stdin=authorized_keys,
+            )
+        if dropbear:
+            await self._run(
+                f"cat > {GUARD_DIR}/dropbear && chmod 700 {GUARD_DIR}/dropbear", stdin=dropbear
+            )
+        await self._run("cat > /etc/systemd/system/ha-ssh-guard.service", stdin=SERVICE_UNIT)
+        await self._run("cat > /etc/systemd/system/ha-ssh-guard.timer", stdin=TIMER_UNIT)
+        await self._run(
+            "systemctl daemon-reload "
+            "&& systemctl enable --now ha-ssh-guard.service ha-ssh-guard.timer "
+            f"&& {GUARD_DIR}/ha-ssh-guard.sh"
+        )
+
+    async def remove_ssh_guard(self) -> None:
+        """Remove the SSH guard. Leaves SSH itself as-is (current keys and settings are kept)."""
+        from .sshguard import GUARD_DIR
+
+        await self._run(
+            "systemctl disable --now ha-ssh-guard.timer ha-ssh-guard.service 2>/dev/null; "
+            "rm -f /etc/systemd/system/ha-ssh-guard.service "
+            "/etc/systemd/system/ha-ssh-guard.timer; "
+            "systemctl daemon-reload 2>/dev/null; "
+            f"rm -rf {GUARD_DIR}; true",
+            check=False,
+        )
+
     # -- health -------------------------------------------------------------------------
 
     async def health(self) -> PanelHealth:

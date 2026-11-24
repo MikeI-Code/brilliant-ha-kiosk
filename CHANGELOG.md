@@ -12,6 +12,16 @@ All notable changes to brilliant-ha-kiosk. There are two channels (see the READM
 Available in the newest [nightly prerelease](https://github.com/MikeI-Code/brilliant-ha-kiosk/releases?q=nightly&expanded=true).
 These changes will be part of the next stable release.
 
+### Added
+- **Optional SSH guard: keeps a panel reachable over SSH across Brilliant firmware updates.**
+  Brilliant's updates can reset the panel's "Root SSH Login" state and lock out an administrator;
+  the guard re-asserts it on every boot from assets kept in `/var/lib/ha-ssh-guard`, which updates
+  do not touch. It is opt-in and separate from the kiosk UI, installs its own fail-safe systemd
+  unit and timer, and does nothing until you enable it. Install it from Home Assistant with the new
+  admin actions **Install SSH guard** / **Remove SSH guard** (`brilliant_kiosk.install_ssh_guard`,
+  `brilliant_kiosk.remove_ssh_guard`), optionally supplying a public key for key-based root login,
+  or with `scripts/install-ssh-guard.sh` from a checkout. See `docs/ssh-guard.md`.
+
 ### Changed
 - **A kiosk release the integration cannot install is no longer offered.** A new stable release
   used to show up as an update on every panel and then fail to install, because each version of the
