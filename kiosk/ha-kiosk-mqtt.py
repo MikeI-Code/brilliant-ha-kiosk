@@ -96,6 +96,29 @@ def read(path, default=""):
         return default
 
 
+def motion_window(moved, now, until, clear_secs):
+    """New motion-clear deadline and whether the faceplate sees motion right now.
+
+    ``moved`` is the faceplate ``movement_detected`` value ("1" when the PIR sees someone). While
+    it is "1" the Motion sensor stays on until ``clear_secs`` after the last detection. Returns
+    ``(until, detected)``. This is the real motion signal; inferring it from Brilliant's screen
+    turning on (its pre-kiosk behaviour) almost never fires once the kiosk owns the backlight.
+    """
+    if str(moved) == "1":
+        return now + clear_secs, True
+    return until, False
+
+
+def signal_motion():
+    """Touch the motion file ha-kiosk-display.sh watches, so the screen wakes on motion."""
+    try:
+        with open(SHADOW + "/.motion.tmp", "w", encoding="utf-8") as f:
+            f.write(str(int(time.time() * 1000)))
+        os.replace(SHADOW + "/.motion.tmp", SHADOW + "/motion")
+    except OSError as e:
+        print(f"mqtt: motion signal: {e}", flush=True)
+
+
 # Settings are read by the rules of ha-kiosk-setup's parse_env, shared with every other reader.
 common = _load_common()
 BAD_VALUE, MAX_VALUE_LEN = common.BAD_VALUE, common.MAX_VALUE_LEN
@@ -146,7 +169,6 @@ class KioskMqtt:
         self.disc = env.get("MQTT_DISCOVERY_PREFIX", "homeassistant")
         self.last = {}
         self.motion_until = 0.0
-        self.brilliant_on = None
         self.peripherals = set()
         self.gangboxes = [0]
         self.next_diag = 0.0
@@ -509,11 +531,19 @@ class KioskMqtt:
             self.next_diag = time.time() + int(self.env.get("DIAG_SECS", "60"))
             self._poll_diagnostics()
 
-        # Motion: Brilliant's motion logic turning *its* (shadow) screen on = someone walked up.
-        b_on = read(f"{SHADOW}/blank") != "1" and read(f"{SHADOW}/brightness", "0") not in ("", "0")
-        if self.brilliant_on is False and b_on:
-            self.motion_until = time.time() + int(self.env.get("MOTION_CLEAR_SECS", "60"))
-        self.brilliant_on = b_on
+        # Motion: read the faceplate's PIR/motion detector directly (issue #16). Brilliant's own
+        # screen-on logic is decoupled once the kiosk owns the backlight (it writes dummy shadow
+        # files), so inferring motion from the screen turning on fires only rarely; movement_detected
+        # is the real signal. On detection we also wake ha-kiosk-display via the motion file.
+        try:
+            moved = self.control.variables("faceplate_peripheral").get("movement_detected")
+        except Exception as e:  # noqa: BLE001 - a bus hiccup must not stop the poll loop
+            moved = None
+            print(f"mqtt: faceplate motion: {e}", flush=True)
+        clear_secs = int(self.env.get("MOTION_CLEAR_SECS", "60"))
+        self.motion_until, detected = motion_window(moved, time.time(), self.motion_until, clear_secs)
+        if detected:
+            signal_motion()
         self._pub("motion", "ON" if time.time() < self.motion_until else "OFF")
         self._poll_display()
 
