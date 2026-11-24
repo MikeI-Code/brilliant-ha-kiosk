@@ -23,16 +23,24 @@ GUARD_DIR=/var/lib/ha-ssh-guard
 LOG() { logger -t ha-ssh-guard "$*" 2>/dev/null; }
 
 {
-  # 1) Key-based access: restore root's authorized_keys from the persistent copy.
+  # 1) Key-based access: add our key(s) to root's authorized_keys if missing. Append-only, so
+  #    keys another tool or a second admin placed are preserved; never rewrites the file.
   if [ -s "$GUARD_DIR/authorized_keys" ]; then
-    mkdir -p /root/.ssh 2>/dev/null
-    chmod 700 /root/.ssh 2>/dev/null
-    if ! cmp -s "$GUARD_DIR/authorized_keys" /root/.ssh/authorized_keys 2>/dev/null; then
-      if cat "$GUARD_DIR/authorized_keys" > /root/.ssh/authorized_keys 2>/dev/null; then
-        LOG "restored /root/.ssh/authorized_keys"
+    # Root's home is /home/root on this platform, not /root; resolve it from passwd.
+    ROOT_HOME=$(awk -F: '$1=="root"{print $6; exit}' /etc/passwd 2>/dev/null)
+    [ -n "$ROOT_HOME" ] || ROOT_HOME=/root
+    mkdir -p "$ROOT_HOME/.ssh" 2>/dev/null
+    chmod 700 "$ROOT_HOME/.ssh" 2>/dev/null
+    AK="$ROOT_HOME/.ssh/authorized_keys"
+    [ -f "$AK" ] || : > "$AK" 2>/dev/null
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in \#*) continue ;; esac
+      if ! grep -qxF "$line" "$AK" 2>/dev/null; then
+        printf '%s\n' "$line" >> "$AK" 2>/dev/null && LOG "added SSH key to root authorized_keys"
       fi
-    fi
-    chmod 600 /root/.ssh/authorized_keys 2>/dev/null
+    done < "$GUARD_DIR/authorized_keys"
+    chmod 600 "$AK" 2>/dev/null
   fi
 
   # 2) Allow root login, but only if an update reset sshd_config to its (commented) default.
