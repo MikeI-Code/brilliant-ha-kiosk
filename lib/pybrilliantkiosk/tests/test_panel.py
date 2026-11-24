@@ -2001,3 +2001,12 @@ async def test_remove_ssh_guard_disables_and_deletes(net: Net):
     joined = "\n".join(c for c, _ in net.conn.calls)
     assert "disable --now ha-ssh-guard.timer ha-ssh-guard.service" in joined
     assert "rm -rf /var/lib/ha-ssh-guard" in joined
+
+
+async def test_install_ssh_guard_with_dropbear_pushes_the_binary(net: Net):
+    panel = Panel("h")
+    await panel.install_ssh_guard("ssh-ed25519 AAAAkey you@host", dropbear=b"\x7fELFbin")
+    commands = [c for c, _ in net.conn.calls]
+    inputs = [i for _, i in net.conn.calls if i is not None]
+    assert any("/var/lib/ha-ssh-guard/dropbear" in c and "chmod 700" in c for c in commands)
+    assert any(b"\x7fELFbin" in i for i in inputs)
