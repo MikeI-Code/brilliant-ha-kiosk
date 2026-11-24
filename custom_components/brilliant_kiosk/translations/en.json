@@ -358,7 +358,6 @@
     },
     "release_needs_integration_update": {
       "title": "Brilliant Kiosk {tag} needs a newer version of this integration",
-      "description": "Kiosk release {tag} is newer than any release this version of the Brilliant Kiosk integration has verified, so panels cannot install it. Update the Brilliant Kiosk integration (Settings → Updates) and restart Home Assistant.",
       "fix_flow": {
         "step": {
           "confirm": {
