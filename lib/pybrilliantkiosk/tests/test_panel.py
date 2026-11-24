@@ -1967,3 +1967,37 @@ def test_the_identity_script_does_the_hello_of_brilliant_bus(
             "device_id": "deadbeefcafe0123",
             "peripheral_name": "art_config_peripheral",
         }
+
+
+# -- ssh guard ------------------------------------------------------------------------------------
+
+
+async def test_install_ssh_guard_issues_the_expected_commands(net: Net):
+    panel = Panel("h")
+    await panel.install_ssh_guard("ssh-ed25519 AAAAkey you@host")
+    commands = [c for c, _ in net.conn.calls]
+    inputs = [i for _, i in net.conn.calls if i is not None]
+    assert any("mkdir -p /var/lib/ha-ssh-guard" in c for c in commands)
+    assert any("/var/lib/ha-ssh-guard/ha-ssh-guard.sh" in c for c in commands)
+    assert any("/var/lib/ha-ssh-guard/authorized_keys" in c for c in commands)
+    assert any("/etc/systemd/system/ha-ssh-guard.service" in c for c in commands)
+    assert any("/etc/systemd/system/ha-ssh-guard.timer" in c for c in commands)
+    assert any("daemon-reload" in c and "enable --now" in c for c in commands)
+    # the guard script and the key were sent as stdin (str is encoded to bytes by _run)
+    assert any(b"ha-ssh-guard" in i for i in inputs)
+    assert any(b"AAAAkey" in i for i in inputs)
+
+
+async def test_install_ssh_guard_without_a_key_skips_the_key_file(net: Net):
+    panel = Panel("h")
+    await panel.install_ssh_guard()
+    commands = [c for c, _ in net.conn.calls]
+    assert not any("/var/lib/ha-ssh-guard/authorized_keys" in c for c in commands)
+
+
+async def test_remove_ssh_guard_disables_and_deletes(net: Net):
+    panel = Panel("h")
+    await panel.remove_ssh_guard()
+    joined = "\n".join(c for c, _ in net.conn.calls)
+    assert "disable --now ha-ssh-guard.timer ha-ssh-guard.service" in joined
+    assert "rm -rf /var/lib/ha-ssh-guard" in joined
